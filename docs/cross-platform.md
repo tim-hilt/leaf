@@ -2,7 +2,7 @@
 
 - Tier 1: Primary target
 - Tier 2: Works, but might not be fully featured
-- Tier 3: Architecture should be planned to support this tier, but a native client doesn't exist yet
+- Tier 3: Architecture is prepared to support this tier, but a native client isn't built yet
 
 ## Support
 

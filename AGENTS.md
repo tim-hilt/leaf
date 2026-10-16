@@ -7,6 +7,7 @@ Native, cross platform PDF Reader with cloud syncing
 - Focus on being snappy and Lightweight. Don't add bloat!
 - Use native UI functionality wherever possible
 - Use test driven development (red, green, refactor) by default
+- Keep documentation very lean and precise. No walls of text in this project!
 
 ## Rust
 
