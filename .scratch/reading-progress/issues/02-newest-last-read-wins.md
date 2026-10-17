@@ -4,8 +4,8 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Reading picks, among concurrent `progress` values, the one with the newest Last Read; on equal times it falls back to Automerge's default
-- [ ] Rust tests merge two Automerge actors that wrote concurrently and check the newest Last Read wins in both merge directions
-- [ ] Place and Last Read never mix between devices
+- [x] Reading picks, among concurrent `progress` values, the one with the newest Last Read; on equal times it falls back to Automerge's default
+- [x] Rust tests merge two Automerge actors that wrote concurrently and check the newest Last Read wins in both merge directions
+- [x] Place and Last Read never mix between devices
