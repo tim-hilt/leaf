@@ -41,4 +41,21 @@ targets:
         # Ad-hoc sign macOS builds so they run without a development team.
         # Revisit once macOS needs capabilities such as CloudKit.
         "CODE_SIGN_IDENTITY[sdk=macosx*]": "-"
-    scheme: {}
+    scheme:
+      testTargets: [LeafPDFTests]
+  LeafPDFTests:
+    type: bundle.unit-test
+    platform: auto
+    supportedDestinations: [iOS, macOS]
+    sources: [LeafPDFTests]
+    dependencies:
+      - target: LeafPDF
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"
+        ARCHS: arm64
+        "CODE_SIGN_IDENTITY[sdk=macosx*]": "-"
+        # macOS app bundles keep the executable under Contents/MacOS.
+        "TEST_HOST[sdk=macosx*]": "$(BUILT_PRODUCTS_DIR)/LeafPDF.app/Contents/MacOS/LeafPDF"
+        "BUNDLE_LOADER[sdk=macosx*]": "$(TEST_HOST)"

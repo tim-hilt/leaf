@@ -42,8 +42,9 @@ apple-core:
 apple-project:
 	cd apple && xcodegen generate
 
-apple-test: apple-core
+apple-test: apple-core apple-project
 	swift test --package-path apple/LeafCore
+	cd apple && xcodebuild test -scheme LeafPDF -destination 'platform=macOS' -only-testing:LeafPDFTests
 
 clean:
 	cargo clean

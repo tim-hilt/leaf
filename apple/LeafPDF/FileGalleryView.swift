@@ -1,18 +1,17 @@
-import LeafCore
+import PDFKit
 import SwiftUI
 
-/// Grid of all imported files (see docs/features.md, "File Gallery").
-/// Placeholder until import exists; shows the core version to prove the
-/// app is linked against the Rust core.
+/// Lists all imported Documents (see docs/features.md, "File Gallery") and
+/// opens the tapped one in the Reader. Placeholder until import exists.
 struct FileGalleryView: View {
     var body: some View {
         NavigationStack {
-            ContentUnavailableView(
-                "No Files",
-                systemImage: "doc.richtext",
-                description: Text("LeafPDF core \(coreVersion())")
-            )
+            List {
+                // TEMPORARY: remove with File Import (features §2)
+                NavigationLink(SampleDocument.pdf.title, value: SampleDocument.pdf)
+            }
             .navigationTitle("LeafPDF")
+            .navigationDestination(for: PDFDocument.self) { ReaderView(document: $0) }
         }
     }
 }

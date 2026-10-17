@@ -4,12 +4,12 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Public-domain sample PDF (< 1 MB, multiple pages, outline, at least one differently sized page) is bundled
-- [ ] Sample-related code is marked `// TEMPORARY: remove with File Import (features §2)`
-- [ ] Gallery placeholder lists the sample Document; tapping it pushes the Reader
-- [ ] Reader shows pages in one vertical column with continuous scrolling on iOS, iPadOS and macOS
-- [ ] Title = PDF metadata title, falling back to the file name (unit-tested, test-first)
-- [ ] Standard back chevron, iOS edge swipe and macOS ⌘[ return to the Gallery
-- [ ] No other Reader UI (no page counter, thumbnails or toolbar)
+- [x] Public-domain sample PDF (< 1 MB, multiple pages, outline, at least one differently sized page) is bundled
+- [x] Sample-related code is marked `// TEMPORARY: remove with File Import (features §2)`
+- [x] Gallery placeholder lists the sample Document; tapping it pushes the Reader
+- [x] Reader shows pages in one vertical column with continuous scrolling on iOS, iPadOS and macOS
+- [x] Title = PDF metadata title, falling back to the file name (unit-tested, test-first)
+- [x] Standard back chevron, iOS edge swipe and macOS ⌘[ return to the Gallery
+- [x] No other Reader UI (no page counter, thumbnails or toolbar)
