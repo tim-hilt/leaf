@@ -2,9 +2,11 @@ import SwiftUI
 
 /// A Gallery grid cell: an A4-portrait page area with a caption of up to 2
 /// lines under it. The caption always reserves both lines, so cells in a row
-/// line up whatever their text.
+/// line up whatever their text. A `percentRead` shows a progress indicator
+/// along the page area's bottom edge, over whatever `page` shows.
 struct GalleryCell<Page: View>: View {
     let caption: String
+    var percentRead: Int?
     @ViewBuilder let page: Page
 
     /// A4 portrait.
@@ -15,12 +17,51 @@ struct GalleryCell<Page: View>: View {
             page
                 .aspectRatio(Self.pageAspect, contentMode: .fit)
                 .frame(maxWidth: .infinity)
+                .overlay(alignment: .bottom) {
+                    if let percentRead { ReadingProgressIndicator(percent: percentRead) }
+                }
             Text(caption)
                 .font(.caption)
                 .lineLimit(2, reservesSpace: true)
                 .multilineTextAlignment(.center)
         }
         .contentShape(.rect)
+    }
+}
+
+/// A thin bar across the full width, filled to `percent`, with the number in
+/// a capsule above it in the bottom-right corner. The material keeps the
+/// number readable on light and dark Covers alike.
+private struct ReadingProgressIndicator: View {
+    let percent: Int
+    private static let barHeight: CGFloat = 3
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Text("\(percent) %")
+                .font(.caption2.monospacedDigit())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.ultraThinMaterial, in: .capsule)
+                .padding(.trailing, 4)
+            Rectangle().fill(.ultraThinMaterial)
+                .overlay(alignment: .leading) {
+                    GeometryReader { bar in
+                        Rectangle().fill(Color.accentColor).frame(width: bar.size.width * Double(percent) / 100)
+                    }
+                }
+                .frame(height: Self.barHeight)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+extension LibraryDocument {
+    /// What VoiceOver reads for the Document's cell: the Title, then how far
+    /// it has been read if it was opened.
+    var accessibilityLabel: String {
+        guard let percentRead else { return title }
+        return String(localized: "\(title), \(percentRead) % read")
     }
 }
 
@@ -48,8 +89,9 @@ extension ShapeStyle where Self == Color {
 /// the Cover fades in. A saved Cover loads as soon as the cell appears; a new
 /// one is rendered only while the Gallery is still (see `ScrollActivity`), and
 /// that request is dropped if the cell scrolls away first. A Cover wider than
-/// the cell's page shape is scaled to fit and sits on the bottom edge; the
-/// space above it is transparent.
+/// the cell's page shape is scaled to fit and centred vertically; the
+/// space around it is transparent. The progress indicator stays on the
+/// cell's bottom edge.
 struct DocumentCell: View {
     @Environment(LibraryModel.self) private var library
     @Environment(ScrollActivity.self) private var scroll
@@ -57,13 +99,13 @@ struct DocumentCell: View {
     @State private var cover: CGImage?
 
     var body: some View {
-        GalleryCell(caption: document.title) {
+        GalleryCell(caption: document.title, percentRead: document.percentRead) {
             ZStack {
                 if let cover {
                     Image(decorative: cover, scale: 1)
                         .resizable()
                         .scaledToFit()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .transition(.opacity)
                 } else {
                     Color.placeholderGrey.transition(.opacity)

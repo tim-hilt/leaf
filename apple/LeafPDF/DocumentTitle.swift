@@ -13,10 +13,11 @@ extension PDFDocument {
 }
 
 extension PDFDocument {
-    /// The Title and Author of this Document, as saved by the Library.
+    /// The Title, Author and page count of this Document, as saved by the Library.
     var details: DocumentDetails {
         let author = (documentAttributes?[PDFDocumentAttribute.authorAttribute] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return DocumentDetails(title: title, author: author?.isEmpty == false ? author : nil)
+        return DocumentDetails(
+            title: title, author: author?.isEmpty == false ? author : nil, pageCount: pageCount)
     }
 }

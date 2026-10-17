@@ -25,6 +25,15 @@ struct LibraryDocument: Identifiable, Hashable {
     }
     /// When the Reader last showed the Document; nil if never.
     var lastRead: Date? { progress.map { Date(timeIntervalSince1970: Double($0.lastRead) / 1000) } }
+    /// Nil until read from the PDF.
+    var pageCount: Int? { details?.pageCount }
+    /// How far the user has got, in whole percent rounded down, counting the
+    /// page they are on: 100 only on the last page. Nil if the Document was
+    /// never opened or its page count isn't known yet.
+    var percentRead: Int? {
+        guard let progress, let pageCount, pageCount > 0 else { return nil }
+        return min(100, 100 * (Int(progress.pageIndex) + 1) / pageCount)
+    }
 
     fileprivate init(_ stored: LeafCore.Document, details: DocumentDetails?) {
         id = stored.id
@@ -273,11 +282,12 @@ final class LibraryModel {
         documents = stored.map { LibraryDocument($0, details: saved[$0.id]) }
     }
 
-    /// Reads the details of Documents that have none from their PDFs, one at a
-    /// time at background priority, publishing each as it arrives. A PDF that
-    /// can't be read is skipped and tried again at the next launch.
+    /// Reads the details of Documents that have none, or none with a page
+    /// count, from their PDFs, one at a time at background priority,
+    /// publishing each as it arrives. A PDF that can't be read is skipped and
+    /// tried again at the next launch.
     private func readMissingDetails() {
-        let missing = documents.filter { $0.details == nil }.map { ($0.id, $0.file) }
+        let missing = documents.filter { $0.pageCount == nil }.map { ($0.id, $0.file) }
         guard !missing.isEmpty else { return }
         Task(priority: .background) { [weak self] in
             for (id, file) in missing {
@@ -288,9 +298,10 @@ final class LibraryModel {
         }
     }
 
-    /// Saves `details` for Document `id` unless it was Removed or already has some.
+    /// Saves `details` for Document `id` unless it was Removed or already has
+    /// a page count, which means complete details.
     private func publish(_ details: DocumentDetails?, for id: String) {
-        guard let details, saved[id] == nil, let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        guard let details, saved[id]?.pageCount == nil, let index = documents.firstIndex(where: { $0.id == id }) else { return }
         saved[id] = details
         documents[index].details = details
     }

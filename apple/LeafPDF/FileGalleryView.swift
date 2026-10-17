@@ -59,7 +59,7 @@ struct FileGalleryView: View {
                                     .contextMenu {
                                         Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
                                     }
-                                    .accessibilityLabel(document.title)
+                                    .accessibilityLabel(document.accessibilityLabel)
                                     .accessibilityAction(named: "Remove") { removal = document }
                             }
                         }

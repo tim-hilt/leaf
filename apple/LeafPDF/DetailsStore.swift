@@ -1,10 +1,13 @@
 import Foundation
 
-/// What the Gallery shows and searches for a Document, read from its PDF once.
+/// What the Gallery shows, searches for and measures progress by for a Document, read from its PDF once.
 struct DocumentDetails: Codable, Hashable, Sendable {
     /// The PDF's title, or its file name (without extension) if it has none.
     var title: String
     var author: String?
+    /// Nil in details saved before page counts were stored; the Library's
+    /// background pass fills it in.
+    var pageCount: Int?
 }
 
 /// The saved `DocumentDetails` of every Document, in one JSON file keyed by

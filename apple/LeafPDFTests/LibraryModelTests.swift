@@ -531,6 +531,95 @@ import Testing
         #expect(try openLibrary().documents.isEmpty)
     }
 
+    // MARK: Page count and percentage read
+
+    /// Imports a PDF of `pageCount` pages.
+    private func importDocument(pageCount: Int, into library: LibraryModel) async throws -> LibraryDocument {
+        guard case .opened(let document) = await library.import(try writePDF(named: "a.pdf", pageCount: pageCount))
+        else { throw ImportFailed() }
+        return document
+    }
+
+    @Test func importSavesThePageCount() async throws {
+        let library = try openLibrary()
+
+        let document = try await importDocument(pageCount: 3, into: library)
+
+        #expect(document.pageCount == 3)
+        #expect(try openLibrary().documents.first?.pageCount == 3)
+    }
+
+    @Test func theBackgroundPassReadsAMissingPageCountAndKeepsTheTitle() async throws {
+        let original = try openLibrary()
+        guard case .opened(let document) = await original.import(
+            try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville", pageCount: 3))
+        else { throw ImportFailed() }
+        // Details saved before page counts existed.
+        let old = #"{"\#(document.id)":{"title":"Moby-Dick","author":"Melville"}}"#
+        try Data(old.utf8).write(to: detailsFile)
+
+        let library = try openLibrary()
+        #expect(library.documents.first?.title == "Moby-Dick")
+        #expect(library.documents.first?.pageCount == nil)
+
+        try await waitUntil { library.documents.first?.pageCount == 3 }
+        #expect(library.documents.first?.author == "Melville")
+        #expect(try openLibrary().documents.first?.pageCount == 3)
+    }
+
+    @Test(arguments: [(0, 25), (1, 50), (2, 75), (3, 100)])
+    func percentReadIsThePageReachedOfThePageCount(pageIndex: Int, percent: Int) async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(pageCount: 4, into: library)
+
+        await library.saveProgress(Place(pageIndex: pageIndex, point: .zero), of: document, at: lastRead)
+
+        #expect(library.documents.first?.percentRead == percent)
+    }
+
+    @Test func percentReadIsRoundedDown() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(pageCount: 3, into: library)
+
+        await library.saveProgress(Place(pageIndex: 1, point: .zero), of: document, at: lastRead)
+
+        #expect(library.documents.first?.percentRead == 66)
+    }
+
+    @Test func aDocumentOpenedOnTheFirstPageOfALongBookReadsZeroPercent() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(pageCount: 200, into: library)
+
+        await library.saveProgress(Place(pageIndex: 0, point: .zero), of: document, at: lastRead)
+
+        #expect(library.documents.first?.percentRead == 0)
+    }
+
+    @Test func aNeverOpenedDocumentHasNoPercentRead() async throws {
+        let document = try await importDocument(pageCount: 4, into: try openLibrary())
+
+        #expect(document.percentRead == nil)
+    }
+
+    @Test func aDocumentWithoutKnownPageCountHasNoPercentRead() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(pageCount: 4, into: library)
+        await library.saveProgress(place, of: document, at: lastRead)
+        try FileManager.default.removeItem(at: detailsFile)
+
+        #expect(try openLibrary().documents.first?.percentRead == nil)
+    }
+
+    @Test func voiceOverReadsAnOpenedDocumentWithItsPercentage() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(pageCount: 4, into: library)
+        #expect(document.accessibilityLabel == document.title)
+
+        await library.saveProgress(Place(pageIndex: 1, point: .zero), of: document, at: lastRead)
+
+        #expect(library.documents.first?.accessibilityLabel == "\(document.title), 50 % read")
+    }
+
     /// Waits up to 10 s for `condition`, which the background pass makes true.
     private func waitUntil(_ condition: () -> Bool) async throws {
         for _ in 0..<1000 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
