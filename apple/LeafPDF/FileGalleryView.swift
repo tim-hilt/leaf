@@ -4,13 +4,15 @@ import UniformTypeIdentifiers
 /// Lists the Library, newest Import first (see docs/features.md, "File
 /// Gallery"), and opens the tapped Document in the Reader. "+" and File >
 /// Import… (also from the Reader) Import a PDF and open it, replacing any
-/// open Document. Placeholder list until the grid exists.
+/// open Document. A row's context menu (long-press, right-click) offers
+/// "Remove", after confirmation. Placeholder list until the grid exists.
 struct FileGalleryView: View {
     @Environment(LibraryModel.self) private var library
     @State private var path: [LibraryDocument] = []
     @State private var isImporting = false
     @State private var rejection: ImportAlert?
     @State private var duplicate: LibraryDocument?
+    @State private var removal: LibraryDocument?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -24,6 +26,9 @@ struct FileGalleryView: View {
                 } else {
                     List(library.documents) { document in
                         NavigationLink(document.title, value: document)
+                            .contextMenu {
+                                Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
+                            }
                     }
                 }
             }
@@ -51,6 +56,14 @@ struct FileGalleryView: View {
         ) { _ in
         } message: { alert in
             Text(alert.message)
+        }
+        .confirmationDialog(
+            "Remove “\(removal?.title ?? "")”?", isPresented: Binding(get: { removal != nil }, set: { _ in removal = nil }),
+            titleVisibility: .visible, presenting: removal
+        ) { document in
+            Button("Remove", role: .destructive) { library.remove(document) }
+        } message: { _ in
+            Text("The file, its markup and your reading progress are deleted on all your devices.")
         }
         .alert(
             "Already in your Library", isPresented: Binding(get: { duplicate != nil }, set: { _ in duplicate = nil }),

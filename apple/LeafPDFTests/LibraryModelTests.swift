@@ -130,6 +130,29 @@ import Testing
         #expect(library.documents.count == 1)
     }
 
+    @Test func aRemovedDocumentDisappearsAndCanBeImportedAgain() async throws {
+        let library = try LibraryModel(root: root)
+        let source = try writePDF(named: "a.pdf")
+        let other = try writePDF(named: "b.pdf")
+        guard case .opened(let doomed) = await library.import(source),
+            case .opened(let kept) = await library.import(other)
+        else {
+            Issue.record("expected .opened")
+            return
+        }
+
+        library.remove(doomed)
+
+        #expect(library.documents == [kept])
+        #expect(try LibraryModel(root: root).documents == [kept])
+        guard case .opened(let again) = await library.import(source) else {
+            Issue.record("expected the removed File to Import as new")
+            return
+        }
+        #expect(again == doomed)
+        #expect(library.documents == [again, kept])
+    }
+
     @Test func reopeningTheLibraryKeepsItsDocuments() async throws {
         _ = await (try LibraryModel(root: root)).import(try writePDF(named: "a.pdf"))
 

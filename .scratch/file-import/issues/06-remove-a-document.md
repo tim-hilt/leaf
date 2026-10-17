@@ -4,11 +4,11 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Core `remove(id)` renames the Document's folder out of the Library, then deletes it (Rust tests)
-- [ ] Opening the Library removes leftover removal folders
-- [ ] A Removed Document can be Imported again (Rust test)
-- [ ] Client Library model `remove(document)`; the Document disappears from `documents` (Swift test)
-- [ ] `.contextMenu` "Remove" on Gallery rows: long-press on iOS, right-click on macOS
-- [ ] Destructive confirmation dialog naming the Title
+- [x] Core `remove(id)` renames the Document's folder out of the Library, then deletes it (Rust tests)
+- [x] Opening the Library removes leftover removal folders
+- [x] A Removed Document can be Imported again (Rust test)
+- [x] Client Library model `remove(document)`; the Document disappears from `documents` (Swift test)
+- [x] `.contextMenu` "Remove" on Gallery rows: long-press on iOS, right-click on macOS
+- [x] Destructive confirmation dialog naming the Title

@@ -3,14 +3,17 @@
 //! Layout (ADR-0012): `<root>/<sha256>/<original file name>`. The hash is the
 //! Document's ID (ADR-0007). Imports are staged under `<root>/.staging` and
 //! renamed into place, so a Document is either fully there or not at all.
+//! Removals go the other way: the folder is renamed into `<root>/.removing`
+//! first, then deleted.
 
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 const STAGING: &str = ".staging";
+const REMOVING: &str = ".removing";
 
 /// A Document in the Library.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,14 +42,16 @@ pub struct Library {
 
 impl Library {
     /// Opens the Library at `root`, creating it if needed and discarding
-    /// leftovers of Imports that never finished.
+    /// leftovers of Imports and Removals that never finished.
     pub fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
         let library = Library { root: root.into() };
-        match fs::remove_dir_all(library.staging()) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-            _ => {}
+        for dir in [library.staging(), library.removing()] {
+            match fs::remove_dir_all(&dir) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+            fs::create_dir_all(&dir)?;
         }
-        fs::create_dir_all(library.staging())?;
         Ok(library)
     }
 
@@ -65,12 +70,7 @@ impl Library {
             io::Error::new(io::ErrorKind::InvalidInput, "source has no file name")
         })?;
 
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let staged = self.staging().join(format!(
-            "{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Relaxed)
-        ));
+        let staged = self.staging().join(unique_name());
         fs::create_dir(&staged)?;
 
         let result = copy_hashed(source, &staged.join(name), progress).and_then(|id| {
@@ -114,9 +114,48 @@ impl Library {
         Ok(found.into_iter().map(|(_, document)| document).collect())
     }
 
+    /// Deletes the Document `id` and its File. Removing a Document that
+    /// isn't there does nothing. An `id` that isn't a Document ID (e.g. a
+    /// path) is `InvalidInput`.
+    ///
+    /// The folder leaves the Library in one rename, so a crash mid-delete
+    /// never leaves a half-deleted Document listed; `open` finishes the job.
+    /// Nothing is remembered about the Document, so it can be Imported again.
+    pub fn remove(&self, id: &str) -> io::Result<()> {
+        let mut parts = Path::new(id).components();
+        let is_plain_name = matches!(
+            (parts.next(), parts.next()),
+            (Some(Component::Normal(name)), None) if !name.to_string_lossy().starts_with('.')
+        );
+        if !is_plain_name {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{id:?} is not a Document ID"),
+            ));
+        }
+
+        let doomed = self.removing().join(unique_name());
+        match fs::rename(self.root.join(id), &doomed) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            result => result?,
+        }
+        fs::remove_dir_all(doomed)
+    }
+
     fn staging(&self) -> PathBuf {
         self.root.join(STAGING)
     }
+
+    fn removing(&self) -> PathBuf {
+        self.root.join(REMOVING)
+    }
+}
+
+/// A name no other call in this process, or an earlier one, has used for a
+/// scratch folder.
+fn unique_name() -> String {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Relaxed))
 }
 
 /// Streams `from` into a new file at `to`, returning the SHA-256 of the bytes.
@@ -284,8 +323,8 @@ mod tests {
         assert_eq!(library.documents().unwrap().len(), 1);
         assert_eq!(
             fs::read_dir(scratch.0.join("library")).unwrap().count(),
-            // The Document plus the (empty) staging folder.
-            2
+            // The Document plus the (empty) staging and removal folders.
+            3
         );
         assert_eq!(
             fs::read_dir(scratch.0.join("library/.staging"))
@@ -338,5 +377,79 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn remove_deletes_the_document_and_its_file() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let keep = import_new(&library, &scratch.file("a.pdf", b"first"));
+        let gone = import_new(&library, &scratch.file("b.pdf", b"second"));
+
+        library.remove(&gone.id).unwrap();
+
+        assert_eq!(library.documents().unwrap(), vec![keep]);
+        assert!(!gone.path.exists());
+        assert_eq!(
+            fs::read_dir(scratch.0.join("library/.removing"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn removing_a_document_that_is_not_there_does_nothing() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let kept = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        library.remove("0123").unwrap();
+
+        assert_eq!(library.documents().unwrap(), vec![kept]);
+    }
+
+    #[test]
+    fn remove_refuses_an_id_that_points_outside_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let outside = scratch.0.join("outside");
+        fs::create_dir(&outside).unwrap();
+
+        for id in ["../outside", "", ".", ".staging", "a/b"] {
+            let err = library.remove(id).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "id {id:?}");
+        }
+        assert!(outside.exists());
+        assert!(scratch.0.join("library/.staging").exists());
+    }
+
+    #[test]
+    fn a_removed_document_can_be_imported_again() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let source = scratch.file("a.pdf", b"abc");
+        let first = import_new(&library, &source);
+        library.remove(&first.id).unwrap();
+
+        let again = import_new(&library, &source);
+
+        assert_eq!(again, first);
+        assert_eq!(library.documents().unwrap(), vec![first]);
+    }
+
+    #[test]
+    fn open_removes_leftover_removal_folders() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let leftover = scratch.0.join("library/.removing/interrupted");
+        fs::create_dir_all(&leftover).unwrap();
+        fs::write(leftover.join("half.pdf"), b"ab").unwrap();
+        drop(library);
+
+        let library = scratch.library();
+
+        assert!(!leftover.exists());
+        assert_eq!(library.documents().unwrap(), vec![]);
     }
 }

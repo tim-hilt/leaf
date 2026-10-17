@@ -98,6 +98,10 @@ impl Library {
         Ok(result.into())
     }
 
+    pub fn remove(&self, id: String) -> Result<(), LibraryError> {
+        Ok(self.0.remove(&id)?)
+    }
+
     pub fn documents(&self) -> Result<Vec<Document>, LibraryError> {
         Ok(self.0.documents()?.into_iter().map(Into::into).collect())
     }

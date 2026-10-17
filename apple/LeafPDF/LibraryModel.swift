@@ -118,6 +118,13 @@ final class LibraryModel {
         }
     }
 
+    /// Deletes the Document and its File. If that fails, the Document stays in
+    /// `documents`.
+    func remove(_ document: LibraryDocument) {
+        try? core.remove(id: document.id)
+        refresh()
+    }
+
     /// Why the File at `url` can't be Imported, given what PDFKit made of it
     /// (`opened`). A File that can't be read at all isn't rejected: copying it
     /// fails with the system's own reason.
