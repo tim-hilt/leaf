@@ -1,13 +1,13 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Lists the Library, newest Import first (see docs/features.md, "File
-/// Gallery"), and opens the tapped Document in the Reader. "+" and File >
-/// Import… (also from the Reader) Import a PDF and open it, replacing any
-/// open Document. A row's context menu (long-press, right-click) offers
-/// "Remove", after confirmation. A window reading a Document that gets Removed
-/// (here or in another window) returns to the list and says so. Placeholder
-/// list until the grid exists.
+/// The Library as a vertically scrolling grid of Documents, newest Import
+/// first, led by a "+" cell that Imports. A click or tap opens a Document in
+/// the Reader. The toolbar "+" and File > Import… (also from the Reader) Import
+/// a PDF and open it, replacing any open Document. A cell's context menu
+/// (long-press, right-click) or VoiceOver action offers "Remove", after
+/// confirmation. A window reading a Document that gets Removed (here or in
+/// another window) returns to the grid and says so.
 struct FileGalleryView: View {
     @Environment(LibraryModel.self) private var library
     @State private var path: [LibraryDocument] = []
@@ -19,21 +19,21 @@ struct FileGalleryView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            Group {
-                if library.documents.isEmpty {
-                    ContentUnavailableView {
-                        Label("No Documents", systemImage: "doc")
-                    } actions: {
-                        Button("Import…") { isImporting = true }
-                    }
-                } else {
-                    List(library.documents) { document in
-                        NavigationLink(document.title, value: document)
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 16, alignment: .top)], spacing: 16) {
+                    Button { isImporting = true } label: { ImportCell() }
+                        .accessibilityLabel("Import…")
+                    ForEach(library.documents) { document in
+                        Button { path.append(document) } label: { DocumentCell(document: document) }
                             .contextMenu {
                                 Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
                             }
+                            .accessibilityLabel(document.title)
+                            .accessibilityAction(named: "Remove") { removal = document }
                     }
                 }
+                .buttonStyle(.plain)
+                .padding(16)
             }
             .navigationTitle("LeafPDF")
             .navigationDestination(for: LibraryDocument.self) { ReaderView(document: $0) }
