@@ -29,12 +29,30 @@ extension ShapeStyle where Self == Color {
     static var placeholderGrey: Color { Color.gray.opacity(0.3) }
 }
 
-/// A Document's cell. The placeholder stands in until the Cover exists.
+/// A Document's cell. The placeholder stands in until the Cover exists, then
+/// the Cover fades in. A Cover that is wider than the cell's page shape is
+/// scaled to fit and sits on the bottom edge; the space above it is transparent.
 struct DocumentCell: View {
+    @Environment(LibraryModel.self) private var library
     let document: LibraryDocument
+    @State private var cover: CGImage?
 
     var body: some View {
-        GalleryCell(caption: document.title) { Color.placeholderGrey }
+        GalleryCell(caption: document.title) {
+            ZStack {
+                if let cover {
+                    Image(decorative: cover, scale: 1)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .transition(.opacity)
+                } else {
+                    Color.placeholderGrey.transition(.opacity)
+                }
+            }
+            .animation(.default, value: cover == nil)
+        }
+        .task(id: document.id) { cover = await library.cover(for: document) }
     }
 }
 

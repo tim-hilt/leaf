@@ -8,8 +8,18 @@ import Testing
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     var detailsFile: URL { root.deletingLastPathComponent().appending(path: "\(root.lastPathComponent)-details.json") }
 
-    /// Opens the Library at `root`, keeping its saved Titles and Authors in `detailsFile`.
-    func openLibrary() throws -> LibraryModel { try LibraryModel(root: root, detailsFile: detailsFile) }
+    var coversFolder: URL { root.deletingLastPathComponent().appending(path: "\(root.lastPathComponent)-covers") }
+
+    /// Opens the Library at `root`, keeping its saved Titles and Authors in
+    /// `detailsFile` and its Covers in `coversFolder`.
+    func openLibrary() throws -> LibraryModel {
+        try LibraryModel(root: root, detailsFile: detailsFile, coversFolder: coversFolder)
+    }
+
+    /// The saved Cover files.
+    func savedCovers() -> [URL] {
+        (try? FileManager.default.contentsOfDirectory(at: coversFolder, includingPropertiesForKeys: nil)) ?? []
+    }
 
     @Test func startsEmpty() throws {
         let library = try openLibrary()
@@ -244,6 +254,57 @@ import Testing
         let library = try openLibrary()
 
         #expect(library.documents.map(\.title) == ["broken"])
+    }
+
+    @Test func aCoverIsAvailableAfterImportWithoutRendering() async throws {
+        let library = try openLibrary()
+        guard case .opened(let document) = await library.import(try writePDF(named: "a.pdf")) else {
+            Issue.record("expected .opened")
+            return
+        }
+        #expect(savedCovers().count == 1)
+        // Without its File, the Cover can only come from the saved copy.
+        try FileManager.default.removeItem(at: document.file)
+
+        let cover = try #require(await library.cover(for: document))
+
+        // US Letter, rendered 300 pt wide.
+        #expect(abs(Double(cover.height) / Double(cover.width) - 792.0 / 612.0) < 0.01)
+        #expect(cover.width >= 300)
+    }
+
+    @Test func aCoverIsRenderedAgainAfterItsSavedCopyIsDeleted() async throws {
+        let library = try openLibrary()
+        guard case .opened(let document) = await library.import(try writePDF(named: "a.pdf")) else {
+            Issue.record("expected .opened")
+            return
+        }
+        try FileManager.default.removeItem(at: coversFolder)
+
+        #expect(await library.cover(for: document) != nil)
+        #expect(savedCovers().count == 1)
+    }
+
+    @Test func aSavedCoverSurvivesReopeningTheLibrary() async throws {
+        guard case .opened(let document) = await (try openLibrary()).import(try writePDF(named: "a.pdf")) else {
+            Issue.record("expected .opened")
+            return
+        }
+        try FileManager.default.removeItem(at: document.file)
+
+        #expect(await (try openLibrary()).cover(for: document) != nil)
+    }
+
+    @Test func removeDeletesTheSavedCover() async throws {
+        let library = try openLibrary()
+        guard case .opened(let document) = await library.import(try writePDF(named: "a.pdf")) else {
+            Issue.record("expected .opened")
+            return
+        }
+
+        library.remove(document)
+
+        #expect(savedCovers().isEmpty)
     }
 
     @Test func aRunningImportShowsTheTitleAndProgressUntilItFinishes() async throws {

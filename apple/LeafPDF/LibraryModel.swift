@@ -78,31 +78,45 @@ final class LibraryModel {
     private(set) var runningImport: RunningImport?
     @ObservationIgnored private let core: LeafCore.Library
     @ObservationIgnored private let saved: DetailsStore
+    @ObservationIgnored private let covers: CoverStore
 
     /// Opens the Library folder at `root`, creating it if needed, with Titles
-    /// and Authors saved in `detailsFile`. Documents without saved details are
+    /// and Authors saved in `detailsFile` and Covers in `coversFolder`. Documents without saved details are
     /// listed by file name; a low-priority background pass then reads them
     /// from the PDFs, one at a time.
-    init(root: URL, detailsFile: URL) throws {
+    init(root: URL, detailsFile: URL, coversFolder: URL) throws {
         core = try LeafCore.Library.open(root: root.path)
         saved = DetailsStore(file: detailsFile)
+        covers = CoverStore(folder: coversFolder)
         refresh()
         readMissingDetails()
     }
 
-    /// The Library in a hidden folder in Application Support.
+    /// The Library in a hidden folder in Application Support, with Covers in
+    /// the system Caches folder.
     static func inApplicationSupport() throws -> LibraryModel {
-        let support = try FileManager.default.url(
+        let files = FileManager.default
+        let support = try files.url(
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let caches = try files.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         return try LibraryModel(
             root: support.appending(path: "Library", directoryHint: .isDirectory),
-            detailsFile: support.appending(path: "Details.json"))
+            detailsFile: support.appending(path: "Details.json"),
+            coversFolder: caches.appending(path: "Covers", directoryHint: .isDirectory))
+    }
+
+    /// The Cover of `document`: the saved one, or page 1 rendered off the main
+    /// thread and saved. Nil if it can't be rendered; the Gallery then keeps
+    /// the placeholder.
+    func cover(for document: LibraryDocument) async -> CGImage? {
+        let covers = covers, id = document.id, file = document.file
+        return await Task.detached { covers.cover(id: id, file: file) }.value
     }
 
     /// Copies the File at `url` into the Library without blocking the main
     /// thread, publishing `runningImport` meanwhile. Files that aren't
     /// readable, unlocked PDFs are rejected before anything is copied. The
-    /// Document's Title and Author are saved before this returns.
+    /// Document's Title, Author and Cover are saved before this returns.
     func `import`(_ url: URL) async -> ImportOutcome {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -111,12 +125,13 @@ final class LibraryModel {
         runningImport = RunningImport(title: url.deletingPathExtension().lastPathComponent)
         defer { runningImport = nil }
 
-        let read: DocumentDetails?
-        switch await Task.detached(operation: { Self.check(url) }).value {
+        let read: ReadPDF?
+        let covers = covers
+        switch await Task.detached(operation: { Self.check(url, covers: covers) }).value {
         case .failure(let rejection): return .rejected(rejection)
         case .success(let details): read = details
         }
-        if let read { runningImport?.title = read.title }
+        if let read { runningImport?.title = read.details.title }
 
         let core = core, path = url.path
         // Reports arriving after the Import finished find no runningImport and do nothing.
@@ -131,7 +146,10 @@ final class LibraryModel {
                 case .imported(let stored): (stored, true)
                 case .alreadyImported(let stored): (stored, false)
                 }
-            if let read, saved[stored.id] == nil { saved[stored.id] = read }
+            if let read {
+                if saved[stored.id] == nil { saved[stored.id] = read.details }
+                if let cover = read.cover { covers.save(cover, id: stored.id) }
+            }
             refresh()
             guard let document = documents.first(where: { $0.id == stored.id }) else {
                 return .failed("The imported file couldn't be opened.")
@@ -144,19 +162,30 @@ final class LibraryModel {
         }
     }
 
-    /// Deletes the Document, its File and its saved Title and Author. If that
+    /// Deletes the Document, its File and its saved Title, Author and Cover. If that
     /// fails, the Document stays in `documents`.
     func remove(_ document: LibraryDocument) {
-        if (try? core.remove(id: document.id)) != nil { saved[document.id] = nil }
+        if (try? core.remove(id: document.id)) != nil {
+            saved[document.id] = nil
+            covers.remove(document.id)
+        }
         refresh()
     }
 
-    /// The Title and Author of the File at `url` if it can be Imported, or why
-    /// not. A File that can't be read at all isn't rejected (nil details):
-    /// copying it fails with the system's own reason. Reads the File, so keep
+    /// What Import reads from the PDF it opened to check the File.
+    private struct ReadPDF: Sendable {
+        let details: DocumentDetails
+        let cover: CGImage?
+    }
+
+    /// What the File at `url` yields if it can be Imported, or why not. A File
+    /// that can't be read at all isn't rejected (nil): copying it fails with
+    /// the system's own reason. Reads the File and renders its Cover, so keep
     /// it off the main thread.
-    private nonisolated static func check(_ url: URL) -> Result<DocumentDetails?, ImportRejection> {
-        if let pdf = PDFDocument(url: url) { return pdf.isLocked ? .failure(.locked) : .success(pdf.details) }
+    private nonisolated static func check(_ url: URL, covers: CoverStore) -> Result<ReadPDF?, ImportRejection> {
+        if let pdf = PDFDocument(url: url) {
+            return pdf.isLocked ? .failure(.locked) : .success(ReadPDF(details: pdf.details, cover: covers.render(pdf)))
+        }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return .success(nil) }
         defer { try? handle.close() }
         let head = (try? handle.read(upToCount: 5)) ?? Data()
