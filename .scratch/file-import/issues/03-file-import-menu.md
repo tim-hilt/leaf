@@ -4,9 +4,9 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] "Import…" ⌘O replaces "New" in the File menu on macOS and iPadOS
-- [ ] It opens the same picker and Import flow as "+"
-- [ ] From the Reader, a successful Import replaces the open Document with the new one
+- [x] "Import…" ⌘O replaces "New" in the File menu on macOS and iPadOS
+- [x] It opens the same picker and Import flow as "+"
+- [x] From the Reader, a successful Import replaces the open Document with the new one
 - [ ] Manually checked on Mac and iPad with a keyboard

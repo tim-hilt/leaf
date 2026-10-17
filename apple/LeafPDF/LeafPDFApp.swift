@@ -11,8 +11,11 @@ struct LeafPDFApp: App {
             FileGalleryView()
                 .environment(library)
         }
-        #if os(macOS)
-            .commands { ReaderCommands() }
-        #endif
+        .commands {
+            ImportCommands()
+            #if os(macOS)
+                ReaderCommands()
+            #endif
+        }
     }
 }

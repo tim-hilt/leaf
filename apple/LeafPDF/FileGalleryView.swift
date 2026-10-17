@@ -2,8 +2,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Lists the Library, newest Import first (see docs/features.md, "File
-/// Gallery"), and opens the tapped Document in the Reader. Tapping "+"
-/// Imports a PDF and opens it. Placeholder list until the grid exists.
+/// Gallery"), and opens the tapped Document in the Reader. "+" and File >
+/// Import… (also from the Reader) Import a PDF and open it, replacing any
+/// open Document. Placeholder list until the grid exists.
 struct FileGalleryView: View {
     @Environment(LibraryModel.self) private var library
     @State private var path: [LibraryDocument] = []
@@ -32,6 +33,7 @@ struct FileGalleryView: View {
             }
         }
         .disabled(library.runningImport != nil)
+        .focusedSceneValue(\.isImporting, library.runningImport == nil ? $isImporting : nil)
         .overlay {
             if let running = library.runningImport { ImportProgressModal(running: running) }
         }
