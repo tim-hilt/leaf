@@ -722,4 +722,50 @@ mod tests {
 
         assert_eq!(listed_progress(&library, &document.id), None);
     }
+
+    /// Imports `count` distinct Documents and saves Reading Progress for each.
+    fn library_of_opened_documents(scratch: &Scratch, count: u32) -> Library {
+        let library = scratch.library();
+        for n in 0..count {
+            let source = scratch.file("source.pdf", format!("document {n}").as_bytes());
+            let document = import_new(&library, &source);
+            library
+                .save_progress(&document.id, &progress(n, u64::from(n) + 1))
+                .unwrap();
+        }
+        library
+    }
+
+    #[test]
+    fn a_documents_state_stays_under_64_kb_after_1000_saves() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        for n in 0..1_000 {
+            library
+                .save_progress(&document.id, &progress(n % 300, u64::from(n) + 1))
+                .unwrap();
+        }
+
+        let state = fs::read(document.path.parent().unwrap().join(STATE)).unwrap();
+        assert!(state.len() < 64 * 1024, "state is {} bytes", state.len());
+    }
+
+    /// Debug timings mean nothing: run with
+    /// `cargo test --release -- --ignored listing_1000`.
+    #[test]
+    #[ignore = "timing budget; run in a release build"]
+    fn listing_1000_documents_with_reading_progress_takes_under_100_ms() {
+        let scratch = Scratch::new();
+        let library = library_of_opened_documents(&scratch, 1_000);
+
+        let start = std::time::Instant::now();
+        let documents = library.documents().unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(documents.len(), 1_000);
+        assert!(documents.iter().all(|d| d.progress.is_some()));
+        assert!(elapsed < Duration::from_millis(100), "took {elapsed:?}");
+    }
 }
