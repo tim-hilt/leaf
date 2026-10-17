@@ -4,10 +4,10 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Client Library model returns `rejected(.notPDF | .unreadable | .locked)` before calling the core (Swift tests with garbage bytes and a locked PDF)
-- [ ] Owner-password-only PDFs are accepted
-- [ ] A failing core Import removes its staging folder and leaves the Library unchanged (Rust test, e.g. missing source)
-- [ ] Core errors reach Swift as one FFI error carrying the system message; the model returns `failed(message)`
-- [ ] Alerts: "Password-protected PDFs aren't supported yet" for locked PDFs, a clear message for unreadable Files, "Couldn't import 'X'" plus the system message for failures
+- [x] Client Library model returns `rejected(.notPDF | .unreadable | .locked)` before calling the core (Swift tests with garbage bytes and a locked PDF)
+- [x] Owner-password-only PDFs are accepted
+- [x] A failing core Import removes its staging folder and leaves the Library unchanged (Rust test, e.g. missing source)
+- [x] Core errors reach Swift as one FFI error carrying the system message; the model returns `failed(message)`
+- [x] Alerts: "Password-protected PDFs aren't supported yet" for locked PDFs, a clear message for unreadable Files, "Couldn't import 'X'" plus the system message for failures

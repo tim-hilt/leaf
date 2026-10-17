@@ -64,17 +64,70 @@ import Testing
         #expect(library.documents == [first])
     }
 
-    @Test func importingAMissingFileFails() async throws {
+    @Test func importingAMissingFileFailsWithTheSystemsReason() async throws {
         let library = try LibraryModel(root: root)
         let missing = root.appending(path: "missing.pdf")
 
         let outcome = await library.import(missing)
 
-        guard case .failed = outcome else {
+        guard case .failed(let message) = outcome else {
             Issue.record("expected .failed, got \(outcome)")
             return
         }
+        #expect(message.localizedCaseInsensitiveContains("no such file"))
         #expect(library.documents.isEmpty)
+    }
+
+    @Test func garbageBytesAreRejectedAsNotAPDFAndNothingIsCopied() async throws {
+        let library = try LibraryModel(root: root)
+        let garbage = try writeFile(named: "notes.pdf", bytes: Data("just some text".utf8))
+
+        let outcome = await library.import(garbage)
+
+        guard case .rejected(.notPDF) = outcome else {
+            Issue.record("expected .rejected(.notPDF), got \(outcome)")
+            return
+        }
+        #expect(library.documents.isEmpty)
+    }
+
+    @Test func aDamagedPDFIsRejectedAsUnreadable() async throws {
+        let library = try LibraryModel(root: root)
+        let damaged = try writeFile(named: "damaged.pdf", bytes: Data("%PDF-1.7\nnot really".utf8))
+
+        let outcome = await library.import(damaged)
+
+        guard case .rejected(.unreadable) = outcome else {
+            Issue.record("expected .rejected(.unreadable), got \(outcome)")
+            return
+        }
+        #expect(library.documents.isEmpty)
+    }
+
+    @Test func aPasswordProtectedPDFIsRejectedAsLockedAndNothingIsCopied() async throws {
+        let library = try LibraryModel(root: root)
+        let locked = try writePDF(named: "locked.pdf", userPassword: "secret", ownerPassword: "secret")
+
+        let outcome = await library.import(locked)
+
+        guard case .rejected(.locked) = outcome else {
+            Issue.record("expected .rejected(.locked), got \(outcome)")
+            return
+        }
+        #expect(library.documents.isEmpty)
+    }
+
+    @Test func aPDFThatOnlyRestrictsPermissionsImportsNormally() async throws {
+        let library = try LibraryModel(root: root)
+        let restricted = try writePDF(named: "restricted.pdf", ownerPassword: "owner")
+
+        let outcome = await library.import(restricted)
+
+        guard case .opened = outcome else {
+            Issue.record("expected .opened, got \(outcome)")
+            return
+        }
+        #expect(library.documents.count == 1)
     }
 
     @Test func reopeningTheLibraryKeepsItsDocuments() async throws {

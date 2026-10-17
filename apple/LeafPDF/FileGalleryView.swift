@@ -9,7 +9,7 @@ struct FileGalleryView: View {
     @Environment(LibraryModel.self) private var library
     @State private var path: [LibraryDocument] = []
     @State private var isImporting = false
-    @State private var failure: String?
+    @State private var rejection: ImportAlert?
     @State private var duplicate: LibraryDocument?
 
     var body: some View {
@@ -46,10 +46,11 @@ struct FileGalleryView: View {
             }
         }
         .alert(
-            "Couldn't import", isPresented: Binding(get: { failure != nil }, set: { _ in failure = nil })
-        ) {
-        } message: {
-            Text(failure ?? "")
+            rejection?.title ?? "", isPresented: Binding(get: { rejection != nil }, set: { _ in rejection = nil }),
+            presenting: rejection
+        ) { _ in
+        } message: { alert in
+            Text(alert.message)
         }
         .alert(
             "Already in your Library", isPresented: Binding(get: { duplicate != nil }, set: { _ in duplicate = nil }),
@@ -66,7 +67,34 @@ struct FileGalleryView: View {
         switch await library.import(url) {
         case .opened(let document): path = [document]
         case .duplicate(let document): duplicate = document
-        case .failed(let message): failure = message
+        case .rejected(let reason): rejection = ImportAlert(rejected: url, reason: reason)
+        case .failed(let message): rejection = ImportAlert(failed: url, message: message)
         }
+    }
+}
+
+/// The alert for an Import that didn't happen.
+private struct ImportAlert {
+    let title: String
+    let message: String
+
+    init(rejected url: URL, reason: ImportRejection) {
+        let name = url.lastPathComponent
+        switch reason {
+        case .notPDF:
+            title = "Not a PDF"
+            message = "“\(name)” isn't a PDF."
+        case .unreadable:
+            title = "Couldn't read PDF"
+            message = "“\(name)” can't be opened. The file may be damaged."
+        case .locked:
+            title = "Password-protected"
+            message = "Password-protected PDFs aren't supported yet."
+        }
+    }
+
+    init(failed url: URL, message: String) {
+        title = "Couldn't import “\(url.lastPathComponent)”"
+        self.message = message
     }
 }

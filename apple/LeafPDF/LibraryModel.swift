@@ -19,10 +19,22 @@ struct LibraryDocument: Identifiable, Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
+/// Why a File isn't Imported at all; nothing was copied.
+enum ImportRejection {
+    /// Not a PDF.
+    case notPDF
+    /// Looks like a PDF, but PDFKit can't open it.
+    case unreadable
+    /// Needs a password to open. PDFs that only restrict permissions aren't locked.
+    case locked
+}
+
 enum ImportOutcome {
     case opened(LibraryDocument)
     /// The Library already holds this File's content: the existing Document.
     case duplicate(LibraryDocument)
+    case rejected(ImportRejection)
+    /// Copying failed; the system's reason. Nothing was left behind.
     case failed(String)
 }
 
@@ -69,12 +81,16 @@ final class LibraryModel {
     }
 
     /// Copies the File at `url` into the Library without blocking the main
-    /// thread, publishing `runningImport` meanwhile.
+    /// thread, publishing `runningImport` meanwhile. Files that aren't
+    /// readable, unlocked PDFs are rejected before anything is copied.
     func `import`(_ url: URL) async -> ImportOutcome {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
 
-        runningImport = RunningImport(title: PDFDocument(url: url)?.title ?? url.deletingPathExtension().lastPathComponent)
+        let pdf = PDFDocument(url: url)
+        if let rejection = Self.rejection(of: url, opened: pdf) { return .rejected(rejection) }
+
+        runningImport = RunningImport(title: pdf?.title ?? url.deletingPathExtension().lastPathComponent)
         defer { runningImport = nil }
 
         let core = core, path = url.path
@@ -100,6 +116,17 @@ final class LibraryModel {
         } catch {
             return .failed(error.localizedDescription)
         }
+    }
+
+    /// Why the File at `url` can't be Imported, given what PDFKit made of it
+    /// (`opened`). A File that can't be read at all isn't rejected: copying it
+    /// fails with the system's own reason.
+    private static func rejection(of url: URL, opened pdf: PDFDocument?) -> ImportRejection? {
+        if let pdf { return pdf.isLocked ? .locked : nil }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let head = (try? handle.read(upToCount: 5)) ?? Data()
+        return head == Data("%PDF-".utf8) ? .unreadable : .notPDF
     }
 
     private func refresh() {
