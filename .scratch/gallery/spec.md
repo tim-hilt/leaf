@@ -101,7 +101,7 @@ The Gallery shows every Document as its Cover with its Title underneath, in a ve
   - A Document no longer holds an open PDF. It exposes its ID, its stored File's location, its original file name, and its saved Title and Author if known.
   - The Title shown is the saved Title, or the file name without extension until the Title has been read. This keeps the glossary's rule: the PDF's title, or the file name if it has none.
   - The PDF is opened only when the Reader shows the Document.
-  - The model exposes the sort choice, the Library Search text and the resulting visible Documents. The "+" cell isn't part of the model.
+  - The model exposes the sort choice and the visible Documents for a Library Search text. The search text belongs to each window, like the search field. The "+" cell isn't part of the model.
   - Library Search uses `localizedStandardContains` on the Title, the original file name and the Author. Title sorting uses `localizedStandardCompare`. Date Imported uses the core's newest-first order, reversed when asked.
   - The sort choice is stored per device (user defaults), shared by all windows and not synced.
   - Import (after the existing PDFKit check, with the PDF already open) saves the Title, Author and Cover before reporting the outcome.

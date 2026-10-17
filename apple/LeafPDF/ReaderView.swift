@@ -24,7 +24,7 @@ struct ReaderView: View {
                 Color.clear
             }
         }
-        .task { pdf = PDFDocument(url: document.file) }
+        .task { if pdf == nil { pdf = PDFDocument(url: document.file) } }
         .navigationTitle(document.title)
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

@@ -4,9 +4,9 @@
 
 **Blocked by:** 02
 
-**Status:** in-review
+**Status:** done
 
-- [x] The Library model exposes the Library Search text. The visible Documents match it with `localizedStandardContains` on Title, original file name and Author
+- [x] The Library model gives the visible Documents for a Library Search text, kept per window. They match it with `localizedStandardContains` on Title, original file name and Author
 - [x] Results keep the current order
 - [x] A `.searchable` field. ⌘F focuses it on Mac and iPad
 - [x] The "+" cell stays first while searching

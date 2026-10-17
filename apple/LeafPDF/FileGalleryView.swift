@@ -2,9 +2,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// The Library as a vertically scrolling grid of Documents in the order chosen
-/// in the toolbar's sort menu, led by a "+" cell that Imports. The search field
-/// (⌘F on Mac and iPad) narrows it to matching Documents; with none, "No
-/// Results" follows the "+" cell. A click or tap opens a Document in the
+/// in the toolbar's sort menu, led by a "+" cell that Imports. The window's own
+/// search field (⌘F on Mac and iPad) narrows it to matching Documents; with
+/// none, "No Results" follows the "+" cell. A click or tap opens a Document in the
 /// Reader. The toolbar "+" and File > Import… (also from the Reader) Import a
 /// PDF and open it, replacing any open Document. A cell's context menu
 /// (long-press, right-click) or VoiceOver action offers "Remove", after
@@ -30,11 +30,16 @@ struct FileGalleryView: View {
     @State private var highlighted: GalleryItem?
     @FocusState private var isGridFocused: Bool
     @FocusState private var isSearchFocused: Bool
+    /// This window's Library Search; empty when not searching.
+    @State private var searchText = ""
 
+    /// The Documents shown, in grid order after the "+" cell.
+    private var visibleDocuments: [LibraryDocument] { library.visibleDocuments(matching: searchText) }
     /// Every cell in grid order.
-    private var items: [GalleryItem] { [.importCell] + library.visibleDocuments.map { .document($0.id) } }
+    private var items: [GalleryItem] { [.importCell] + visibleDocuments.map { .document($0.id) } }
 
     var body: some View {
+        let visibleDocuments = visibleDocuments
         NavigationStack(path: $path) {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -47,7 +52,7 @@ struct FileGalleryView: View {
                                 .galleryHighlight(highlighted == .importCell)
                                 .id(GalleryItem.importCell)
                                 .accessibilityLabel("Import…")
-                            ForEach(library.visibleDocuments) { document in
+                            ForEach(visibleDocuments) { document in
                                 Button { open(.document(document.id)) } label: { DocumentCell(document: document) }
                                     .galleryHighlight(highlighted == .document(document.id))
                                     .id(GalleryItem.document(document.id))
@@ -60,9 +65,9 @@ struct FileGalleryView: View {
                         }
                         .buttonStyle(.plain)
                         // Animates a Document to its new place when the order changes.
-                        .animation(.default, value: library.visibleDocuments.map(\.id))
-                        if library.visibleDocuments.isEmpty && !library.searchText.isEmpty {
-                            Text("No Results for “\(library.searchText)”").foregroundStyle(.secondary)
+                        .animation(.default, value: visibleDocuments.map(\.id))
+                        if visibleDocuments.isEmpty && !searchText.isEmpty {
+                            Text("No Results for “\(searchText)”").foregroundStyle(.secondary)
                         }
                     }
                     .padding(Layout.spacing)
@@ -78,7 +83,7 @@ struct FileGalleryView: View {
             }
             .onScrollPhaseChange { _, phase in scroll.scrollingChanged(isScrolling: phase != .idle) }
             .environment(scroll)
-            .searchable(text: Bindable(library).searchText)
+            .searchable(text: $searchText)
             .searchFocused($isSearchFocused)
             .navigationTitle("LeafPDF")
             .navigationDestination(for: LibraryDocument.self) { ReaderView(document: $0) }
@@ -102,7 +107,7 @@ struct FileGalleryView: View {
             }
         }
         .onChange(of: library.documents) { _, documents in
-            guard let gone = path.first(where: { !documents.contains($0) }) else { return }
+            guard let gone = path.first(where: { open in !documents.contains { $0.id == open.id } }) else { return }
             path = []
             removedWhileOpen = gone
         }
@@ -156,7 +161,7 @@ struct FileGalleryView: View {
         switch item {
         case .importCell: isImporting = true
         case .document(let id):
-            if let document = library.visibleDocuments.first(where: { $0.id == id }) { path.append(document) }
+            if let document = visibleDocuments.first(where: { $0.id == id }) { path.append(document) }
         }
     }
 
@@ -165,7 +170,7 @@ struct FileGalleryView: View {
     private func handleArrow(_ arrow: GridHighlight.Arrow) -> Bool {
         guard path.isEmpty else { return false }
         if isSearchFocused {
-            guard arrow == .down, let first = library.visibleDocuments.first else { return false }
+            guard arrow == .down, let first = visibleDocuments.first else { return false }
             highlighted = .document(first.id)
             isGridFocused = true
             return true
@@ -184,7 +189,7 @@ struct FileGalleryView: View {
             open(highlighted)
         case .delete where press.modifiers == .command:
             guard case .document(let id) = highlighted else { return false }
-            removal = library.visibleDocuments.first { $0.id == id }
+            removal = visibleDocuments.first { $0.id == id }
         default:
             return false
         }

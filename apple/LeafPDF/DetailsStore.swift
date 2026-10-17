@@ -1,7 +1,7 @@
 import Foundation
 
 /// What the Gallery shows and searches for a Document, read from its PDF once.
-struct DocumentDetails: Codable, Equatable, Sendable {
+struct DocumentDetails: Codable, Hashable, Sendable {
     /// The PDF's title, or its file name (without extension) if it has none.
     var title: String
     var author: String?

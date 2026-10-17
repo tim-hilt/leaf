@@ -47,8 +47,9 @@ extension ShapeStyle where Self == Color {
 /// A Document's cell. The placeholder stands in until the Cover exists, then
 /// the Cover fades in. A saved Cover loads as soon as the cell appears; a new
 /// one is rendered only while the Gallery is still (see `ScrollActivity`), and
-/// that request is dropped if the cell scrolls away first. A Cover that is wider than the cell's page shape is
-/// scaled to fit and sits on the bottom edge; the space above it is transparent.
+/// that request is dropped if the cell scrolls away first. A Cover wider than
+/// the cell's page shape is scaled to fit and sits on the bottom edge; the
+/// space above it is transparent.
 struct DocumentCell: View {
     @Environment(LibraryModel.self) private var library
     @Environment(ScrollActivity.self) private var scroll

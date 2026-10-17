@@ -227,11 +227,14 @@ import Testing
         try FileManager.default.removeItem(at: detailsFile)
 
         let library = try openLibrary()
-        #expect(library.documents.map(\.title) == ["scan0042"])
-        #expect(library.documents.first?.author == nil)
+        let stale = try #require(library.documents.first)
+        #expect(stale.title == "scan0042")
+        #expect(stale.author == nil)
 
         try await waitUntil { library.documents.first?.title == "Moby-Dick" }
         #expect(library.documents.first?.author == "Melville")
+        // Views holding the stale value see a change, so their caption updates.
+        #expect(library.documents.first != stale)
         // Saved, so the next launch has them at once.
         #expect(try openLibrary().documents.first?.title == "Moby-Dick")
     }
@@ -366,7 +369,7 @@ import Testing
         let library = try await libraryForSorting()
 
         #expect(library.sort == LibrarySort(key: .dateImported, isReversed: false))
-        #expect(library.visibleDocuments.map(\.title) == ["Zebra", "résumé 10", "Resume 2", "apple"])
+        #expect(library.visibleDocuments(matching: "").map(\.title) == ["Zebra", "résumé 10", "Resume 2", "apple"])
     }
 
     @Test func reversingDateImportedListsTheOldestFirst() async throws {
@@ -374,7 +377,7 @@ import Testing
 
         library.sort.isReversed = true
 
-        #expect(library.visibleDocuments.map(\.title) == ["apple", "Resume 2", "résumé 10", "Zebra"])
+        #expect(library.visibleDocuments(matching: "").map(\.title) == ["apple", "Resume 2", "résumé 10", "Zebra"])
     }
 
     @Test func sortsByTitleLikeFinder() async throws {
@@ -382,7 +385,7 @@ import Testing
 
         library.sort.key = .title
 
-        #expect(library.visibleDocuments.map(\.title) == ["apple", "Resume 2", "résumé 10", "Zebra"])
+        #expect(library.visibleDocuments(matching: "").map(\.title) == ["apple", "Resume 2", "résumé 10", "Zebra"])
     }
 
     @Test func reversingTitleListsZToA() async throws {
@@ -390,7 +393,7 @@ import Testing
 
         library.sort = LibrarySort(key: .title, isReversed: true)
 
-        #expect(library.visibleDocuments.map(\.title) == ["Zebra", "résumé 10", "Resume 2", "apple"])
+        #expect(library.visibleDocuments(matching: "").map(\.title) == ["Zebra", "résumé 10", "Resume 2", "apple"])
     }
 
     @Test func aDocumentWhoseTitleArrivesLaterMovesToItsPlace() async throws {
@@ -401,9 +404,9 @@ import Testing
         let library = try openLibrary()
         library.sort.key = .title
         // Still by file name: the background pass can't publish before the next suspension.
-        #expect(library.visibleDocuments.map(\.title) == ["mmm", "zzz"])
+        #expect(library.visibleDocuments(matching: "").map(\.title) == ["mmm", "zzz"])
 
-        try await waitUntil { library.visibleDocuments.map(\.title) == ["Alpha", "Mike"] }
+        try await waitUntil { library.visibleDocuments(matching: "").map(\.title) == ["Alpha", "Mike"] }
     }
 
     @Test func theSortChoiceIsRememberedOnThisDevice() throws {
@@ -421,12 +424,9 @@ import Testing
         _ = await library.import(try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
         _ = await library.import(try writePDF(named: "scan0042.pdf", metadataTitle: "Walden", author: "Thoreau"))
 
-        library.searchText = "oby"
-        #expect(library.visibleDocuments.map(\.title) == ["Moby-Dick"])
-        library.searchText = "can004"
-        #expect(library.visibleDocuments.map(\.title) == ["Walden"])
-        library.searchText = "melv"
-        #expect(library.visibleDocuments.map(\.title) == ["Moby-Dick"])
+        #expect(library.visibleDocuments(matching: "oby").map(\.title) == ["Moby-Dick"])
+        #expect(library.visibleDocuments(matching: "can004").map(\.title) == ["Walden"])
+        #expect(library.visibleDocuments(matching: "melv").map(\.title) == ["Moby-Dick"])
     }
 
     @Test func searchIgnoresCaseAndAccents() async throws {
@@ -434,29 +434,23 @@ import Testing
         try await importPDF(titled: "Résumé", into: library)
         try await importPDF(titled: "Other", into: library)
 
-        library.searchText = "RESUME"
-
-        #expect(library.visibleDocuments.map(\.title) == ["Résumé"])
+        #expect(library.visibleDocuments(matching: "RESUME").map(\.title) == ["Résumé"])
     }
 
     @Test func searchKeepsTheCurrentOrder() async throws {
         let library = try await libraryForSorting()
 
-        library.searchText = "resume"
-        #expect(library.visibleDocuments.map(\.title) == ["résumé 10", "Resume 2"])
+        #expect(library.visibleDocuments(matching: "resume").map(\.title) == ["résumé 10", "Resume 2"])
 
         library.sort.key = .title
-        #expect(library.visibleDocuments.map(\.title) == ["Resume 2", "résumé 10"])
+        #expect(library.visibleDocuments(matching: "resume").map(\.title) == ["Resume 2", "résumé 10"])
     }
 
-    @Test func noMatchesShowNothingAndClearingTheSearchShowsEverything() async throws {
+    @Test func noMatchesShowNothingAndABlankSearchShowsEverything() async throws {
         let library = try await libraryForSorting()
 
-        library.searchText = "xyz"
-        #expect(library.visibleDocuments.isEmpty)
-
-        library.searchText = ""
-        #expect(library.visibleDocuments.count == 4)
+        #expect(library.visibleDocuments(matching: "xyz").isEmpty)
+        #expect(library.visibleDocuments(matching: " ").count == 4)
     }
 
     @Test func aDocumentWhoseAuthorArrivesLaterJoinsTheResults() async throws {
@@ -464,10 +458,9 @@ import Testing
         _ = await first.import(try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
         try FileManager.default.removeItem(at: detailsFile)
         let library = try openLibrary()
-        library.searchText = "melville"
-        #expect(library.visibleDocuments.isEmpty)
+        #expect(library.visibleDocuments(matching: "melville").isEmpty)
 
-        try await waitUntil { library.visibleDocuments.map(\.title) == ["Moby-Dick"] }
+        try await waitUntil { library.visibleDocuments(matching: "melville").map(\.title) == ["Moby-Dick"] }
     }
 
     /// Waits up to 10 s for `condition`, which the background pass makes true.

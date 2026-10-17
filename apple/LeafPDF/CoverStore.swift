@@ -34,7 +34,7 @@ struct CoverStore: Sendable {
     /// The Cover of Document `id`: the saved one, or else page 1 of the PDF at
     /// `file`, rendered and saved. Nil if it can't be rendered.
     func cover(id: String, file: URL) -> CGImage? {
-        if let saved = load(id) { return saved }
+        if let saved = saved(id) { return saved }
         guard let pdf = PDFDocument(url: file), let cover = render(pdf) else { return nil }
         save(cover, id: id)
         return cover
@@ -61,11 +61,11 @@ struct CoverStore: Sendable {
     }
 
     /// The saved Cover of Document `id`, or nil if there is none. Never renders.
-    func saved(_ id: String) -> CGImage? { load(id) }
-
-    private func load(_ id: String) -> CGImage? {
-        CGImageSourceCreateWithURL(url(id) as CFURL, nil)
-            .flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+    /// Decoded here, so drawing it on the main thread doesn't stall scrolling.
+    func saved(_ id: String) -> CGImage? {
+        CGImageSourceCreateWithURL(url(id) as CFURL, nil).flatMap {
+            CGImageSourceCreateImageAtIndex($0, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+        }
     }
 
     private func url(_ id: String) -> URL { folder.appending(path: "\(id).jpg") }

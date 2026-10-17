@@ -3,6 +3,8 @@ import Observation
 import PDFKit
 
 /// A Document in the Library. Holds no open PDF: the Reader opens `file`.
+/// Equal only with equal details, so views showing a stale copy update when the
+/// Title arrives; compare `id`s to tell whether two values are the same Document.
 struct LibraryDocument: Identifiable, Hashable {
     let id: String
     /// The stored File.
@@ -21,16 +23,6 @@ struct LibraryDocument: Identifiable, Hashable {
         file = URL(fileURLWithPath: stored.path)
         self.details = details
     }
-
-    /// Whether `text` is part of the Title, original file name or Author,
-    /// ignoring case and accents. Empty (or blank) `text` matches everything.
-    func matches(_ text: String) -> Bool {
-        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty || [title, fileName, author ?? ""].contains { $0.localizedStandardContains(text) }
-    }
-
-    static func == (a: Self, b: Self) -> Bool { a.id == b.id }
-    func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
 /// Why a File isn't Imported at all; nothing was copied.
@@ -81,8 +73,8 @@ private final class ProgressRelay: ImportProgress {
 final class LibraryModel {
     /// Every Document, newest Import first.
     private(set) var documents: [LibraryDocument] = [] { didSet { reorder() } }
-    /// How the Gallery orders `visibleDocuments`. Remembered on this device
-    /// (user defaults, not synced); setting it re-orders at once.
+    /// How the Gallery orders its Documents. Remembered on this device (user
+    /// defaults, not synced) and shared by all windows; setting it re-orders at once.
     var sort: LibrarySort {
         didSet {
             guard sort != oldValue else { return }
@@ -90,15 +82,8 @@ final class LibraryModel {
             reorder()
         }
     }
-    /// What Library Search looks for; empty when not searching. Setting it
-    /// updates `visibleDocuments` at once.
-    var searchText = "" {
-        didSet { if searchText != oldValue { reorder() } }
-    }
-    /// The Documents the Gallery shows: those matching `searchText`, in `sort`
-    /// order. Kept up to date as Titles arrive, so a Document moves to its
-    /// place (or into the results) when its Title does.
-    private(set) var visibleDocuments: [LibraryDocument] = []
+    /// `documents` in `sort` order, kept up to date as Titles arrive.
+    private var sorted: [LibraryDocument] = []
     /// Non-nil from the start of an Import until it finishes. The UI is
     /// disabled meanwhile.
     private(set) var runningImport: RunningImport?
@@ -136,8 +121,21 @@ final class LibraryModel {
             defaults: .standard)
     }
 
-    /// The saved Cover of `document`, loaded off the main thread, or nil if
-    /// there is none. Cheap, so safe to call while scrolling; never renders.
+    /// The Documents a Gallery shows for Library Search `searchText`: those
+    /// whose Title, original file name or Author contains it, ignoring case
+    /// and accents, in `sort` order. Blank `searchText` matches every Document.
+    /// A Document moves to its place (or into the results) when its Title and
+    /// Author arrive.
+    func visibleDocuments(matching searchText: String) -> [LibraryDocument] {
+        let text = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return sorted }
+        return sorted.filter { document in
+            [document.title, document.fileName, document.author ?? ""].contains { $0.localizedStandardContains(text) }
+        }
+    }
+
+    /// The saved Cover of `document`, loaded and decoded off the main thread,
+    /// or nil if there is none. Cheap, so safe to call while scrolling; never renders.
     func savedCover(for document: LibraryDocument) async -> CGImage? {
         let covers = covers, id = document.id
         return await Task.detached { covers.saved(id) }.value
@@ -145,12 +143,13 @@ final class LibraryModel {
 
     /// The Cover of `document`: the saved one, or page 1 rendered off the main
     /// thread and saved. Nil if it can't be rendered; the Gallery then keeps
-    /// the placeholder. A caller that is already cancelled gets nil without
-    /// any rendering, so requests of cells that scrolled away are dropped.
+    /// the placeholder. Cancelling the caller drops a request whose rendering
+    /// hasn't started yet, so cells that scrolled away don't hold up the others.
     func cover(for document: LibraryDocument) async -> CGImage? {
         guard !Task.isCancelled else { return nil }
         let covers = covers, id = document.id, file = document.file
-        return await Task.detached { covers.cover(id: id, file: file) }.value
+        let loading = Task.detached(priority: .utility) { Task.isCancelled ? nil : covers.cover(id: id, file: file) }
+        return await withTaskCancellationHandler { await loading.value } onCancel: { loading.cancel() }
     }
 
     /// Copies the File at `url` into the Library without blocking the main
@@ -232,7 +231,7 @@ final class LibraryModel {
         return .failure(head == Data("%PDF-".utf8) ? .unreadable : .notPDF)
     }
 
-    private func reorder() { visibleDocuments = sort.ordered(documents).filter { $0.matches(searchText) } }
+    private func reorder() { sorted = sort.ordered(documents) }
 
     /// Reloads `documents` from the core, with their saved details. If the
     /// listing fails, `documents` stays as it was rather than looking as if

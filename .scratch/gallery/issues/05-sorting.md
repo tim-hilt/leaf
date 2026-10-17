@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** in-review
+**Status:** done
 
 - [x] The Library model exposes the sort choice and the resulting visible Documents
 - [x] Date Imported uses the core's newest-first order, reversed on request

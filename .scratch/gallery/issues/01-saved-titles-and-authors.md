@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** in-review
+**Status:** done
 
 - [x] A Document no longer holds an open PDF. It exposes its ID, stored File location, original file name, and saved Title and Author if known
 - [x] The Title shown is the saved Title, or the file name without extension until it's read
