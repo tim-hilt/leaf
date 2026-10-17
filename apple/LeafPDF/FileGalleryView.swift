@@ -10,6 +10,7 @@ struct FileGalleryView: View {
     @State private var path: [LibraryDocument] = []
     @State private var isImporting = false
     @State private var failure: String?
+    @State private var duplicate: LibraryDocument?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -50,11 +51,21 @@ struct FileGalleryView: View {
         } message: {
             Text(failure ?? "")
         }
+        .alert(
+            "Already in your Library", isPresented: Binding(get: { duplicate != nil }, set: { _ in duplicate = nil }),
+            presenting: duplicate
+        ) { existing in
+            Button("Open") { path = [existing] }
+            Button("Cancel", role: .cancel) {}
+        } message: { existing in
+            Text("“\(existing.title)” is already in your Library, so nothing was copied.")
+        }
     }
 
     private func importFile(_ url: URL) async {
         switch await library.import(url) {
         case .opened(let document): path = [document]
+        case .duplicate(let document): duplicate = document
         case .failed(let message): failure = message
         }
     }

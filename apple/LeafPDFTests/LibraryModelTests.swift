@@ -43,6 +43,27 @@ import Testing
         #expect(library.documents.map(\.title) == ["New", "Old"])
     }
 
+    @Test func importingTheSameContentAgainIsADuplicateOfTheExistingDocument() async throws {
+        let library = try LibraryModel(root: root)
+        let source = try writePDF(named: "a.pdf")
+        guard case .opened(let first) = await library.import(source) else {
+            Issue.record("expected .opened")
+            return
+        }
+        // Generated PDFs differ on every write, so copy the same bytes under another name.
+        let renamed = source.deletingLastPathComponent().appending(path: "renamed.pdf")
+        try FileManager.default.copyItem(at: source, to: renamed)
+
+        let outcome = await library.import(renamed)
+
+        guard case .duplicate(let existing) = outcome else {
+            Issue.record("expected .duplicate, got \(outcome)")
+            return
+        }
+        #expect(existing == first)
+        #expect(library.documents == [first])
+    }
+
     @Test func importingAMissingFileFails() async throws {
         let library = try LibraryModel(root: root)
         let missing = root.appending(path: "missing.pdf")

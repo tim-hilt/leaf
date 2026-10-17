@@ -21,6 +21,8 @@ struct LibraryDocument: Identifiable, Hashable {
 
 enum ImportOutcome {
     case opened(LibraryDocument)
+    /// The Library already holds this File's content: the existing Document.
+    case duplicate(LibraryDocument)
     case failed(String)
 }
 
@@ -82,12 +84,17 @@ final class LibraryModel {
             self?.runningImport?.fraction = max(running.fraction, fraction)
         }
         do {
-            let stored = try await Task.detached { try core.import(source: path, progress: relay) }.value
+            let result = try await Task.detached { try core.import(source: path, progress: relay) }.value
             refresh()
+            let (stored, isNew) =
+                switch result {
+                case .imported(let stored): (stored, true)
+                case .alreadyImported(let stored): (stored, false)
+                }
             guard let document = LibraryDocument(stored) else {
                 return .failed("The imported file couldn't be opened.")
             }
-            return .opened(document)
+            return isNew ? .opened(document) : .duplicate(document)
         } catch LibraryError.Failed(let message) {
             return .failed(message)
         } catch {

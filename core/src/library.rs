@@ -21,6 +21,16 @@ pub struct Document {
     pub path: PathBuf,
 }
 
+/// What an Import did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportResult {
+    /// The File was copied into the Library as a new Document.
+    Imported(Document),
+    /// The Library already held a File with the same content, possibly under
+    /// another name. Nothing was copied; this is the existing Document.
+    AlreadyImported(Document),
+}
+
 /// The Library folder.
 #[derive(Debug)]
 pub struct Library {
@@ -41,11 +51,16 @@ impl Library {
     }
 
     /// Copies the File at `source` into the Library, unchanged. Importing a
-    /// File that is already there copies nothing and returns its Document.
+    /// File that is already there copies nothing and returns its Document as
+    /// `AlreadyImported`.
     ///
     /// `progress(copied, total)` is called with the bytes processed so far out
     /// of the File's size: first with 0, last with the total.
-    pub fn import(&self, source: &Path, progress: impl FnMut(u64, u64)) -> io::Result<Document> {
+    pub fn import(
+        &self,
+        source: &Path,
+        progress: impl FnMut(u64, u64),
+    ) -> io::Result<ImportResult> {
         let name = source.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "source has no file name")
         })?;
@@ -60,18 +75,24 @@ impl Library {
 
         let result = copy_hashed(source, &staged.join(name), progress).and_then(|id| {
             let dir = self.root.join(&id);
-            if !dir.exists() {
+            let is_new = !dir.exists();
+            if is_new {
                 fs::rename(&staged, &dir)?;
             }
-            Ok(id)
+            Ok((id, is_new))
         });
         // Nothing left to remove after a successful rename.
         let _ = fs::remove_dir_all(&staged);
 
-        let id = result?;
-        let dir = self.root.join(&id);
+        let (id, is_new) = result?;
         // A duplicate keeps the name it was first imported under.
-        document_in(&dir)?.ok_or_else(|| io::Error::other("imported Document is empty"))
+        let document = document_in(&self.root.join(&id))?
+            .ok_or_else(|| io::Error::other("imported Document is empty"))?;
+        Ok(if is_new {
+            ImportResult::Imported(document)
+        } else {
+            ImportResult::AlreadyImported(document)
+        })
     }
 
     /// All Documents, newest Import first.
@@ -176,8 +197,16 @@ mod tests {
         }
     }
 
-    fn import(library: &Library, source: &Path) -> io::Result<Document> {
+    fn import(library: &Library, source: &Path) -> io::Result<ImportResult> {
         library.import(source, |_, _| {})
+    }
+
+    /// Imports a File that is expected to be new.
+    fn import_new(library: &Library, source: &Path) -> Document {
+        match import(library, source).unwrap() {
+            ImportResult::Imported(document) => document,
+            other => panic!("expected Imported, got {other:?}"),
+        }
     }
 
     // SHA-256 of "abc", from FIPS 180-2.
@@ -189,7 +218,7 @@ mod tests {
         let library = scratch.library();
         let source = scratch.file("Paper.pdf", b"abc");
 
-        let document = import(&library, &source).unwrap();
+        let document = import_new(&library, &source);
 
         assert_eq!(document.id, ABC_SHA256);
         assert_eq!(
@@ -227,9 +256,9 @@ mod tests {
     fn documents_lists_newest_import_first() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let first = import(&library, &scratch.file("a.pdf", b"first")).unwrap();
+        let first = import_new(&library, &scratch.file("a.pdf", b"first"));
         sleep(Duration::from_millis(20));
-        let second = import(&library, &scratch.file("b.pdf", b"second")).unwrap();
+        let second = import_new(&library, &scratch.file("b.pdf", b"second"));
 
         assert_eq!(library.documents().unwrap(), vec![second, first]);
     }
@@ -244,7 +273,7 @@ mod tests {
     fn a_failed_import_leaves_the_library_unchanged() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        import(&library, &scratch.file("a.pdf", b"abc")).unwrap();
+        import_new(&library, &scratch.file("a.pdf", b"abc"));
 
         assert!(
             library
@@ -282,14 +311,32 @@ mod tests {
     }
 
     #[test]
-    fn importing_the_same_bytes_again_adds_no_second_document() {
+    fn importing_the_same_bytes_again_reports_the_existing_document() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let first = import(&library, &scratch.file("a.pdf", b"abc")).unwrap();
+        let first = import_new(&library, &scratch.file("a.pdf", b"abc"));
 
         let again = import(&library, &scratch.file("b.pdf", b"abc")).unwrap();
 
-        assert_eq!(again, first);
-        assert_eq!(library.documents().unwrap(), vec![first]);
+        assert_eq!(again, ImportResult::AlreadyImported(first));
+    }
+
+    #[test]
+    fn a_duplicate_import_leaves_the_library_unchanged() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let first = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        import(&library, &scratch.file("renamed.pdf", b"abc")).unwrap();
+
+        assert_eq!(library.documents().unwrap(), vec![first.clone()]);
+        let folder = first.path.parent().unwrap();
+        assert_eq!(fs::read_dir(folder).unwrap().count(), 1);
+        assert_eq!(
+            fs::read_dir(scratch.0.join("library/.staging"))
+                .unwrap()
+                .count(),
+            0
+        );
     }
 }

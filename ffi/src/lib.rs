@@ -51,6 +51,23 @@ impl From<leafpdf_core::library::Document> for Document {
     }
 }
 
+/// What an Import did, see `leafpdf_core::library::ImportResult`.
+#[derive(uniffi::Enum)]
+pub enum ImportResult {
+    Imported(Document),
+    AlreadyImported(Document),
+}
+
+impl From<leafpdf_core::library::ImportResult> for ImportResult {
+    fn from(r: leafpdf_core::library::ImportResult) -> Self {
+        use leafpdf_core::library::ImportResult as Core;
+        match r {
+            Core::Imported(d) => Self::Imported(d.into()),
+            Core::AlreadyImported(d) => Self::AlreadyImported(d.into()),
+        }
+    }
+}
+
 /// Receives the progress of an Import. Implemented by the client and called
 /// from the thread that runs the Import, not the main thread.
 #[uniffi::export(with_foreign)]
@@ -74,11 +91,11 @@ impl Library {
         &self,
         source: String,
         progress: Arc<dyn ImportProgress>,
-    ) -> Result<Document, LibraryError> {
-        let document = self.0.import(source.as_ref(), |copied, total| {
+    ) -> Result<ImportResult, LibraryError> {
+        let result = self.0.import(source.as_ref(), |copied, total| {
             progress.report(copied, total)
         })?;
-        Ok(document.into())
+        Ok(result.into())
     }
 
     pub fn documents(&self) -> Result<Vec<Document>, LibraryError> {
