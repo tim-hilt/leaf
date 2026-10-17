@@ -16,9 +16,21 @@ _Avoid_: Document (when meaning the bytes)
 The name shown for a Document: the title stored in the PDF, or the file name if the PDF has none.
 _Avoid_: Name, filename
 
+**Library**:
+The set of Documents the user has imported.
+_Avoid_: Collection, Gallery (when meaning the set)
+
+**Import**:
+Copying a File into LeafPDF, which adds a Document to the Library.
+_Avoid_: Add, upload, open
+
+**Remove**:
+Taking a Document out of the Library, along with its File and everything recorded about it.
+_Avoid_: Delete
+
 **Gallery**:
-The view listing all imported Documents.
-_Avoid_: Library, file gallery, home
+The view showing the Library.
+_Avoid_: File gallery, home
 
 **Reader**:
 The view in which a single Document is read.

@@ -8,15 +8,17 @@ The application should provide the following features. Sections are in implement
 - Zooming
 - UI supports Portrait and Landscape Mode
 
-## 2. File Import (in-app)
+## 2. File Import & Removal (in-app)
 
-Files are registered in the application by clicking a "+" Icon in the UI or "File > Import" in the global menu. The file is copied to the shared storage location. A file can only be imported once.
+Files are imported by clicking a "+" Icon in the UI or "File > Import" in the global menu. The file is copied unchanged into a local folder on the device that holds the whole Library (local-first). A file can only be imported once.
+
+Documents are removed by long pressing (mobile) or right clicking (desktop) and choosing "Remove" from the context menu, after a confirmation. Removing deletes the File and everything recorded about it, on all devices once Cloud Backing exists. The same File can be imported again afterwards.
 
 Removes the temporary sample Document added by Reading.
 
 ## 3. File Gallery
 
-The file gallery renders the first page and title of all imported files in a vertically scrollable grid. The first entry is an empty cell with a "+" icon - another way to import files. Clicking on any imported file opens it up in reading mode.
+The file gallery renders the first page and title of all imported files in a vertically scrollable grid. The first entry is an empty cell with a "+" icon - another way to import files. Clicking on any imported file opens it in the Reader.
 
 ## 4. Reading Progress
 
