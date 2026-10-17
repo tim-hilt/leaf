@@ -2,9 +2,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// The Library as a vertically scrolling grid of Documents in the order chosen
-/// in the toolbar's sort menu, led by a "+" cell that Imports. A click or tap opens a Document in
-/// the Reader. The toolbar "+" and File > Import… (also from the Reader) Import
-/// a PDF and open it, replacing any open Document. A cell's context menu
+/// in the toolbar's sort menu, led by a "+" cell that Imports. The search field
+/// (⌘F on Mac and iPad) narrows it to matching Documents; with none, "No
+/// Results" follows the "+" cell. A click or tap opens a Document in the
+/// Reader. The toolbar "+" and File > Import… (also from the Reader) Import a
+/// PDF and open it, replacing any open Document. A cell's context menu
 /// (long-press, right-click) or VoiceOver action offers "Remove", after
 /// confirmation. A window reading a Document that gets Removed (here or in
 /// another window) returns to the grid and says so.
@@ -21,25 +23,31 @@ struct FileGalleryView: View {
     var body: some View {
         NavigationStack(path: $path) {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 16, alignment: .top)], spacing: 16) {
-                    Button { isImporting = true } label: { ImportCell() }
-                        .accessibilityLabel("Import…")
-                    ForEach(library.visibleDocuments) { document in
-                        Button { path.append(document) } label: { DocumentCell(document: document) }
-                            .contextMenu {
-                                Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
-                            }
-                            .accessibilityLabel(document.title)
-                            .accessibilityAction(named: "Remove") { removal = document }
+                VStack(alignment: .leading, spacing: 16) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 16, alignment: .top)], spacing: 16) {
+                        Button { isImporting = true } label: { ImportCell() }
+                            .accessibilityLabel("Import…")
+                        ForEach(library.visibleDocuments) { document in
+                            Button { path.append(document) } label: { DocumentCell(document: document) }
+                                .contextMenu {
+                                    Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
+                                }
+                                .accessibilityLabel(document.title)
+                                .accessibilityAction(named: "Remove") { removal = document }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    // Animates a Document to its new place when the order changes.
+                    .animation(.default, value: library.visibleDocuments.map(\.id))
+                    if library.visibleDocuments.isEmpty && !library.searchText.isEmpty {
+                        Text("No Results for “\(library.searchText)”").foregroundStyle(.secondary)
                     }
                 }
-                .buttonStyle(.plain)
                 .padding(16)
-                // Animates a Document to its new place when the order changes.
-                .animation(.default, value: library.visibleDocuments.map(\.id))
             }
             .onScrollPhaseChange { _, phase in scroll.scrollingChanged(isScrolling: phase != .idle) }
             .environment(scroll)
+            .searchable(text: Bindable(library).searchText)
             .navigationTitle("LeafPDF")
             .navigationDestination(for: LibraryDocument.self) { ReaderView(document: $0) }
             .toolbar {

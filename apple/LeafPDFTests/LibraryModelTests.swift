@@ -414,6 +414,62 @@ import Testing
         #expect(try openLibrary().sort == LibrarySort(key: .title, isReversed: true))
     }
 
+    // MARK: Library Search
+
+    @Test func searchMatchesPartsOfTheTitleTheFileNameAndTheAuthor() async throws {
+        let library = try openLibrary()
+        _ = await library.import(try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
+        _ = await library.import(try writePDF(named: "scan0042.pdf", metadataTitle: "Walden", author: "Thoreau"))
+
+        library.searchText = "oby"
+        #expect(library.visibleDocuments.map(\.title) == ["Moby-Dick"])
+        library.searchText = "can004"
+        #expect(library.visibleDocuments.map(\.title) == ["Walden"])
+        library.searchText = "melv"
+        #expect(library.visibleDocuments.map(\.title) == ["Moby-Dick"])
+    }
+
+    @Test func searchIgnoresCaseAndAccents() async throws {
+        let library = try openLibrary()
+        try await importPDF(titled: "Résumé", into: library)
+        try await importPDF(titled: "Other", into: library)
+
+        library.searchText = "RESUME"
+
+        #expect(library.visibleDocuments.map(\.title) == ["Résumé"])
+    }
+
+    @Test func searchKeepsTheCurrentOrder() async throws {
+        let library = try await libraryForSorting()
+
+        library.searchText = "resume"
+        #expect(library.visibleDocuments.map(\.title) == ["résumé 10", "Resume 2"])
+
+        library.sort.key = .title
+        #expect(library.visibleDocuments.map(\.title) == ["Resume 2", "résumé 10"])
+    }
+
+    @Test func noMatchesShowNothingAndClearingTheSearchShowsEverything() async throws {
+        let library = try await libraryForSorting()
+
+        library.searchText = "xyz"
+        #expect(library.visibleDocuments.isEmpty)
+
+        library.searchText = ""
+        #expect(library.visibleDocuments.count == 4)
+    }
+
+    @Test func aDocumentWhoseAuthorArrivesLaterJoinsTheResults() async throws {
+        let first = try openLibrary()
+        _ = await first.import(try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
+        try FileManager.default.removeItem(at: detailsFile)
+        let library = try openLibrary()
+        library.searchText = "melville"
+        #expect(library.visibleDocuments.isEmpty)
+
+        try await waitUntil { library.visibleDocuments.map(\.title) == ["Moby-Dick"] }
+    }
+
     /// Waits up to 10 s for `condition`, which the background pass makes true.
     private func waitUntil(_ condition: () -> Bool) async throws {
         for _ in 0..<1000 where !condition() { try await Task.sleep(for: .milliseconds(10)) }

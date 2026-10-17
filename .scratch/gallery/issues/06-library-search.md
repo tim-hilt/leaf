@@ -4,11 +4,11 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] The Library model exposes the Library Search text. The visible Documents match it with `localizedStandardContains` on Title, original file name and Author
-- [ ] Results keep the current order
-- [ ] A `.searchable` field. ⌘F focuses it on Mac and iPad
-- [ ] The "+" cell stays first while searching
-- [ ] No matches: the "+" cell followed by "No Results for 'x'"
-- [ ] Tests (test-first, Library model): matches on Title, file name and Author; case and accents are ignored ("resume" finds "Résumé"); order is kept
+- [x] The Library model exposes the Library Search text. The visible Documents match it with `localizedStandardContains` on Title, original file name and Author
+- [x] Results keep the current order
+- [x] A `.searchable` field. ⌘F focuses it on Mac and iPad
+- [x] The "+" cell stays first while searching
+- [x] No matches: the "+" cell followed by "No Results for 'x'"
+- [x] Tests (test-first, Library model): matches on Title, file name and Author; case and accents are ignored ("resume" finds "Résumé"); order is kept

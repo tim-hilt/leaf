@@ -22,6 +22,13 @@ struct LibraryDocument: Identifiable, Hashable {
         self.details = details
     }
 
+    /// Whether `text` is part of the Title, original file name or Author,
+    /// ignoring case and accents. Empty (or blank) `text` matches everything.
+    func matches(_ text: String) -> Bool {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty || [title, fileName, author ?? ""].contains { $0.localizedStandardContains(text) }
+    }
+
     static func == (a: Self, b: Self) -> Bool { a.id == b.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
@@ -83,8 +90,14 @@ final class LibraryModel {
             reorder()
         }
     }
-    /// The Documents the Gallery shows, in `sort` order. Kept up to date as
-    /// Titles arrive, so a Document moves to its place when its Title does.
+    /// What Library Search looks for; empty when not searching. Setting it
+    /// updates `visibleDocuments` at once.
+    var searchText = "" {
+        didSet { if searchText != oldValue { reorder() } }
+    }
+    /// The Documents the Gallery shows: those matching `searchText`, in `sort`
+    /// order. Kept up to date as Titles arrive, so a Document moves to its
+    /// place (or into the results) when its Title does.
     private(set) var visibleDocuments: [LibraryDocument] = []
     /// Non-nil from the start of an Import until it finishes. The UI is
     /// disabled meanwhile.
@@ -219,7 +232,7 @@ final class LibraryModel {
         return .failure(head == Data("%PDF-".utf8) ? .unreadable : .notPDF)
     }
 
-    private func reorder() { visibleDocuments = sort.ordered(documents) }
+    private func reorder() { visibleDocuments = sort.ordered(documents).filter { $0.matches(searchText) } }
 
     /// Reloads `documents` from the core, with their saved details. If the
     /// listing fails, `documents` stays as it was rather than looking as if
