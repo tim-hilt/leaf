@@ -4,9 +4,9 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Document opens at fit-to-width
-- [ ] Zoom limited to between fit-to-width and 5× (limits unit-tested, test-first)
-- [ ] Pinch zoom keeps the content under the fingers fixed (iOS, iPadOS, macOS trackpad)
-- [ ] Double-tap zooms on iOS/iPadOS
+- [x] Document opens at fit-to-width
+- [x] Zoom limited to between fit-to-width and 5× (limits unit-tested, test-first)
+- [x] Pinch zoom keeps the content under the fingers fixed (iOS, iPadOS, macOS trackpad)
+- [x] Double-tap zooms on iOS/iPadOS
