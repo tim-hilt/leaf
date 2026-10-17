@@ -531,6 +531,73 @@ import Testing
         #expect(try openLibrary().documents.isEmpty)
     }
 
+    // MARK: Recently Read sort
+
+    /// `libraryForSorting()` with "apple" read at 100 s, "Zebra" at 200 s and
+    /// "Resume 2" at 300 s; "résumé 10" is never opened. Date Imported order
+    /// (newest first) is Zebra, résumé 10, Resume 2, apple.
+    func libraryForRecentlyRead() async throws -> LibraryModel {
+        let library = try await libraryForSorting()
+        for (title, seconds) in [("apple", 100.0), ("Zebra", 200), ("Resume 2", 300)] {
+            let document = try #require(library.documents.first { $0.title == title })
+            await library.saveProgress(place, of: document, at: Date(timeIntervalSince1970: seconds))
+        }
+        return library
+    }
+
+    @Test func recentlyReadListsTheLastReadFirstAndNeverOpenedDocumentsLast() async throws {
+        let library = try await libraryForRecentlyRead()
+
+        library.sort.key = .recentlyRead
+
+        #expect(library.visibleDocuments(matching: "").map(\.title) == ["Resume 2", "Zebra", "apple", "résumé 10"])
+    }
+
+    @Test func reversingRecentlyReadFlipsOnlyTheOpenedDocuments() async throws {
+        let library = try await libraryForRecentlyRead()
+
+        library.sort = LibrarySort(key: .recentlyRead, isReversed: true)
+
+        #expect(library.visibleDocuments(matching: "").map(\.title) == ["apple", "Zebra", "Resume 2", "résumé 10"])
+    }
+
+    @Test func neverOpenedDocumentsFollowInDateImportedOrderInBothDirections() async throws {
+        let library = try await libraryForSorting()  // Zebra, résumé 10, Resume 2, apple; none opened
+        let newestFirst = library.visibleDocuments(matching: "").map(\.title)
+
+        library.sort = LibrarySort(key: .recentlyRead, isReversed: false)
+        #expect(library.visibleDocuments(matching: "").map(\.title) == newestFirst)
+
+        library.sort = LibrarySort(key: .recentlyRead, isReversed: true)
+        #expect(library.visibleDocuments(matching: "").map(\.title) == newestFirst)
+    }
+
+    @Test func openingADocumentMovesItToTheTopOfRecentlyRead() async throws {
+        let library = try await libraryForRecentlyRead()
+        library.sort.key = .recentlyRead
+        let never = try #require(library.documents.first { $0.title == "résumé 10" })
+
+        await library.saveProgress(place, of: never, at: Date(timeIntervalSince1970: 400))
+
+        #expect(library.visibleDocuments(matching: "").map(\.title) == ["résumé 10", "Resume 2", "Zebra", "apple"])
+    }
+
+    @Test func searchKeepsTheRecentlyReadOrder() async throws {
+        let library = try await libraryForRecentlyRead()
+        library.sort.key = .recentlyRead
+
+        #expect(library.visibleDocuments(matching: "resume").map(\.title) == ["Resume 2", "résumé 10"])
+        #expect(library.visibleDocuments(matching: "e").map(\.title) == ["Resume 2", "Zebra", "apple", "résumé 10"])
+    }
+
+    @Test func theRecentlyReadChoiceIsRememberedOnThisDevice() throws {
+        let library = try openLibrary()
+
+        library.sort = LibrarySort(key: .recentlyRead, isReversed: true)
+
+        #expect(try openLibrary().sort == LibrarySort(key: .recentlyRead, isReversed: true))
+    }
+
     // MARK: Page count and percentage read
 
     /// Imports a PDF of `pageCount` pages.

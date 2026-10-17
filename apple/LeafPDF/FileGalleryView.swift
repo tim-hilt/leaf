@@ -271,6 +271,7 @@ private struct SortMenu: View {
             Picker("Sort By", selection: $sort.key) {
                 Text("Date Imported").tag(LibrarySort.Key.dateImported)
                 Text("Title").tag(LibrarySort.Key.title)
+                Text("Recently Read").tag(LibrarySort.Key.recentlyRead)
             }
             Toggle("Reverse Order", isOn: $sort.isReversed)
         }

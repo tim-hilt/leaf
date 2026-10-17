@@ -4,11 +4,11 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] "Recently Read" sits in the toolbar sort menu next to Date Imported and Title; Date Imported stays the default
-- [ ] Newest Last Read first; reversing flips only opened Documents; never-opened Documents always follow in Date Imported order (newest first)
-- [ ] The choice is saved per device in user defaults and shared by all windows
-- [ ] Opening a Document moves it to the top with the native animation, in every window
-- [ ] Library Search keeps the Recently Read order
-- [ ] Tests first: Library model tests for both directions, never-opened Documents last, and Library Search order
+- [x] "Recently Read" sits in the toolbar sort menu next to Date Imported and Title; Date Imported stays the default
+- [x] Newest Last Read first; reversing flips only opened Documents; never-opened Documents always follow in Date Imported order (newest first)
+- [x] The choice is saved per device in user defaults and shared by all windows
+- [x] Opening a Document moves it to the top with the native animation, in every window
+- [x] Library Search keeps the Recently Read order
+- [x] Tests first: Library model tests for both directions, never-opened Documents last, and Library Search order
