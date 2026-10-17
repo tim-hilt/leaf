@@ -36,7 +36,7 @@ struct FileGalleryView: View {
                 }
             }
             .navigationTitle("LeafPDF")
-            .navigationDestination(for: LibraryDocument.self) { ReaderView(document: $0.pdf) }
+            .navigationDestination(for: LibraryDocument.self) { ReaderView(document: $0) }
             .toolbar {
                 Button("Import…", systemImage: "plus") { isImporting = true }
             }

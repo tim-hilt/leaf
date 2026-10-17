@@ -4,14 +4,14 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] A Document no longer holds an open PDF. It exposes its ID, stored File location, original file name, and saved Title and Author if known
-- [ ] The Title shown is the saved Title, or the file name without extension until it's read
-- [ ] Import saves the Title and Author before reporting the outcome
-- [ ] Titles and Authors live in one store in Application Support, outside the Library folder, keyed by Document ID and never synced
-- [ ] At launch, a low-priority background pass reads missing Titles and Authors and publishes each as it arrives
-- [ ] Remove deletes the saved Title and Author
-- [ ] The Reader opens the PDF when it shows a Document. Duplicate "Open", Removal while open, and ⌘O from the Reader still work
-- [ ] The temporary-PDF test helper gains an Author parameter
-- [ ] Tests (test-first, Library model with the real `LeafCore`): the Title, file name and Author after Import; Titles and Authors survive reopening the Library; with the saved Titles missing, file names first and Titles after the background pass; Remove deletes the saved entry; opening the Library opens no PDFs
+- [x] A Document no longer holds an open PDF. It exposes its ID, stored File location, original file name, and saved Title and Author if known
+- [x] The Title shown is the saved Title, or the file name without extension until it's read
+- [x] Import saves the Title and Author before reporting the outcome
+- [x] Titles and Authors live in one store in Application Support, outside the Library folder, keyed by Document ID and never synced
+- [x] At launch, a low-priority background pass reads missing Titles and Authors and publishes each as it arrives
+- [x] Remove deletes the saved Title and Author
+- [x] The Reader opens the PDF when it shows a Document. Duplicate "Open", Removal while open, and ⌘O from the Reader still work
+- [x] The temporary-PDF test helper gains an Author parameter
+- [x] Tests (test-first, Library model with the real `LeafCore`): the Title, file name and Author after Import; Titles and Authors survive reopening the Library; with the saved Titles missing, file names first and Titles after the background pass; Remove deletes the saved entry; opening the Library opens no PDFs

@@ -6,14 +6,18 @@ import Testing
 @MainActor @Suite struct LibraryModelTests {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    var detailsFile: URL { root.deletingLastPathComponent().appending(path: "\(root.lastPathComponent)-details.json") }
+
+    /// Opens the Library at `root`, keeping its saved Titles and Authors in `detailsFile`.
+    func openLibrary() throws -> LibraryModel { try LibraryModel(root: root, detailsFile: detailsFile) }
 
     @Test func startsEmpty() throws {
-        let library = try LibraryModel(root: root)
+        let library = try openLibrary()
         #expect(library.documents.isEmpty)
     }
 
     @Test func importOpensTheNewDocumentAndListsIt() async throws {
-        let library = try LibraryModel(root: root)
+        let library = try openLibrary()
         let source = try writePDF(named: "scan0042.pdf", pageCount: 2)
 
         let outcome = await library.import(source)
@@ -23,11 +27,10 @@ import Testing
             return
         }
         #expect(library.documents == [document])
-        #expect(document.pdf.pageCount == 2)
     }
 
     @Test func aDocumentWithoutStoredTitleShowsItsOriginalFileName() async throws {
-        let library = try LibraryModel(root: root)
+        let library = try openLibrary()
 
         _ = await library.import(try writePDF(named: "scan0042.pdf"))
 
@@ -35,7 +38,7 @@ import Testing
     }
 
     @Test func listsTheNewestImportFirst() async throws {
-        let library = try LibraryModel(root: root)
+        let library = try openLibrary()
         _ = await library.import(try writePDF(named: "old.pdf", metadataTitle: "Old"))
         try await Task.sleep(for: .milliseconds(20))
         _ = await library.import(try writePDF(named: "new.pdf", metadataTitle: "New"))
@@ -44,7 +47,7 @@ import Testing
     }
 
     @Test func importingTheSameContentAgainIsADuplicateOfTheExistingDocument() async throws {
-        let library = try LibraryModel(root: root)
+        let library = try openLibrary()
         let source = try writePDF(named: "a.pdf")
         guard case .opened(let first) = await library.import(source) else {
             Issue.record("expected .opened")
@@ -65,7 +68,7 @@ import Testing
     }
 
     @Test func importingAMissingFileFailsWithTheSystemsReason() async throws {
-        let library = try LibraryModel(root: root)
+        let library = try openLibrary()
         let missing = root.appending(path: "missing.pdf")
 
         let outcome = await library.import(missing)
@@ -79,7 +82,7 @@ import Testing
     }
 
     @Test func garbageBytesAreRejectedAsNotAPDFAndNothingIsCopied() async throws {
-        let library = try LibraryModel(root: root)
+        let library = try openLibrary()
         let garbage = try writeFile(named: "notes.pdf", bytes: Data("just some text".utf8))
 
         let outcome = await library.import(garbage)
@@ -92,7 +95,7 @@ import Testing
     }
 
     @Test func aDamagedPDFIsRejectedAsUnreadable() async throws {
-        let library = try LibraryModel(root: root)
+        let library = try openLibrary()
         let damaged = try writeFile(named: "damaged.pdf", bytes: Data("%PDF-1.7\nnot really".utf8))
 
         let outcome = await library.import(damaged)
@@ -105,7 +108,7 @@ import Testing
     }
 
     @Test func aPasswordProtectedPDFIsRejectedAsLockedAndNothingIsCopied() async throws {
-        let library = try LibraryModel(root: root)
+        let library = try openLibrary()
         let locked = try writePDF(named: "locked.pdf", userPassword: "secret", ownerPassword: "secret")
 
         let outcome = await library.import(locked)
@@ -118,7 +121,7 @@ import Testing
     }
 
     @Test func aPDFThatOnlyRestrictsPermissionsImportsNormally() async throws {
-        let library = try LibraryModel(root: root)
+        let library = try openLibrary()
         let restricted = try writePDF(named: "restricted.pdf", ownerPassword: "owner")
 
         let outcome = await library.import(restricted)
@@ -131,7 +134,7 @@ import Testing
     }
 
     @Test func aRemovedDocumentDisappearsAndCanBeImportedAgain() async throws {
-        let library = try LibraryModel(root: root)
+        let library = try openLibrary()
         let source = try writePDF(named: "a.pdf")
         let other = try writePDF(named: "b.pdf")
         guard case .opened(let doomed) = await library.import(source),
@@ -144,7 +147,7 @@ import Testing
         library.remove(doomed)
 
         #expect(library.documents == [kept])
-        #expect(try LibraryModel(root: root).documents == [kept])
+        #expect(try openLibrary().documents == [kept])
         guard case .opened(let again) = await library.import(source) else {
             Issue.record("expected the removed File to Import as new")
             return
@@ -154,13 +157,97 @@ import Testing
     }
 
     @Test func reopeningTheLibraryKeepsItsDocuments() async throws {
-        _ = await (try LibraryModel(root: root)).import(try writePDF(named: "a.pdf"))
+        _ = await (try openLibrary()).import(try writePDF(named: "a.pdf"))
 
-        #expect(try LibraryModel(root: root).documents.count == 1)
+        #expect(try openLibrary().documents.count == 1)
+    }
+
+    @Test func importSavesTheTitleFileNameAndAuthor() async throws {
+        let library = try openLibrary()
+
+        _ = await library.import(try writePDF(named: "scan0042.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
+
+        let document = try #require(library.documents.first)
+        #expect(document.title == "Moby-Dick")
+        #expect(document.fileName == "scan0042.pdf")
+        #expect(document.author == "Melville")
+    }
+
+    @Test func aPDFWithoutTitleOrAuthorShowsItsFileNameAndNoAuthor() async throws {
+        let library = try openLibrary()
+
+        _ = await library.import(try writePDF(named: "scan0042.pdf"))
+
+        let document = try #require(library.documents.first)
+        #expect(document.title == "scan0042")
+        #expect(document.author == nil)
+    }
+
+    @Test func aDocumentExposesItsStoredFile() async throws {
+        let library = try openLibrary()
+
+        _ = await library.import(try writePDF(named: "a.pdf"))
+
+        let document = try #require(library.documents.first)
+        #expect(FileManager.default.fileExists(atPath: document.file.path))
+        #expect(document.file.lastPathComponent == "a.pdf")
+    }
+
+    @Test func titlesAndAuthorsSurviveReopeningTheLibrary() async throws {
+        _ = await (try openLibrary()).import(try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
+
+        let document = try #require(try openLibrary().documents.first)
+
+        #expect(document.title == "Moby-Dick")
+        #expect(document.author == "Melville")
+    }
+
+    @Test func missingSavedTitlesShowFileNamesFirstAndTitlesAfterTheBackgroundPass() async throws {
+        _ = await (try openLibrary()).import(try writePDF(named: "scan0042.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
+        try FileManager.default.removeItem(at: detailsFile)
+
+        let library = try openLibrary()
+        #expect(library.documents.map(\.title) == ["scan0042"])
+        #expect(library.documents.first?.author == nil)
+
+        try await waitUntil { library.documents.first?.title == "Moby-Dick" }
+        #expect(library.documents.first?.author == "Melville")
+        // Saved, so the next launch has them at once.
+        #expect(try openLibrary().documents.first?.title == "Moby-Dick")
+    }
+
+    @Test func removeDeletesTheSavedTitleAndAuthor() async throws {
+        let library = try openLibrary()
+        let source = try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville")
+        guard case .opened(let document) = await library.import(source) else {
+            Issue.record("expected .opened")
+            return
+        }
+
+        library.remove(document)
+
+        let details = try JSONDecoder().decode([String: DocumentDetails].self, from: Data(contentsOf: detailsFile))
+        #expect(details.isEmpty)
+        guard case .opened(let again) = await library.import(try writePDF(named: "b.pdf")) else {
+            Issue.record("expected .opened")
+            return
+        }
+        #expect(again.author == nil)
+    }
+
+    @Test func openingTheLibraryOpensNoPDFs() throws {
+        // A File PDFKit can't open still lists, by its file name: the Library never looks inside it.
+        let folder = root.appending(path: String(repeating: "a", count: 64), directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("not a PDF".utf8).write(to: folder.appending(path: "broken.pdf"))
+
+        let library = try openLibrary()
+
+        #expect(library.documents.map(\.title) == ["broken"])
     }
 
     @Test func aRunningImportShowsTheTitleAndProgressUntilItFinishes() async throws {
-        let library = try LibraryModel(root: root)
+        let library = try openLibrary()
         let source = try writePDF(named: "big.pdf", metadataTitle: "Big One", paddedTo: 64_000_000)
         #expect(library.runningImport == nil)
 
@@ -178,5 +265,11 @@ import Testing
         #expect(seen.allSatisfy { (0...1).contains($0.fraction) })
         #expect(zip(seen, seen.dropFirst()).allSatisfy { $0.fraction <= $1.fraction })
         #expect(library.runningImport == nil)
+    }
+
+    /// Waits up to 10 s for `condition`, which the background pass makes true.
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<1000 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(condition())
     }
 }

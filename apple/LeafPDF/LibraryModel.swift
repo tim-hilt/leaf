@@ -2,17 +2,24 @@ import LeafCore
 import Observation
 import PDFKit
 
-/// A Document in the Library, opened for reading.
+/// A Document in the Library. Holds no open PDF: the Reader opens `file`.
 struct LibraryDocument: Identifiable, Hashable {
     let id: String
-    let pdf: PDFDocument
+    /// The stored File.
+    let file: URL
+    /// Read from the PDF at Import or by the Library's background pass; nil until then.
+    fileprivate(set) var details: DocumentDetails?
 
-    var title: String { pdf.title }
+    /// The name the File had when it was Imported.
+    var fileName: String { file.lastPathComponent }
+    /// The saved Title, or the file name without extension until it is read.
+    var title: String { details?.title ?? file.deletingPathExtension().lastPathComponent }
+    var author: String? { details?.author }
 
-    fileprivate init?(_ stored: LeafCore.Document) {
-        guard let pdf = PDFDocument(url: URL(fileURLWithPath: stored.path)) else { return nil }
+    fileprivate init(_ stored: LeafCore.Document, details: DocumentDetails?) {
         id = stored.id
-        self.pdf = pdf
+        file = URL(fileURLWithPath: stored.path)
+        self.details = details
     }
 
     static func == (a: Self, b: Self) -> Bool { a.id == b.id }
@@ -61,7 +68,8 @@ private final class ProgressRelay: ImportProgress {
 }
 
 /// The Library as the clients see it: the core's Library folder plus its
-/// Documents, newest Import first. One per app, shared by all windows.
+/// Documents, newest Import first, each with its saved Title and Author. One
+/// per app, shared by all windows.
 @MainActor @Observable
 final class LibraryModel {
     private(set) var documents: [LibraryDocument] = []
@@ -69,23 +77,32 @@ final class LibraryModel {
     /// disabled meanwhile.
     private(set) var runningImport: RunningImport?
     @ObservationIgnored private let core: LeafCore.Library
+    @ObservationIgnored private let saved: DetailsStore
 
-    /// Opens the Library folder at `root`, creating it if needed.
-    init(root: URL) throws {
+    /// Opens the Library folder at `root`, creating it if needed, with Titles
+    /// and Authors saved in `detailsFile`. Documents without saved details are
+    /// listed by file name; a low-priority background pass then reads them
+    /// from the PDFs, one at a time.
+    init(root: URL, detailsFile: URL) throws {
         core = try LeafCore.Library.open(root: root.path)
+        saved = DetailsStore(file: detailsFile)
         refresh()
+        readMissingDetails()
     }
 
     /// The Library in a hidden folder in Application Support.
     static func inApplicationSupport() throws -> LibraryModel {
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        return try LibraryModel(root: support.appending(path: "Library", directoryHint: .isDirectory))
+        return try LibraryModel(
+            root: support.appending(path: "Library", directoryHint: .isDirectory),
+            detailsFile: support.appending(path: "Details.json"))
     }
 
     /// Copies the File at `url` into the Library without blocking the main
     /// thread, publishing `runningImport` meanwhile. Files that aren't
-    /// readable, unlocked PDFs are rejected before anything is copied.
+    /// readable, unlocked PDFs are rejected before anything is copied. The
+    /// Document's Title and Author are saved before this returns.
     func `import`(_ url: URL) async -> ImportOutcome {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -94,11 +111,12 @@ final class LibraryModel {
         runningImport = RunningImport(title: url.deletingPathExtension().lastPathComponent)
         defer { runningImport = nil }
 
+        let read: DocumentDetails?
         switch await Task.detached(operation: { Self.check(url) }).value {
         case .failure(let rejection): return .rejected(rejection)
-        case .success(let title?): runningImport?.title = title
-        case .success(nil): break
+        case .success(let details): read = details
         }
+        if let read { runningImport?.title = read.title }
 
         let core = core, path = url.path
         // Reports arriving after the Import finished find no runningImport and do nothing.
@@ -108,12 +126,13 @@ final class LibraryModel {
         }
         do {
             let result = try await Task.detached { try core.import(source: path, progress: relay) }.value
-            refresh()
             let (stored, isNew) =
                 switch result {
                 case .imported(let stored): (stored, true)
                 case .alreadyImported(let stored): (stored, false)
                 }
+            if let read, saved[stored.id] == nil { saved[stored.id] = read }
+            refresh()
             guard let document = documents.first(where: { $0.id == stored.id }) else {
                 return .failed("The imported file couldn't be opened.")
             }
@@ -125,31 +144,52 @@ final class LibraryModel {
         }
     }
 
-    /// Deletes the Document and its File. If that fails, the Document stays in
-    /// `documents`.
+    /// Deletes the Document, its File and its saved Title and Author. If that
+    /// fails, the Document stays in `documents`.
     func remove(_ document: LibraryDocument) {
-        try? core.remove(id: document.id)
+        if (try? core.remove(id: document.id)) != nil { saved[document.id] = nil }
         refresh()
     }
 
-    /// The Title of the File at `url` if it can be Imported, or why not. A
-    /// File that can't be read at all isn't rejected (nil Title): copying it
-    /// fails with the system's own reason. Reads the File, so keep it off the
-    /// main thread.
-    private nonisolated static func check(_ url: URL) -> Result<String?, ImportRejection> {
-        if let pdf = PDFDocument(url: url) { return pdf.isLocked ? .failure(.locked) : .success(pdf.title) }
+    /// The Title and Author of the File at `url` if it can be Imported, or why
+    /// not. A File that can't be read at all isn't rejected (nil details):
+    /// copying it fails with the system's own reason. Reads the File, so keep
+    /// it off the main thread.
+    private nonisolated static func check(_ url: URL) -> Result<DocumentDetails?, ImportRejection> {
+        if let pdf = PDFDocument(url: url) { return pdf.isLocked ? .failure(.locked) : .success(pdf.details) }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return .success(nil) }
         defer { try? handle.close() }
         let head = (try? handle.read(upToCount: 5)) ?? Data()
         return .failure(head == Data("%PDF-".utf8) ? .unreadable : .notPDF)
     }
 
-    /// Reloads `documents` from the core. Documents already listed keep their
-    /// opened PDF. If the listing fails, `documents` stays as it was rather
-    /// than looking as if everything was Removed.
+    /// Reloads `documents` from the core, with their saved details. If the
+    /// listing fails, `documents` stays as it was rather than looking as if
+    /// everything was Removed.
     private func refresh() {
         guard let stored = try? core.documents() else { return }
-        let listed = Dictionary(uniqueKeysWithValues: documents.map { ($0.id, $0) })
-        documents = stored.compactMap { listed[$0.id] ?? LibraryDocument($0) }
+        documents = stored.map { LibraryDocument($0, details: saved[$0.id]) }
+    }
+
+    /// Reads the details of Documents that have none from their PDFs, one at a
+    /// time at background priority, publishing each as it arrives. A PDF that
+    /// can't be read is skipped and tried again at the next launch.
+    private func readMissingDetails() {
+        let missing = documents.filter { $0.details == nil }.map { ($0.id, $0.file) }
+        guard !missing.isEmpty else { return }
+        Task(priority: .background) { [weak self] in
+            for (id, file) in missing {
+                let read = await Task.detached(priority: .background) { PDFDocument(url: file)?.details }.value
+                guard let self else { return }
+                self.publish(read, for: id)
+            }
+        }
+    }
+
+    /// Saves `details` for Document `id` unless it was Removed or already has some.
+    private func publish(_ details: DocumentDetails?, for id: String) {
+        guard let details, saved[id] == nil, let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        saved[id] = details
+        documents[index].details = details
     }
 }
