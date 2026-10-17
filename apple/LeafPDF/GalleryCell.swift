@@ -24,6 +24,21 @@ struct GalleryCell<Page: View>: View {
     }
 }
 
+extension View {
+    /// Rings a cell with the accent colour while the keyboard highlight is on
+    /// it. The ring sits in the gap between cells, so nothing shifts.
+    func galleryHighlight(_ isOn: Bool) -> some View {
+        overlay {
+            if isOn {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .padding(-6)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
 extension ShapeStyle where Self == Color {
     /// The grey of a Document's placeholder and of the "+" cell.
     static var placeholderGrey: Color { Color.gray.opacity(0.3) }

@@ -10,6 +10,12 @@ import UniformTypeIdentifiers
 /// (long-press, right-click) or VoiceOver action offers "Remove", after
 /// confirmation. A window reading a Document that gets Removed (here or in
 /// another window) returns to the grid and says so.
+///
+/// With a keyboard (Mac, iPad), arrow keys move a highlight through the grid,
+/// including the "+" cell; nothing is highlighted until the first press.
+/// Return opens the highlighted cell, ⌘⌫ asks to Remove it, and ↓ in the
+/// search field highlights the first match. Coming back from the Reader
+/// highlights its Document, if a highlight was in use.
 struct FileGalleryView: View {
     @Environment(LibraryModel.self) private var library
     @State private var path: [LibraryDocument] = []
@@ -19,40 +25,80 @@ struct FileGalleryView: View {
     @State private var removal: LibraryDocument?
     @State private var removedWhileOpen: LibraryDocument?
     @State private var scroll = ScrollActivity()
+    @State private var columnCount = 2
+    /// The keyboard highlight; nil until the first arrow press.
+    @State private var highlighted: GalleryItem?
+    @FocusState private var isGridFocused: Bool
+    @FocusState private var isSearchFocused: Bool
+
+    /// Every cell in grid order.
+    private var items: [GalleryItem] { [.importCell] + library.visibleDocuments.map { .document($0.id) } }
 
     var body: some View {
         NavigationStack(path: $path) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 16, alignment: .top)], spacing: 16) {
-                        Button { isImporting = true } label: { ImportCell() }
-                            .accessibilityLabel("Import…")
-                        ForEach(library.visibleDocuments) { document in
-                            Button { path.append(document) } label: { DocumentCell(document: document) }
-                                .contextMenu {
-                                    Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
-                                }
-                                .accessibilityLabel(document.title)
-                                .accessibilityAction(named: "Remove") { removal = document }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Layout.spacing) {
+                        LazyVGrid(
+                            columns: Array(repeating: GridItem(.flexible(), spacing: Layout.spacing, alignment: .top), count: columnCount),
+                            spacing: Layout.spacing
+                        ) {
+                            Button { open(.importCell) } label: { ImportCell() }
+                                .galleryHighlight(highlighted == .importCell)
+                                .id(GalleryItem.importCell)
+                                .accessibilityLabel("Import…")
+                            ForEach(library.visibleDocuments) { document in
+                                Button { open(.document(document.id)) } label: { DocumentCell(document: document) }
+                                    .galleryHighlight(highlighted == .document(document.id))
+                                    .id(GalleryItem.document(document.id))
+                                    .contextMenu {
+                                        Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
+                                    }
+                                    .accessibilityLabel(document.title)
+                                    .accessibilityAction(named: "Remove") { removal = document }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        // Animates a Document to its new place when the order changes.
+                        .animation(.default, value: library.visibleDocuments.map(\.id))
+                        if library.visibleDocuments.isEmpty && !library.searchText.isEmpty {
+                            Text("No Results for “\(library.searchText)”").foregroundStyle(.secondary)
                         }
                     }
-                    .buttonStyle(.plain)
-                    // Animates a Document to its new place when the order changes.
-                    .animation(.default, value: library.visibleDocuments.map(\.id))
-                    if library.visibleDocuments.isEmpty && !library.searchText.isEmpty {
-                        Text("No Results for “\(library.searchText)”").foregroundStyle(.secondary)
-                    }
+                    .padding(Layout.spacing)
                 }
-                .padding(16)
+                .onGeometryChange(for: Int.self) { Layout.columnCount(forWidth: $0.size.width) } action: { columnCount = $0 }
+                .focusable()
+                .focused($isGridFocused)
+                .focusEffectDisabled()
+                .onAppear { isGridFocused = true }
+                .onChange(of: highlighted) { _, item in
+                    if let item { proxy.scrollTo(item) }
+                }
             }
             .onScrollPhaseChange { _, phase in scroll.scrollingChanged(isScrolling: phase != .idle) }
             .environment(scroll)
             .searchable(text: Bindable(library).searchText)
+            .searchFocused($isSearchFocused)
             .navigationTitle("LeafPDF")
             .navigationDestination(for: LibraryDocument.self) { ReaderView(document: $0) }
             .toolbar {
                 SortMenu(sort: Bindable(library).sort)
                 Button("Import…", systemImage: "plus") { isImporting = true }
+            }
+        }
+        .onKeyPress(phases: [.down, .repeat]) { press in
+            guard let arrow = GridHighlight.Arrow(press.key) else { return .ignored }
+            return handleArrow(arrow) ? .handled : .ignored
+        }
+        .onKeyPress(keys: [.return, .delete], phases: .down) { press in
+            handleAction(press) ? .handled : .ignored
+        }
+        .onChange(of: path) { _, path in
+            if let reading = path.last {
+                if highlighted != nil { highlighted = .document(reading.id) }
+            } else {
+                isGridFocused = true
             }
         }
         .onChange(of: library.documents) { _, documents in
@@ -105,6 +151,46 @@ struct FileGalleryView: View {
         }
     }
 
+    /// Opens the Reader on a Document, or starts an Import for the "+" cell.
+    private func open(_ item: GalleryItem) {
+        switch item {
+        case .importCell: isImporting = true
+        case .document(let id):
+            if let document = library.visibleDocuments.first(where: { $0.id == id }) { path.append(document) }
+        }
+    }
+
+    /// Moves the highlight; from the search field, ↓ highlights the first
+    /// match and hands the keyboard to the grid. False if the key isn't ours.
+    private func handleArrow(_ arrow: GridHighlight.Arrow) -> Bool {
+        guard path.isEmpty else { return false }
+        if isSearchFocused {
+            guard arrow == .down, let first = library.visibleDocuments.first else { return false }
+            highlighted = .document(first.id)
+            isGridFocused = true
+            return true
+        }
+        let grid = GridHighlight(columns: columnCount, cellCount: items.count)
+        let current = highlighted.flatMap(items.firstIndex(of:))
+        highlighted = items[grid.moved(from: current, arrow)]
+        return true
+    }
+
+    /// Return opens the highlighted cell; ⌘⌫ asks to Remove its Document.
+    private func handleAction(_ press: KeyPress) -> Bool {
+        guard path.isEmpty, !isSearchFocused, let highlighted else { return false }
+        switch press.key {
+        case .return:
+            open(highlighted)
+        case .delete where press.modifiers == .command:
+            guard case .document(let id) = highlighted else { return false }
+            removal = library.visibleDocuments.first { $0.id == id }
+        default:
+            return false
+        }
+        return true
+    }
+
     private func importFile(_ url: URL) async {
         switch await library.import(url) {
         case .opened(let document): path = [document]
@@ -112,6 +198,36 @@ struct FileGalleryView: View {
         case .rejected(let reason): rejection = ImportAlert(rejected: url, reason: reason)
         case .failed(let message): rejection = ImportAlert(failed: url, message: message)
         }
+    }
+}
+
+/// A cell of the grid: the "+" cell, or a Document's.
+private enum GalleryItem: Hashable {
+    case importCell
+    case document(String)
+}
+
+extension GridHighlight.Arrow {
+    fileprivate init?(_ key: KeyEquivalent) {
+        switch key {
+        case .upArrow: self = .up
+        case .downArrow: self = .down
+        case .leftArrow: self = .left
+        case .rightArrow: self = .right
+        default: return nil
+        }
+    }
+}
+
+/// The grid's measurements. Cells are at least `minimumCellWidth` wide, and
+/// the columns that fit are counted here because arrow keys need the count.
+private enum Layout {
+    static let spacing: CGFloat = 16
+    static let minimumCellWidth: CGFloat = 140
+
+    static func columnCount(forWidth width: CGFloat) -> Int {
+        let usable = width - 2 * spacing
+        return max(1, Int((usable + spacing) / (minimumCellWidth + spacing)))
     }
 }
 
