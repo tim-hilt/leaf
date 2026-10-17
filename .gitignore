@@ -10,3 +10,6 @@
 /apple/LeafCore/.swiftpm/
 /apple/Config/Local.xcconfig
 xcuserdata/
+
+*.log
+
