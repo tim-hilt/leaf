@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** in-review
+**Status:** done
 
 - [x] Document opens at fit-to-width
 - [x] Zoom limited to between fit-to-width and 5× (limits unit-tested, test-first)

@@ -6,7 +6,7 @@ import SwiftUI
 /// `NavigationStack`, which provides the back chevron and iOS edge swipe.
 ///
 /// Immersive Mode hides everything but the pages. On iOS a single tap toggles
-/// it; on macOS it is the native full screen, which needs no code here.
+/// it; on macOS it is the native full screen, with the toolbar shown on hover.
 /// Scrolling never changes it, and the Reader always opens with its UI showing.
 struct ReaderView: View {
     let document: PDFDocument
@@ -28,6 +28,7 @@ struct ReaderView: View {
             #else
                 .background(BackShortcut())
                 .focusedSceneValue(\.reader, handle)
+                .windowToolbarFullScreenVisibility(.onHover)
             #endif
     }
 

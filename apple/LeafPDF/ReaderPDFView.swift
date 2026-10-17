@@ -6,7 +6,7 @@ final class ReaderHandle {
     fileprivate(set) weak var view: ReaderPDFView?
 }
 
-/// A `PDFView` zoomable from fit-to-width to 5× that (`ZoomRange`) that keeps
+/// A `PDFView` zoomable from fit-to-width to 5× (`ZoomRange`) that keeps
 /// your place: the content at the top of the viewport stays put when the view
 /// is resized or rotated, and when zooming with the keyboard. PDFKit's own
 /// pinch gesture does the pinch zooming, so the content under the fingers
@@ -59,22 +59,26 @@ final class ReaderPDFView: PDFView {
 
     // MARK: Keeping your place
 
-    /// The content at the viewport's top-left corner.
-    private var topOfViewport: Place? {
-        guard let destination = currentDestination, let page = destination.page,
-            let document
-        else { return nil }
-        return Place(pageIndex: document.index(for: page), point: destination.point)
+    /// The content at the viewport's top-left corner. Nil without a Document.
+    // Not `currentDestination`: on iOS it is the viewport's bottom-left.
+    var topOfViewport: Place? {
+        guard let document, let page = page(for: viewportTopLeft, nearest: true) else { return nil }
+        return Place(pageIndex: document.index(for: page), point: convert(viewportTopLeft, to: page))
     }
 
-    private func go(to place: Place) {
+    /// Scrolls `place` to the viewport's top-left corner, as far as the
+    /// Document's edges allow.
+    func go(to place: Place) {
         guard let page = document?.page(at: place.pageIndex) else { return }
-        // Scrolling puts a destination at the view's top-left.
-        go(to: PDFDestination(page: page, at: place.point))
+        #if os(iOS)
+            scroll(place.point, on: page, to: viewportTopLeft)
+        #else
+            go(to: PDFDestination(page: page, at: place.point))
+        #endif
     }
 
     /// Remembers the viewport; call just before the view's size changes.
-    fileprivate func sizeWillChange(to size: CGSize, from oldSize: CGSize) {
+    private func sizeWillChange(to size: CGSize, from oldSize: CGSize) {
         guard size != oldSize, viewpoint == nil, let range = zoomRange,
             let place = topOfViewport
         else { return }
@@ -109,6 +113,27 @@ final class ReaderPDFView: PDFView {
 
         // Recognizers hold their delegate weakly.
         private static let simultaneousTaps = SimultaneousTaps()
+
+        /// Below any part of the view hidden behind bars.
+        private var viewportTopLeft: CGPoint { CGPoint(x: 0, y: safeAreaInsets.top) }
+
+        /// Scrolls so that `point` on `page` lands at `viewPoint`, as far as the
+        /// Document's edges allow. PDFKit's `go(to:)` can't do this: on iOS it
+        /// lands up to a page off, so this moves PDFKit's scroll view directly.
+        private func scroll(_ point: CGPoint, on page: PDFPage, to viewPoint: CGPoint) {
+            guard let scrollView = subviews.lazy.compactMap({ $0 as? UIScrollView }).first
+            else { return }
+            let current = convert(point, from: page)
+            let inset = scrollView.adjustedContentInset
+            let minimum = CGPoint(x: -inset.left, y: -inset.top)
+            let maximum = CGPoint(
+                x: scrollView.contentSize.width + inset.right - scrollView.bounds.width,
+                y: scrollView.contentSize.height + inset.bottom - scrollView.bounds.height)
+            var offset = scrollView.contentOffset
+            offset.x = min(max(offset.x + current.x - viewPoint.x, minimum.x), max(maximum.x, minimum.x))
+            offset.y = min(max(offset.y + current.y - viewPoint.y, minimum.y), max(maximum.y, minimum.y))
+            scrollView.contentOffset = offset
+        }
 
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -147,11 +172,7 @@ final class ReaderPDFView: PDFView {
             guard let page = page(for: point, nearest: true) else { return }
             let anchor = convert(point, to: page)
             scaleFactor = scale
-            // Aim for the page-space point that has the same offset from the
-            // anchor as the view's corner has from `point`.
-            let anchorNow = convert(anchor, from: page)
-            let corner = CGPoint(x: anchorNow.x - point.x, y: anchorNow.y - point.y)
-            go(to: PDFDestination(page: page, at: convert(corner, to: page)))
+            scroll(anchor, on: page, to: point)
         }
 
         @objc private func didSingleTap(_ tap: UITapGestureRecognizer) {
@@ -162,7 +183,10 @@ final class ReaderPDFView: PDFView {
             guard let range = zoomRange else { return }
             zoom(to: range.doubleTapTarget(from: scaleFactor), keeping: tap.location(in: self))
         }
-        #else
+    #else
+        /// PDFView isn't flipped: its top edge is at `bounds.maxY`.
+        private var viewportTopLeft: CGPoint { CGPoint(x: 0, y: bounds.maxY) }
+
         override func setFrameSize(_ newSize: NSSize) {
             sizeWillChange(to: newSize, from: frame.size)
             super.setFrameSize(newSize)

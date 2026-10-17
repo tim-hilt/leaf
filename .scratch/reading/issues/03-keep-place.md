@@ -12,3 +12,7 @@
 - [x] macOS ⌘+ / ⌘− zoom anchored at the top of the viewport; ⌘0 returns to fit-to-width
 - [x] Rules for keeping your place are unit-tested, test-first
 - [ ] Manually verified on iPhone and iPad in both orientations, and on Mac at several window sizes
+
+## Comments
+
+- Review: on iOS, `currentDestination` is the viewport's bottom-left and `go(to:)` lands up to a page off, so rotation and double-tap lost your place. Now measured by coordinate conversion and restored via PDFKit's scroll view; covered by `ReaderPDFViewTests`. Still needs the manual check.
