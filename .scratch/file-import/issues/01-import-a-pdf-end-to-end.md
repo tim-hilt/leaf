@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** in-review
+**Status:** done
 
 - [x] Core `Library`: open at a root folder, Import a source path, list Documents newest first (Rust tests in the source file, against temporary folders, test-first)
 - [x] Import streams the source once, computing SHA-256 while copying into a staging folder, then renames into place at `<root>/<sha256>/<original file name>` (ADR-0012)

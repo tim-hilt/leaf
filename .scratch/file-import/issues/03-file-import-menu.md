@@ -6,7 +6,7 @@
 
 **Status:** in-review
 
-- [x] "Import…" ⌘O replaces "New" in the File menu on macOS and iPadOS
+- [x] "Import…" ⌘O in the File menu on macOS and iPadOS, after "New Window" (kept so a second window can be opened, see 07)
 - [x] It opens the same picker and Import flow as "+"
 - [x] From the Reader, a successful Import replaces the open Document with the new one
 - [ ] Manually checked on Mac and iPad with a keyboard

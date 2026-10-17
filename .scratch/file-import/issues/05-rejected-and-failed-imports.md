@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** in-review
+**Status:** done
 
 - [x] Client Library model returns `rejected(.notPDF | .unreadable | .locked)` before calling the core (Swift tests with garbage bytes and a locked PDF)
 - [x] Owner-password-only PDFs are accepted

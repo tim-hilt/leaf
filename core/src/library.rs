@@ -168,7 +168,10 @@ fn copy_hashed(from: &Path, to: &Path, mut progress: impl FnMut(u64, u64)) -> io
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; 256 * 1024];
     loop {
-        let n = input.read(&mut buffer)?;
+        let n = match input.read(&mut buffer) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
         if n == 0 {
             break;
         }

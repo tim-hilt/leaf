@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** in-review
+**Status:** done
 
 - [x] Core `remove(id)` renames the Document's folder out of the Library, then deletes it (Rust tests)
 - [x] Opening the Library removes leftover removal folders

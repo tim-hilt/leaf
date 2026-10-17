@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** in-review
+**Status:** done
 
 - [x] Core Import returns `AlreadyImported(id)` for a hash already in the Library, also under a different file name, and leaves the Library unchanged (Rust tests)
 - [x] Client Library model returns a `duplicate(Document)` outcome (Swift test)

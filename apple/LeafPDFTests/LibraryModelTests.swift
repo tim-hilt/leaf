@@ -174,7 +174,8 @@ import Testing
         await importing.value
 
         #expect(!seen.isEmpty)
-        #expect(seen.allSatisfy { $0.title == "Big One" && (0...1).contains($0.fraction) })
+        #expect(seen.last?.title == "Big One")
+        #expect(seen.allSatisfy { (0...1).contains($0.fraction) })
         #expect(zip(seen, seen.dropFirst()).allSatisfy { $0.fraction <= $1.fraction })
         #expect(library.runningImport == nil)
     }

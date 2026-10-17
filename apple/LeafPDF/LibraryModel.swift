@@ -20,7 +20,7 @@ struct LibraryDocument: Identifiable, Hashable {
 }
 
 /// Why a File isn't Imported at all; nothing was copied.
-enum ImportRejection {
+enum ImportRejection: Error {
     /// Not a PDF.
     case notPDF
     /// Looks like a PDF, but PDFKit can't open it.
@@ -29,7 +29,9 @@ enum ImportRejection {
     case locked
 }
 
+/// How an Import ended.
 enum ImportOutcome {
+    /// The File is now a new Document in the Library.
     case opened(LibraryDocument)
     /// The Library already holds this File's content: the existing Document.
     case duplicate(LibraryDocument)
@@ -40,7 +42,8 @@ enum ImportOutcome {
 
 /// An Import in progress: what the progress modal shows.
 struct RunningImport: Equatable {
-    let title: String
+    /// The file name until PDFKit has read the File, then its Title.
+    fileprivate(set) var title: String
     /// Share of the File copied, 0...1.
     fileprivate(set) var fraction: Double = 0
 }
@@ -87,11 +90,15 @@ final class LibraryModel {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
 
-        let pdf = PDFDocument(url: url)
-        if let rejection = Self.rejection(of: url, opened: pdf) { return .rejected(rejection) }
-
-        runningImport = RunningImport(title: pdf?.title ?? url.deletingPathExtension().lastPathComponent)
+        // Disable the UI before PDFKit reads the File: that alone can take a while.
+        runningImport = RunningImport(title: url.deletingPathExtension().lastPathComponent)
         defer { runningImport = nil }
+
+        switch await Task.detached(operation: { Self.check(url) }).value {
+        case .failure(let rejection): return .rejected(rejection)
+        case .success(let title?): runningImport?.title = title
+        case .success(nil): break
+        }
 
         let core = core, path = url.path
         // Reports arriving after the Import finished find no runningImport and do nothing.
@@ -107,7 +114,7 @@ final class LibraryModel {
                 case .imported(let stored): (stored, true)
                 case .alreadyImported(let stored): (stored, false)
                 }
-            guard let document = LibraryDocument(stored) else {
+            guard let document = documents.first(where: { $0.id == stored.id }) else {
                 return .failed("The imported file couldn't be opened.")
             }
             return isNew ? .opened(document) : .duplicate(document)
@@ -125,18 +132,24 @@ final class LibraryModel {
         refresh()
     }
 
-    /// Why the File at `url` can't be Imported, given what PDFKit made of it
-    /// (`opened`). A File that can't be read at all isn't rejected: copying it
-    /// fails with the system's own reason.
-    private static func rejection(of url: URL, opened pdf: PDFDocument?) -> ImportRejection? {
-        if let pdf { return pdf.isLocked ? .locked : nil }
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+    /// The Title of the File at `url` if it can be Imported, or why not. A
+    /// File that can't be read at all isn't rejected (nil Title): copying it
+    /// fails with the system's own reason. Reads the File, so keep it off the
+    /// main thread.
+    private nonisolated static func check(_ url: URL) -> Result<String?, ImportRejection> {
+        if let pdf = PDFDocument(url: url) { return pdf.isLocked ? .failure(.locked) : .success(pdf.title) }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return .success(nil) }
         defer { try? handle.close() }
         let head = (try? handle.read(upToCount: 5)) ?? Data()
-        return head == Data("%PDF-".utf8) ? .unreadable : .notPDF
+        return .failure(head == Data("%PDF-".utf8) ? .unreadable : .notPDF)
     }
 
+    /// Reloads `documents` from the core. Documents already listed keep their
+    /// opened PDF. If the listing fails, `documents` stays as it was rather
+    /// than looking as if everything was Removed.
     private func refresh() {
-        documents = ((try? core.documents()) ?? []).compactMap(LibraryDocument.init)
+        guard let stored = try? core.documents() else { return }
+        let listed = Dictionary(uniqueKeysWithValues: documents.map { ($0.id, $0) })
+        documents = stored.compactMap { listed[$0.id] ?? LibraryDocument($0) }
     }
 }
