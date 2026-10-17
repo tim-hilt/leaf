@@ -9,13 +9,13 @@ import Testing
     let place = Place(pageIndex: 5, point: CGPoint(x: 0, y: 400))
 
     @Test func goesToAPlace() throws {
-        let reader = makeReader(size: portrait)
+        let reader = try makeReader(size: portrait)
         reader.go(to: place)
         try expectAtTop(place, of: reader)
     }
 
     @Test func keepsThePlaceWhenResizedAtFitToWidth() throws {
-        let reader = makeReader(size: portrait)
+        let reader = try makeReader(size: portrait)
         reader.go(to: place)
         resize(reader, to: landscape)
         try expectAtTop(place, of: reader)
@@ -23,7 +23,7 @@ import Testing
     }
 
     @Test func keepsThePlaceAndRelativeZoomWhenResizedZoomedIn() throws {
-        let reader = makeReader(size: portrait)
+        let reader = try makeReader(size: portrait)
         reader.zoomIn()
         reader.go(to: place)
         let multiple = reader.scaleFactor / reader.scaleFactorForSizeToFit
@@ -33,7 +33,7 @@ import Testing
     }
 
     @Test func keyboardZoomKeepsThePlace() throws {
-        let reader = makeReader(size: portrait)
+        let reader = try makeReader(size: portrait)
         reader.go(to: place)
         reader.zoomIn()
         try expectAtTop(place, of: reader)
@@ -42,9 +42,9 @@ import Testing
     }
 }
 
-/// A Reader on the sample Document, laid out in a window of `size`.
+/// A Reader on an eight-page Document, laid out in a window of `size`.
 @MainActor
-private func makeReader(size: CGSize) -> ReaderPDFView {
+private func makeReader(size: CGSize) throws -> ReaderPDFView {
     let reader = ReaderPDFView(handle: ReaderHandle())
     reader.displayMode = .singlePageContinuous
     reader.autoScales = true
@@ -60,7 +60,7 @@ private func makeReader(size: CGSize) -> ReaderPDFView {
         window.isReleasedWhenClosed = false
         window.contentView = reader
     #endif
-    reader.document = SampleDocument.pdf
+    reader.document = try makePDF(named: "Long.pdf", pageCount: 8)
     layout(reader)
     return reader
 }
