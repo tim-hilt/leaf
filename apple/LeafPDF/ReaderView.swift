@@ -28,7 +28,7 @@ struct ReaderView: View {
             if let pdf {
                 PDFKitView(
                     document: pdf, handle: handle, place: document.place, onSingleTap: toggleImmersive,
-                    onOpen: { saver?.saveNow() }, onScroll: { saver?.scrolled() })
+                    onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() })
             } else {
                 Color.clear
             }
@@ -38,8 +38,8 @@ struct ReaderView: View {
             saver = ReadingProgressSaver(library: library, document: document, handle: handle)
             pdf = PDFDocument(url: document.file)
         }
-        .onDisappear { saver?.saveNow() }
-        .onChange(of: scenePhase) { if scenePhase == .background { saver?.saveNow() } }
+        .onDisappear { saver?.saveIfMoved() }
+        .onChange(of: scenePhase) { if scenePhase == .background { saver?.saveIfMoved() } }
         .navigationTitle(document.title)
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

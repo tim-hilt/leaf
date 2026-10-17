@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** in-review
+**Status:** done
 
 - [x] Reading picks, among concurrent `progress` values, the one with the newest Last Read; on equal times it falls back to Automerge's default
 - [x] Rust tests merge two Automerge actors that wrote concurrently and check the newest Last Read wins in both merge directions

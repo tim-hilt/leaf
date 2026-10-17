@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** in-review
+**Status:** done
 
 - [x] "Recently Read" sits in the toolbar sort menu next to Date Imported and Title; Date Imported stays the default
 - [x] Newest Last Read first; reversing flips only opened Documents; never-opened Documents always follow in Date Imported order (newest first)

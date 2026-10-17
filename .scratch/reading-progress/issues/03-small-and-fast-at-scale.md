@@ -4,12 +4,12 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [x] Rust test: one Document's state stays under 64 KB after 1,000 saves
-- [ ] Rust test: listing 1,000 Documents with Reading Progress takes under 100 ms; ignored by default and run in a release build
-- [ ] If a budget fails, stop and report the measured numbers instead of adding a cache or background pass
+- [x] Rust test: listing 1,000 Documents with Reading Progress takes under 100 ms; ignored by default and run in a release build
+- [x] If a budget fails, stop and report the measured numbers instead of adding a cache or background pass
 
-## Budget failed (stopped, no cache or background pass added)
+## Budget
 
-`listing_1000_documents_with_reading_progress_takes_under_100_ms` (release build, 1,000 Documents with Reading Progress) measured 121, 125, 127 and 127 ms over four runs. Budget: 100 ms. Decide next step (e.g. non-synced index or background pass, per the spec's Further Notes) before the second bullet can be ticked.
+The serial listing measured 121–127 ms (release, 1,000 Documents with Reading Progress). The review spread `Library::documents` over the cores (no cache or background pass): now ~75 ms on a fresh Library and ~26 ms warm, as fast as listing without Reading Progress was before.
