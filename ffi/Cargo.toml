@@ -1,0 +1,22 @@
+[package]
+name = "leafpdf-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# Linked into the Apple XCFramework. Add "cdylib" once Android needs it.
+crate-type = ["staticlib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["uniffi/cli"]
+
+[dependencies]
+leafpdf-core = { path = "../core" }
+uniffi = "0.32"

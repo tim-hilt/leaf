@@ -1,0 +1,44 @@
+# XcodeGen spec for the Apple clients; `make apple-project` generates
+# LeafPDF.xcodeproj from it. Edit this file, never the generated project.
+name: LeafPDF
+options:
+  bundleIdPrefix: com.timhilt
+  deploymentTarget:
+    iOS: "18.0"
+    macOS: "15.0"
+packages:
+  LeafCore:
+    path: LeafCore
+targets:
+  # One multiplatform target serves iOS, iPadOS and macOS.
+  LeafPDF:
+    type: application
+    platform: auto
+    supportedDestinations: [iOS, macOS]
+    sources: [LeafPDF]
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
+    dependencies:
+      - package: LeafCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.timhilt.leafpdf
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: LeafPDF
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_APP_SANDBOX: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        # The core is built for Apple silicon only (see docs/adr/0006).
+        ARCHS: arm64
+        # Ad-hoc sign macOS builds so they run without a development team.
+        # Revisit once macOS needs capabilities such as CloudKit.
+        "CODE_SIGN_IDENTITY[sdk=macosx*]": "-"
+    scheme: {}

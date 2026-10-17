@@ -1,0 +1,6 @@
+# Names of the generated Swift module and its C module. The Apple Swift
+# package (apple/LeafCore/Package.swift) depends on these names.
+[bindings.swift]
+module_name = "LeafCore"
+ffi_module_name = "LeafCoreFFI"
+ffi_module_filename = "LeafCoreFFI"

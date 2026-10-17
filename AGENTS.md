@@ -2,6 +2,13 @@
 
 Native, cross platform PDF Reader with cloud syncing
 
+# Layout
+
+- `core/`: `leafpdf-core`, platform-independent logic (pure Rust)
+- `ffi/`: `leafpdf-ffi`, UniFFI bindings of the core
+- `apple/`: iOS, iPadOS and macOS client; edit `project.yml`, never the `.xcodeproj`
+- `docs/adr/`: architecture decisions
+
 # Coding Guidelines
 
 - Focus on being snappy and Lightweight. Don't add bloat!

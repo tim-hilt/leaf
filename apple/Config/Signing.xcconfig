@@ -1,0 +1,3 @@
+// Per-developer signing settings (e.g. DEVELOPMENT_TEAM for running on a
+// device) go into Local.xcconfig, which is not committed.
+#include? "Local.xcconfig"
