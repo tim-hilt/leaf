@@ -9,6 +9,9 @@ struct ZoomRange {
     /// How far a double-tap zooms in from fit-to-width.
     static let doubleTapMultiple: CGFloat = 2
 
+    /// How much each ⌘+ / ⌘− step zooms in or out.
+    static let keyboardStep: CGFloat = 1.25
+
     let fitToWidth: CGFloat
 
     var minimum: CGFloat { fitToWidth }
@@ -23,5 +26,20 @@ struct ZoomRange {
     func doubleTapTarget(from scale: CGFloat) -> CGFloat {
         let isFitToWidth = scale < fitToWidth * 1.01
         return isFitToWidth ? clamped(fitToWidth * Self.doubleTapMultiple) : fitToWidth
+    }
+
+    func zoomedIn(from scale: CGFloat) -> CGFloat {
+        clamped(scale * Self.keyboardStep)
+    }
+
+    func zoomedOut(from scale: CGFloat) -> CGFloat {
+        clamped(scale / Self.keyboardStep)
+    }
+
+    /// The scale in this range that is the same multiple of fit-to-width as
+    /// `scale` is in `old`. Re-fits when `scale` was fit-to-width, and keeps
+    /// the zoom relative to fit-to-width when zoomed in.
+    func rescaled(_ scale: CGFloat, from old: ZoomRange) -> CGFloat {
+        clamped(scale * (fitToWidth / old.fitToWidth))
     }
 }

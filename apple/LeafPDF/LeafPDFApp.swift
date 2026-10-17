@@ -6,5 +6,8 @@ struct LeafPDFApp: App {
         WindowGroup {
             FileGalleryView()
         }
+        #if os(macOS)
+            .commands { ReaderCommands() }
+        #endif
     }
 }

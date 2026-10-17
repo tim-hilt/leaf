@@ -4,11 +4,11 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Place is stored as page index + page-space point
-- [ ] Rotating or resizing keeps the content at the top of the viewport fixed
-- [ ] At fit-to-width: re-fit to the new width; zoomed in: keep the zoom relative to fit-to-width
-- [ ] macOS ⌘+ / ⌘− zoom anchored at the top of the viewport; ⌘0 returns to fit-to-width
-- [ ] Rules for keeping your place are unit-tested, test-first
+- [x] Place is stored as page index + page-space point
+- [x] Rotating or resizing keeps the content at the top of the viewport fixed
+- [x] At fit-to-width: re-fit to the new width; zoomed in: keep the zoom relative to fit-to-width
+- [x] macOS ⌘+ / ⌘− zoom anchored at the top of the viewport; ⌘0 returns to fit-to-width
+- [x] Rules for keeping your place are unit-tested, test-first
 - [ ] Manually verified on iPhone and iPad in both orientations, and on Mac at several window sizes
