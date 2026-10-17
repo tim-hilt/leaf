@@ -10,10 +10,20 @@ import Testing
 
     var coversFolder: URL { root.deletingLastPathComponent().appending(path: "\(root.lastPathComponent)-covers") }
 
+    /// This device's user defaults, as far as the Library is concerned: one
+    /// suite per test, so tests don't see each other's sort choice.
+    var defaults: UserDefaults { UserDefaults(suiteName: root.lastPathComponent)! }
+
     /// Opens the Library at `root`, keeping its saved Titles and Authors in
-    /// `detailsFile` and its Covers in `coversFolder`.
+    /// `detailsFile`, its Covers in `coversFolder` and its sort choice in `defaults`.
     func openLibrary() throws -> LibraryModel {
-        try LibraryModel(root: root, detailsFile: detailsFile, coversFolder: coversFolder)
+        try LibraryModel(root: root, detailsFile: detailsFile, coversFolder: coversFolder, defaults: defaults)
+    }
+
+    /// Imports a PDF with the given Title, oldest first when called in sequence.
+    func importPDF(titled title: String, into library: LibraryModel) async throws {
+        _ = await library.import(try writePDF(named: "\(UUID().uuidString).pdf", metadataTitle: title))
+        try await Task.sleep(for: .milliseconds(20))
     }
 
     /// The saved Cover files.
@@ -340,6 +350,68 @@ import Testing
         #expect(seen.allSatisfy { (0...1).contains($0.fraction) })
         #expect(zip(seen, seen.dropFirst()).allSatisfy { $0.fraction <= $1.fraction })
         #expect(library.runningImport == nil)
+    }
+
+    // MARK: Sorting
+
+    /// A Library with Titles imported in this order, so Date Imported is
+    /// newest-first: "Zebra", "résumé 10", "Resume 2", "apple".
+    func libraryForSorting() async throws -> LibraryModel {
+        let library = try openLibrary()
+        for title in ["apple", "Resume 2", "résumé 10", "Zebra"] { try await importPDF(titled: title, into: library) }
+        return library
+    }
+
+    @Test func sortsByDateImportedNewestFirstByDefault() async throws {
+        let library = try await libraryForSorting()
+
+        #expect(library.sort == LibrarySort(key: .dateImported, isReversed: false))
+        #expect(library.visibleDocuments.map(\.title) == ["Zebra", "résumé 10", "Resume 2", "apple"])
+    }
+
+    @Test func reversingDateImportedListsTheOldestFirst() async throws {
+        let library = try await libraryForSorting()
+
+        library.sort.isReversed = true
+
+        #expect(library.visibleDocuments.map(\.title) == ["apple", "Resume 2", "résumé 10", "Zebra"])
+    }
+
+    @Test func sortsByTitleLikeFinder() async throws {
+        let library = try await libraryForSorting()
+
+        library.sort.key = .title
+
+        #expect(library.visibleDocuments.map(\.title) == ["apple", "Resume 2", "résumé 10", "Zebra"])
+    }
+
+    @Test func reversingTitleListsZToA() async throws {
+        let library = try await libraryForSorting()
+
+        library.sort = LibrarySort(key: .title, isReversed: true)
+
+        #expect(library.visibleDocuments.map(\.title) == ["Zebra", "résumé 10", "Resume 2", "apple"])
+    }
+
+    @Test func aDocumentWhoseTitleArrivesLaterMovesToItsPlace() async throws {
+        let first = try openLibrary()
+        _ = await first.import(try writePDF(named: "zzz.pdf", metadataTitle: "Alpha"))
+        _ = await first.import(try writePDF(named: "mmm.pdf", metadataTitle: "Mike"))
+        try FileManager.default.removeItem(at: detailsFile)
+        let library = try openLibrary()
+        library.sort.key = .title
+        // Still by file name: the background pass can't publish before the next suspension.
+        #expect(library.visibleDocuments.map(\.title) == ["mmm", "zzz"])
+
+        try await waitUntil { library.visibleDocuments.map(\.title) == ["Alpha", "Mike"] }
+    }
+
+    @Test func theSortChoiceIsRememberedOnThisDevice() throws {
+        let library = try openLibrary()
+
+        library.sort = LibrarySort(key: .title, isReversed: true)
+
+        #expect(try openLibrary().sort == LibrarySort(key: .title, isReversed: true))
     }
 
     /// Waits up to 10 s for `condition`, which the background pass makes true.

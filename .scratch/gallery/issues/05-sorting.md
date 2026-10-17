@@ -4,12 +4,12 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] The Library model exposes the sort choice and the resulting visible Documents
-- [ ] Date Imported uses the core's newest-first order, reversed on request
-- [ ] Title uses `localizedStandardCompare` ("2" before "10", ignoring case and accents), reversible
-- [ ] The choice is stored per device (user defaults), shared by all windows and not synced
-- [ ] The "+" cell stays first whatever the order
-- [ ] A Document whose Title arrives later moves to its place with the native animation
-- [ ] Tests (test-first, Library model): Date Imported in both directions; Title in both directions, Finder-like
+- [x] The Library model exposes the sort choice and the resulting visible Documents
+- [x] Date Imported uses the core's newest-first order, reversed on request
+- [x] Title uses `localizedStandardCompare` ("2" before "10", ignoring case and accents), reversible
+- [x] The choice is stored per device (user defaults), shared by all windows and not synced
+- [x] The "+" cell stays first whatever the order
+- [x] A Document whose Title arrives later moves to its place with the native animation
+- [x] Tests (test-first, Library model): Date Imported in both directions; Title in both directions, Finder-like

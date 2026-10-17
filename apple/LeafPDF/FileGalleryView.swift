@@ -1,8 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The Library as a vertically scrolling grid of Documents, newest Import
-/// first, led by a "+" cell that Imports. A click or tap opens a Document in
+/// The Library as a vertically scrolling grid of Documents in the order chosen
+/// in the toolbar's sort menu, led by a "+" cell that Imports. A click or tap opens a Document in
 /// the Reader. The toolbar "+" and File > Import… (also from the Reader) Import
 /// a PDF and open it, replacing any open Document. A cell's context menu
 /// (long-press, right-click) or VoiceOver action offers "Remove", after
@@ -24,7 +24,7 @@ struct FileGalleryView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 16, alignment: .top)], spacing: 16) {
                     Button { isImporting = true } label: { ImportCell() }
                         .accessibilityLabel("Import…")
-                    ForEach(library.documents) { document in
+                    ForEach(library.visibleDocuments) { document in
                         Button { path.append(document) } label: { DocumentCell(document: document) }
                             .contextMenu {
                                 Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
@@ -35,12 +35,15 @@ struct FileGalleryView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(16)
+                // Animates a Document to its new place when the order changes.
+                .animation(.default, value: library.visibleDocuments.map(\.id))
             }
             .onScrollPhaseChange { _, phase in scroll.scrollingChanged(isScrolling: phase != .idle) }
             .environment(scroll)
             .navigationTitle("LeafPDF")
             .navigationDestination(for: LibraryDocument.self) { ReaderView(document: $0) }
             .toolbar {
+                SortMenu(sort: Bindable(library).sort)
                 Button("Import…", systemImage: "plus") { isImporting = true }
             }
         }
@@ -127,5 +130,20 @@ private struct ImportAlert {
     init(failed url: URL, message: String) {
         title = "Couldn't import “\(url.lastPathComponent)”"
         self.message = message
+    }
+}
+
+/// The toolbar menu choosing how the Gallery is sorted, like the one in Files.
+private struct SortMenu: View {
+    @Binding var sort: LibrarySort
+
+    var body: some View {
+        Menu("Sort", systemImage: "arrow.up.arrow.down") {
+            Picker("Sort By", selection: $sort.key) {
+                Text("Date Imported").tag(LibrarySort.Key.dateImported)
+                Text("Title").tag(LibrarySort.Key.title)
+            }
+            Toggle("Reverse Order", isOn: $sort.isReversed)
+        }
     }
 }

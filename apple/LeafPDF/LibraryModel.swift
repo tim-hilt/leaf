@@ -68,26 +68,43 @@ private final class ProgressRelay: ImportProgress {
 }
 
 /// The Library as the clients see it: the core's Library folder plus its
-/// Documents, newest Import first, each with its saved Title and Author. One
-/// per app, shared by all windows.
+/// Documents, each with its saved Title and Author. One per app, shared by all
+/// windows.
 @MainActor @Observable
 final class LibraryModel {
-    private(set) var documents: [LibraryDocument] = []
+    /// Every Document, newest Import first.
+    private(set) var documents: [LibraryDocument] = [] { didSet { reorder() } }
+    /// How the Gallery orders `visibleDocuments`. Remembered on this device
+    /// (user defaults, not synced); setting it re-orders at once.
+    var sort: LibrarySort {
+        didSet {
+            guard sort != oldValue else { return }
+            sort.save(to: defaults)
+            reorder()
+        }
+    }
+    /// The Documents the Gallery shows, in `sort` order. Kept up to date as
+    /// Titles arrive, so a Document moves to its place when its Title does.
+    private(set) var visibleDocuments: [LibraryDocument] = []
     /// Non-nil from the start of an Import until it finishes. The UI is
     /// disabled meanwhile.
     private(set) var runningImport: RunningImport?
     @ObservationIgnored private let core: LeafCore.Library
     @ObservationIgnored private let saved: DetailsStore
     @ObservationIgnored private let covers: CoverStore
+    @ObservationIgnored private let defaults: UserDefaults
 
     /// Opens the Library folder at `root`, creating it if needed, with Titles
-    /// and Authors saved in `detailsFile` and Covers in `coversFolder`. Documents without saved details are
+    /// and Authors saved in `detailsFile`, Covers in `coversFolder` and the sort
+    /// choice in `defaults`. Documents without saved details are
     /// listed by file name; a low-priority background pass then reads them
     /// from the PDFs, one at a time.
-    init(root: URL, detailsFile: URL, coversFolder: URL) throws {
+    init(root: URL, detailsFile: URL, coversFolder: URL, defaults: UserDefaults) throws {
         core = try LeafCore.Library.open(root: root.path)
         saved = DetailsStore(file: detailsFile)
         covers = CoverStore(folder: coversFolder)
+        self.defaults = defaults
+        sort = LibrarySort(from: defaults)
         refresh()
         readMissingDetails()
     }
@@ -102,7 +119,8 @@ final class LibraryModel {
         return try LibraryModel(
             root: support.appending(path: "Library", directoryHint: .isDirectory),
             detailsFile: support.appending(path: "Details.json"),
-            coversFolder: caches.appending(path: "Covers", directoryHint: .isDirectory))
+            coversFolder: caches.appending(path: "Covers", directoryHint: .isDirectory),
+            defaults: .standard)
     }
 
     /// The saved Cover of `document`, loaded off the main thread, or nil if
@@ -200,6 +218,8 @@ final class LibraryModel {
         let head = (try? handle.read(upToCount: 5)) ?? Data()
         return .failure(head == Data("%PDF-".utf8) ? .unreadable : .notPDF)
     }
+
+    private func reorder() { visibleDocuments = sort.ordered(documents) }
 
     /// Reloads `documents` from the core, with their saved details. If the
     /// listing fails, `documents` stays as it was rather than looking as if
