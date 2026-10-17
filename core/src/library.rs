@@ -5,7 +5,13 @@
 //! renamed into place, so a Document is either fully there or not at all.
 //! Removals go the other way: the folder is renamed into `<root>/.removing`
 //! first, then deleted.
+//!
+//! Next to its File, a Document's folder holds the Document's Automerge
+//! document as a hidden file (`STATE`), see `progress`. The File is the
+//! folder's only non-hidden entry. The state is stored like an Import: written
+//! to staging, then renamed into place.
 
+use crate::progress::{self, ReadingProgress};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -14,18 +20,22 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 const STAGING: &str = ".staging";
 const REMOVING: &str = ".removing";
+const STATE: &str = ".state.automerge";
 
 /// A Document in the Library.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Document {
     /// SHA-256 of the File, lowercase hex.
     pub id: String,
     /// The stored File.
     pub path: PathBuf,
+    /// Where the user left off; none if the Document was never opened, or its
+    /// state is missing or unreadable.
+    pub progress: Option<ReadingProgress>,
 }
 
 /// What an Import did.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ImportResult {
     /// The File was copied into the Library as a new Document.
     Imported(Document),
@@ -114,6 +124,31 @@ impl Library {
         Ok(found.into_iter().map(|(_, document)| document).collect())
     }
 
+    /// Stores `progress` as the Reading Progress of Document `id`, replacing
+    /// the previous one. Saving for a Document that isn't in the Library (never
+    /// imported, or Removed, even just now) does nothing. An `id` that isn't a
+    /// Document ID is `InvalidInput`. A corrupt state is replaced.
+    pub fn save_progress(&self, id: &str, progress: &ReadingProgress) -> io::Result<()> {
+        let folder = self.folder(id)?;
+        let state = folder.join(STATE);
+        let existing = match fs::read(&state) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            result => result.ok(),
+        };
+        let staged = self.staging().join(unique_name());
+        let mut file = File::create_new(&staged)?;
+        file.write_all(&progress::write(existing.as_deref(), progress))?;
+        file.sync_all()?;
+        match fs::rename(&staged, state) {
+            // The folder is gone: the Document was never there or was Removed.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let _ = fs::remove_file(&staged);
+                Ok(())
+            }
+            result => result,
+        }
+    }
+
     /// Deletes the Document `id` and its File. Removing a Document that
     /// isn't there does nothing. An `id` that isn't a Document ID (e.g. a
     /// path) is `InvalidInput`.
@@ -122,6 +157,18 @@ impl Library {
     /// never leaves a half-deleted Document listed; `open` finishes the job.
     /// Nothing is remembered about the Document, so it can be Imported again.
     pub fn remove(&self, id: &str) -> io::Result<()> {
+        let folder = self.folder(id)?;
+        let doomed = self.removing().join(unique_name());
+        match fs::rename(folder, &doomed) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            result => result?,
+        }
+        fs::remove_dir_all(doomed)
+    }
+
+    /// The folder of Document `id`, which may not exist. `id` must be a plain
+    /// name, so it can't point outside the Library.
+    fn folder(&self, id: &str) -> io::Result<PathBuf> {
         let mut parts = Path::new(id).components();
         let is_plain_name = matches!(
             (parts.next(), parts.next()),
@@ -133,13 +180,7 @@ impl Library {
                 format!("{id:?} is not a Document ID"),
             ));
         }
-
-        let doomed = self.removing().join(unique_name());
-        match fs::rename(self.root.join(id), &doomed) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-            result => result?,
-        }
-        fs::remove_dir_all(doomed)
+        Ok(self.root.join(id))
     }
 
     fn staging(&self) -> PathBuf {
@@ -186,9 +227,20 @@ fn copy_hashed(from: &Path, to: &Path, mut progress: impl FnMut(u64, u64)) -> io
 
 /// The Document stored in the folder `<sha256>`, if it holds a File.
 fn document_in(dir: &Path) -> io::Result<Option<Document>> {
-    let Some(file) = fs::read_dir(dir)?.next().transpose()? else {
+    let mut file = None;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_name().to_string_lossy().starts_with('.') {
+            file = Some(entry);
+            break;
+        }
+    }
+    let Some(file) = file else {
         return Ok(None);
     };
+    let progress = fs::read(dir.join(STATE))
+        .ok()
+        .and_then(|bytes| progress::read(&bytes));
     Ok(Some(Document {
         id: dir
             .file_name()
@@ -196,6 +248,7 @@ fn document_in(dir: &Path) -> io::Result<Option<Document>> {
             .to_string_lossy()
             .into_owned(),
         path: file.path(),
+        progress,
     }))
 }
 
@@ -454,5 +507,219 @@ mod tests {
 
         assert!(!leftover.exists());
         assert_eq!(library.documents().unwrap(), vec![]);
+    }
+
+    fn progress(page_index: u32, last_read: u64) -> ReadingProgress {
+        ReadingProgress {
+            page_index,
+            x: 12.5,
+            y: 700.25,
+            last_read,
+        }
+    }
+
+    /// The Reading Progress `library` lists for `id`.
+    fn listed_progress(library: &Library, id: &str) -> Option<ReadingProgress> {
+        let documents = library.documents().unwrap();
+        documents.into_iter().find(|d| d.id == id).unwrap().progress
+    }
+
+    #[test]
+    fn a_never_opened_document_lists_without_reading_progress() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        assert_eq!(document.progress, None);
+        assert_eq!(listed_progress(&library, &document.id), None);
+    }
+
+    #[test]
+    fn saved_reading_progress_is_listed_and_survives_reopening_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        library
+            .save_progress(&document.id, &progress(7, 1_000))
+            .unwrap();
+        assert_eq!(
+            listed_progress(&library, &document.id),
+            Some(progress(7, 1_000))
+        );
+        drop(library);
+
+        let library = scratch.library();
+        assert_eq!(
+            listed_progress(&library, &document.id),
+            Some(progress(7, 1_000))
+        );
+    }
+
+    #[test]
+    fn saving_again_replaces_the_reading_progress_as_a_whole() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        library
+            .save_progress(&document.id, &progress(7, 1_000))
+            .unwrap();
+        library
+            .save_progress(&document.id, &progress(2, 2_000))
+            .unwrap();
+
+        assert_eq!(
+            listed_progress(&library, &document.id),
+            Some(progress(2, 2_000))
+        );
+    }
+
+    #[test]
+    fn the_state_file_does_not_hide_the_file() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        library
+            .save_progress(&document.id, &progress(1, 1))
+            .unwrap();
+
+        let listed = library.documents().unwrap();
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, document.path);
+    }
+
+    #[test]
+    fn the_state_is_a_hidden_automerge_document_with_schema_version_1() {
+        use automerge::{ROOT, ReadDoc};
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        library
+            .save_progress(&document.id, &progress(1, 1))
+            .unwrap();
+
+        let folder = document.path.parent().unwrap();
+        let hidden: Vec<_> = fs::read_dir(folder)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p != &document.path)
+            .collect();
+        assert_eq!(hidden.len(), 1);
+        assert!(
+            hidden[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with('.')
+        );
+        let state = automerge::AutoCommit::load(&fs::read(&hidden[0]).unwrap()).unwrap();
+        let (version, _) = state.get(ROOT, "version").unwrap().unwrap();
+        assert_eq!(version.as_u64(), Some(1));
+    }
+
+    #[test]
+    fn saving_leaves_nothing_in_staging() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        library
+            .save_progress(&document.id, &progress(1, 1))
+            .unwrap();
+
+        let staging = scratch.0.join("library/.staging");
+        assert_eq!(fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn saving_for_an_unknown_document_does_nothing_and_creates_no_folder() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+
+        library.save_progress("0123", &progress(1, 1)).unwrap();
+
+        assert!(!scratch.0.join("library/0123").exists());
+        assert_eq!(library.documents().unwrap(), vec![]);
+    }
+
+    #[test]
+    fn saving_for_a_removed_document_does_nothing() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        library.remove(&document.id).unwrap();
+
+        library
+            .save_progress(&document.id, &progress(1, 1))
+            .unwrap();
+
+        assert!(!scratch.0.join("library").join(&document.id).exists());
+    }
+
+    #[test]
+    fn saving_refuses_an_id_that_points_outside_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+
+        for id in ["../outside", "", ".staging", "a/b"] {
+            let err = library.save_progress(id, &progress(1, 1)).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "id {id:?}");
+        }
+    }
+
+    #[test]
+    fn remove_deletes_the_state_along_with_the_file() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        library
+            .save_progress(&document.id, &progress(3, 5))
+            .unwrap();
+
+        library.remove(&document.id).unwrap();
+        assert_eq!(library.documents().unwrap(), vec![]);
+
+        // Imported again, the Document is as good as new.
+        let again = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        assert_eq!(again.progress, None);
+    }
+
+    #[test]
+    fn a_corrupt_state_file_lists_as_never_opened_and_is_replaced_by_the_next_save() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        library
+            .save_progress(&document.id, &progress(3, 5))
+            .unwrap();
+        let state = fs::read_dir(document.path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p != &document.path)
+            .unwrap();
+        fs::write(&state, b"not automerge").unwrap();
+
+        assert_eq!(listed_progress(&library, &document.id), None);
+
+        library
+            .save_progress(&document.id, &progress(4, 6))
+            .unwrap();
+        assert_eq!(
+            listed_progress(&library, &document.id),
+            Some(progress(4, 6))
+        );
+    }
+
+    #[test]
+    fn a_state_file_without_progress_lists_as_never_opened() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let empty = automerge::AutoCommit::new().save();
+        fs::write(document.path.parent().unwrap().join(STATE), empty).unwrap();
+
+        assert_eq!(listed_progress(&library, &document.id), None);
     }
 }

@@ -11,17 +11,26 @@ struct LibraryDocument: Identifiable, Hashable {
     let file: URL
     /// Read from the PDF at Import or by the Library's background pass; nil until then.
     fileprivate(set) var details: DocumentDetails?
+    /// Where the user left off; nil if the Document was never opened.
+    fileprivate(set) var progress: ReadingProgress?
 
     /// The name the File had when it was Imported.
     var fileName: String { file.lastPathComponent }
     /// The saved Title, or the file name without extension until it is read.
     var title: String { details?.title ?? file.deletingPathExtension().lastPathComponent }
     var author: String? { details?.author }
+    /// Where the user left off, to reopen the Document there.
+    var place: Place? {
+        progress.map { Place(pageIndex: Int($0.pageIndex), point: CGPoint(x: $0.x, y: $0.y)) }
+    }
+    /// When the Reader last showed the Document; nil if never.
+    var lastRead: Date? { progress.map { Date(timeIntervalSince1970: Double($0.lastRead) / 1000) } }
 
     fileprivate init(_ stored: LeafCore.Document, details: DocumentDetails?) {
         id = stored.id
         file = URL(fileURLWithPath: stored.path)
         self.details = details
+        progress = stored.progress
     }
 }
 
@@ -91,6 +100,8 @@ final class LibraryModel {
     @ObservationIgnored private let saved: DetailsStore
     @ObservationIgnored private let covers: CoverStore
     @ObservationIgnored private let defaults: UserDefaults
+    /// The latest write of Reading Progress to the core; the next one waits for it.
+    @ObservationIgnored private var lastProgressWrite: Task<Void, Never>?
 
     /// Opens the Library folder at `root`, creating it if needed, with Titles
     /// and Authors saved in `detailsFile`, Covers in `coversFolder` and the sort
@@ -209,6 +220,27 @@ final class LibraryModel {
             covers.remove(document.id)
         }
         refresh()
+    }
+
+    /// Saves `place` as Reading Progress of `document`, read `lastRead`. The
+    /// Document is updated at once, so every window shows it; the core writes
+    /// off the main thread, in order, and this returns when it has. Does
+    /// nothing for a Document that was Removed. A failed write is ignored: the
+    /// next save replaces it.
+    func saveProgress(_ place: Place, of document: LibraryDocument, at lastRead: Date = .now) async {
+        guard let index = documents.firstIndex(where: { $0.id == document.id }) else { return }
+        let progress = ReadingProgress(
+            pageIndex: UInt32(place.pageIndex), x: place.point.x, y: place.point.y,
+            lastRead: UInt64(max(0, lastRead.timeIntervalSince1970 * 1000).rounded()))
+        documents[index].progress = progress
+
+        let core = core, id = document.id, previous = lastProgressWrite
+        let write = Task.detached {
+            await previous?.value
+            try? core.saveProgress(id: id, progress: progress)
+        }
+        lastProgressWrite = write
+        await write.value
     }
 
     /// What Import reads from the PDF it opened to check the File.

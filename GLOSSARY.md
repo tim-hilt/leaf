@@ -55,3 +55,11 @@ _Avoid_: Reading mode, viewer
 **Immersive Mode**:
 A state of the Reader in which everything except the Document's pages is hidden.
 _Avoid_: Reading mode, focus mode, full screen
+
+**Reading Progress**:
+Where in a Document the user last left off. It moves back if the user goes back.
+_Avoid_: Bookmark, position, furthest page
+
+**Last Read**:
+When the Reader last showed a Document.
+_Avoid_: Last opened, recently opened

@@ -463,6 +463,74 @@ import Testing
         try await waitUntil { library.visibleDocuments(matching: "melville").map(\.title) == ["Moby-Dick"] }
     }
 
+    // MARK: Reading Progress
+
+    /// Imports a new PDF and returns its Document.
+    func importDocument(into library: LibraryModel) async throws -> LibraryDocument {
+        guard case .opened(let document) = await library.import(try writePDF(named: "\(UUID().uuidString).pdf"))
+        else { throw ImportFailed() }
+        return document
+    }
+
+    struct ImportFailed: Error {}
+
+    let place = Place(pageIndex: 7, point: CGPoint(x: 12.5, y: 700.25))
+    let lastRead = Date(timeIntervalSince1970: 1_700_000_000.5)
+
+    @Test func aNeverOpenedDocumentHasNoReadingProgress() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+
+        #expect(document.place == nil)
+        #expect(document.lastRead == nil)
+    }
+
+    @Test func savingReadingProgressUpdatesTheDocument() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+
+        await library.saveProgress(place, of: document, at: lastRead)
+
+        let updated = try #require(library.documents.first)
+        #expect(updated.place == place)
+        #expect(updated.lastRead == lastRead)
+        #expect(library.visibleDocuments(matching: "").first?.place == place)
+    }
+
+    @Test func readingProgressSurvivesReopeningTheLibrary() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        await library.saveProgress(place, of: document, at: lastRead)
+
+        let reopened = try #require(try openLibrary().documents.first)
+
+        #expect(reopened.place == place)
+        #expect(reopened.lastRead == lastRead)
+    }
+
+    @Test func theLatestSavedPlaceIsTheReadingProgress() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        let earlier = Place(pageIndex: 3, point: .zero)
+
+        await library.saveProgress(place, of: document, at: lastRead)
+        await library.saveProgress(earlier, of: document, at: lastRead.addingTimeInterval(5))
+
+        #expect(library.documents.first?.place == earlier)
+        #expect(try openLibrary().documents.first?.place == earlier)
+    }
+
+    @Test func savingForARemovedDocumentDoesNothing() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        library.remove(document)
+
+        await library.saveProgress(place, of: document, at: lastRead)
+
+        #expect(library.documents.isEmpty)
+        #expect(try openLibrary().documents.isEmpty)
+    }
+
     /// Waits up to 10 s for `condition`, which the background pass makes true.
     private func waitUntil(_ condition: () -> Bool) async throws {
         for _ in 0..<1000 where !condition() { try await Task.sleep(for: .milliseconds(10)) }

@@ -35,11 +35,45 @@ impl From<std::io::Error> for LibraryError {
     }
 }
 
-/// A Document in the Library: its ID and the path of its stored File.
+/// Where the user left off, see `leafpdf_core::progress::ReadingProgress`.
+/// `last_read` is milliseconds since the Unix epoch.
+#[derive(uniffi::Record)]
+pub struct ReadingProgress {
+    pub page_index: u32,
+    pub x: f64,
+    pub y: f64,
+    pub last_read: u64,
+}
+
+impl From<leafpdf_core::progress::ReadingProgress> for ReadingProgress {
+    fn from(p: leafpdf_core::progress::ReadingProgress) -> Self {
+        Self {
+            page_index: p.page_index,
+            x: p.x,
+            y: p.y,
+            last_read: p.last_read,
+        }
+    }
+}
+
+impl From<ReadingProgress> for leafpdf_core::progress::ReadingProgress {
+    fn from(p: ReadingProgress) -> Self {
+        Self {
+            page_index: p.page_index,
+            x: p.x,
+            y: p.y,
+            last_read: p.last_read,
+        }
+    }
+}
+
+/// A Document in the Library: its ID, the path of its stored File and its
+/// Reading Progress, if it was ever opened.
 #[derive(uniffi::Record)]
 pub struct Document {
     pub id: String,
     pub path: String,
+    pub progress: Option<ReadingProgress>,
 }
 
 impl From<leafpdf_core::library::Document> for Document {
@@ -47,6 +81,7 @@ impl From<leafpdf_core::library::Document> for Document {
         Self {
             id: d.id,
             path: d.path.to_string_lossy().into_owned(),
+            progress: d.progress.map(Into::into),
         }
     }
 }
@@ -100,6 +135,10 @@ impl Library {
 
     pub fn remove(&self, id: String) -> Result<(), LibraryError> {
         Ok(self.0.remove(&id)?)
+    }
+
+    pub fn save_progress(&self, id: String, progress: ReadingProgress) -> Result<(), LibraryError> {
+        Ok(self.0.save_progress(&id, &progress.into())?)
     }
 
     pub fn documents(&self) -> Result<Vec<Document>, LibraryError> {

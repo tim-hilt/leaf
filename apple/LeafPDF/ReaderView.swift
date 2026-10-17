@@ -8,10 +8,17 @@ import SwiftUI
 /// Immersive Mode hides everything but the pages. On iOS a single tap toggles
 /// it; on macOS it is the native full screen, with the toolbar shown on hover.
 /// Scrolling never changes it, and the Reader always opens with its UI showing.
+///
+/// Opens at the Document's Reading Progress at fit-to-width, or at page 1, and
+/// saves it (see `ReadingProgressSaver`) when opened, after scrolling stops,
+/// when it disappears and when the scene goes to the background.
 struct ReaderView: View {
     let document: LibraryDocument
+    @Environment(LibraryModel.self) private var library
+    @Environment(\.scenePhase) private var scenePhase
     @State private var pdf: PDFDocument?
     @State private var handle = ReaderHandle()
+    @State private var saver: ReadingProgressSaver?
     #if os(iOS)
         @State private var isImmersive = false
     #endif
@@ -19,12 +26,20 @@ struct ReaderView: View {
     var body: some View {
         Group {
             if let pdf {
-                PDFKitView(document: pdf, handle: handle, onSingleTap: toggleImmersive)
+                PDFKitView(
+                    document: pdf, handle: handle, place: document.place, onSingleTap: toggleImmersive,
+                    onOpen: { saver?.saveNow() }, onScroll: { saver?.scrolled() })
             } else {
                 Color.clear
             }
         }
-        .task { if pdf == nil { pdf = PDFDocument(url: document.file) } }
+        .task {
+            guard pdf == nil else { return }
+            saver = ReadingProgressSaver(library: library, document: document, handle: handle)
+            pdf = PDFDocument(url: document.file)
+        }
+        .onDisappear { saver?.saveNow() }
+        .onChange(of: scenePhase) { if scenePhase == .background { saver?.saveNow() } }
         .navigationTitle(document.title)
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -62,12 +77,15 @@ struct ReaderView: View {
 #endif
 
 /// PDFKit's native viewer, laid out as one vertical, continuously scrolling
-/// column. Opens at fit-to-width; see `ReaderPDFView` for zooming, keeping
-/// your place and taps.
+/// column. Opens at fit-to-width, at `place` if there is one; see
+/// `ReaderPDFView` for zooming, keeping your place, taps and scrolling.
 private struct PDFKitView {
     let document: PDFDocument
     let handle: ReaderHandle
+    let place: Place?
     let onSingleTap: () -> Void
+    let onOpen: () -> Void
+    let onScroll: () -> Void
 
     @MainActor
     fileprivate func makePDFView() -> PDFView {
@@ -75,8 +93,11 @@ private struct PDFKitView {
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
         view.autoScales = true
+        if let place { view.open(at: place) }
         view.document = document
         view.onSingleTap = onSingleTap
+        view.onOpen = onOpen
+        view.onScroll = onScroll
         return view
     }
 }

@@ -11,7 +11,8 @@ final class ReaderHandle {
 /// is resized or rotated, and when zooming with the keyboard. PDFKit's own
 /// pinch gesture does the pinch zooming, so the content under the fingers
 /// stays put; on iOS a double-tap toggles between fit-to-width and zoomed in,
-/// and a single tap calls `onSingleTap`.
+/// and a single tap calls `onSingleTap`. It reports when it has opened and
+/// whenever it scrolls, so the Reader can save Reading Progress.
 final class ReaderPDFView: PDFView {
     /// Where the viewport was before a size change, to be restored once the
     /// new layout is known.
@@ -25,14 +26,26 @@ final class ReaderPDFView: PDFView {
     /// refreshed on every layout. Nil until the first layout.
     private var zoomRange: ZoomRange?
     private var viewpoint: Viewpoint?
+    /// Where to open, until the first layout of a Document.
+    private var openingPlace: Place?
+    private var hasOpened = false
 
     /// Called on a single tap on the page (iOS only; macOS clicks never fire it).
     var onSingleTap: () -> Void = {}
+    /// Called once, after the Document is first laid out at fit-to-width and
+    /// scrolled to its opening Place.
+    var onOpen: () -> Void = {}
+    /// Called whenever the viewport scrolls, however it was moved: often, so keep it cheap.
+    var onScroll: () -> Void = {}
 
     convenience init(handle: ReaderHandle) {
         self.init(frame: .zero)
         handle.view = self
     }
+
+    /// Makes the Document, once it is set and laid out, open with `place` at the
+    /// top of the viewport at fit-to-width. Call before setting the Document.
+    func open(at place: Place) { openingPlace = place }
 
     // MARK: Keyboard zoom, anchored at the top of the viewport
 
@@ -94,7 +107,16 @@ final class ReaderPDFView: PDFView {
         if minScaleFactor != range.minimum { minScaleFactor = range.minimum }
         if maxScaleFactor != range.maximum { maxScaleFactor = range.maximum }
         zoomRange = range
-        if let viewpoint {
+        if !hasOpened {
+            hasOpened = true
+            if let place = openingPlace {
+                openingPlace = nil
+                scaleFactor = range.fitToWidth
+                go(to: place)
+            }
+            observeScrolling()
+            onOpen()
+        } else if let viewpoint {
             self.viewpoint = nil
             scaleFactor = range.rescaled(viewpoint.scale, from: viewpoint.range)
             go(to: viewpoint.place)
@@ -113,6 +135,15 @@ final class ReaderPDFView: PDFView {
 
         // Recognizers hold their delegate weakly.
         private static let simultaneousTaps = SimultaneousTaps()
+
+        private var scrollObservation: NSKeyValueObservation?
+
+        private func observeScrolling() {
+            scrollObservation = subviews.lazy.compactMap { $0 as? UIScrollView }.first?
+                .observe(\.contentOffset) { [weak self] _, _ in
+                    MainActor.assumeIsolated { self?.onScroll() }
+                }
+        }
 
         /// Below any part of the view hidden behind bars.
         private var viewportTopLeft: CGPoint { CGPoint(x: 0, y: safeAreaInsets.top) }
@@ -186,6 +217,15 @@ final class ReaderPDFView: PDFView {
     #else
         /// PDFView isn't flipped: its top edge is at `bounds.maxY`.
         private var viewportTopLeft: CGPoint { CGPoint(x: 0, y: bounds.maxY) }
+
+        private func observeScrolling() {
+            guard let clip = documentView?.enclosingScrollView?.contentView else { return }
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(didScroll), name: NSView.boundsDidChangeNotification, object: clip)
+        }
+
+        @objc private func didScroll(_ notification: Notification) { onScroll() }
 
         override func setFrameSize(_ newSize: NSSize) {
             sizeWillChange(to: newSize, from: frame.size)

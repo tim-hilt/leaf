@@ -26,7 +26,10 @@ The Gallery shows the Cover and Title of every Document in a vertically scrollab
 
 ## 4. Reading Progress
 
-- Save reading progress
+- Reopening a Document returns to its Reading Progress
+- The Gallery shows each Document's Reading Progress as a bar and a percentage on its Cover
+- Sort by Recently Read (Last Read)
+- Reading Progress and Last Read sync across devices; on conflict the newest Last Read wins
 
 First piece of synced state; establishes the local Automerge model (ADR-0008) before markup and cloud depend on it.
 

@@ -14,6 +14,12 @@ import Testing
         try expectAtTop(place, of: reader)
     }
 
+    @Test func opensAtASavedPlaceAtFitToWidth() throws {
+        let reader = try makeReader(size: portrait, openingAt: place)
+        try expectAtTop(place, of: reader)
+        #expect(reader.scaleFactor == reader.scaleFactorForSizeToFit)
+    }
+
     @Test func keepsThePlaceWhenResizedAtFitToWidth() throws {
         let reader = try makeReader(size: portrait)
         reader.go(to: place)
@@ -42,10 +48,12 @@ import Testing
     }
 }
 
-/// A Reader on an eight-page Document, laid out in a window of `size`.
+/// A Reader on an eight-page Document, laid out in a window of `size`. With
+/// `openingAt`, it is asked to open there before the Document is set.
 @MainActor
-private func makeReader(size: CGSize) throws -> ReaderPDFView {
+private func makeReader(size: CGSize, openingAt place: Place? = nil) throws -> ReaderPDFView {
     let reader = ReaderPDFView(handle: ReaderHandle())
+    if let place { reader.open(at: place) }
     reader.displayMode = .singlePageContinuous
     reader.autoScales = true
     reader.frame = CGRect(origin: .zero, size: size)
