@@ -5,7 +5,9 @@ import UniformTypeIdentifiers
 /// Gallery"), and opens the tapped Document in the Reader. "+" and File >
 /// Import… (also from the Reader) Import a PDF and open it, replacing any
 /// open Document. A row's context menu (long-press, right-click) offers
-/// "Remove", after confirmation. Placeholder list until the grid exists.
+/// "Remove", after confirmation. A window reading a Document that gets Removed
+/// (here or in another window) returns to the list and says so. Placeholder
+/// list until the grid exists.
 struct FileGalleryView: View {
     @Environment(LibraryModel.self) private var library
     @State private var path: [LibraryDocument] = []
@@ -13,6 +15,7 @@ struct FileGalleryView: View {
     @State private var rejection: ImportAlert?
     @State private var duplicate: LibraryDocument?
     @State private var removal: LibraryDocument?
+    @State private var removedWhileOpen: LibraryDocument?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -37,6 +40,11 @@ struct FileGalleryView: View {
             .toolbar {
                 Button("Import…", systemImage: "plus") { isImporting = true }
             }
+        }
+        .onChange(of: library.documents) { _, documents in
+            guard let gone = path.first(where: { !documents.contains($0) }) else { return }
+            path = []
+            removedWhileOpen = gone
         }
         .disabled(library.runningImport != nil)
         .focusedSceneValue(\.isImporting, library.runningImport == nil ? $isImporting : nil)
@@ -64,6 +72,13 @@ struct FileGalleryView: View {
             Button("Remove", role: .destructive) { library.remove(document) }
         } message: { _ in
             Text("The file, its markup and your reading progress are deleted on all your devices.")
+        }
+        .alert(
+            "Document removed", isPresented: Binding(get: { removedWhileOpen != nil }, set: { _ in removedWhileOpen = nil }),
+            presenting: removedWhileOpen
+        ) { _ in
+        } message: { gone in
+            Text("“\(gone.title)” was removed from your Library.")
         }
         .alert(
             "Already in your Library", isPresented: Binding(get: { duplicate != nil }, set: { _ in duplicate = nil }),

@@ -4,9 +4,9 @@
 
 **Blocked by:** 06
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] All windows share one client Library model and notice the Removal
-- [ ] A window reading the Removed Document returns to its Gallery
-- [ ] That window shows the alert "'X' was removed from your Library"
+- [x] All windows share one client Library model and notice the Removal
+- [x] A window reading the Removed Document returns to its Gallery
+- [x] That window shows the alert "'X' was removed from your Library"
 - [ ] Manually checked with two windows on Mac and iPad
