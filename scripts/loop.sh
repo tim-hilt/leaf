@@ -116,7 +116,7 @@ spec_file="$directory/spec.md"
 status_set "Reviewing $spec_file"
 
 run_pi anthropic claude-opus-5-5 high \
-  "/skill:software-design the last commits implemented the tickets in $tasks_dir. Please review these commits according to $spec_file. Pay special attention to correctness and simplicity. Fix found issues right away. If an issue is fully implemented, then please set its Status line to 'done'. Commit your changes using the commit-message 'Reviewed $spec_file'."
+  "/skill:software-design the last commits implemented the tickets in @$tasks_dir. Please review these commits according to @$spec_file. Also consider @$log_file to understand how we got to the current state. Pay special attention to correctness and simplicity. Fix found issues right away. If an issue is fully implemented, then please set its Status line to 'done'. Commit your changes using the commit-message 'Reviewed $spec_file'."
 
 status_stop
 log_section "$spec_file reviewed in $status_elapsed" "$pi_output"

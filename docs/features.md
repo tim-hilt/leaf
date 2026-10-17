@@ -36,7 +36,7 @@ First piece of synced state; establishes the local Automerge model (ADR-0008) be
 ## 5. Navigation
 
 - Table of Contents (TOC) are shown, user can jump to chapters from TOC menu
-- Realtime full text search
+- Realtime full text search with settings for "Full word" and case sensitivity
 
 ## 6. Theme
 
