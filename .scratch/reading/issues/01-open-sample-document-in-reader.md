@@ -1,0 +1,15 @@
+# 01: Open the sample Document in the Reader
+
+**What to build:** The placeholder Gallery shows the temporary sample Document as its only entry. Tapping it pushes the Reader in the same window, showing the Document's pages in one continuously scrolling vertical column using PDFKit's native viewer. The navigation bar shows the Document's Title, and the standard back chevron returns to the Gallery. See `.scratch/reading/spec.md`.
+
+**Blocked by:** None (can start immediately)
+
+**Status:** ready-for-agent
+
+- [ ] Public-domain sample PDF (< 1 MB, multiple pages, outline, at least one differently sized page) is bundled
+- [ ] Sample-related code is marked `// TEMPORARY: remove with File Import (features §2)`
+- [ ] Gallery placeholder lists the sample Document; tapping it pushes the Reader
+- [ ] Reader shows pages in one vertical column with continuous scrolling on iOS, iPadOS and macOS
+- [ ] Title = PDF metadata title, falling back to the file name (unit-tested, test-first)
+- [ ] Standard back chevron, iOS edge swipe and macOS ⌘[ return to the Gallery
+- [ ] No other Reader UI (no page counter, thumbnails or toolbar)

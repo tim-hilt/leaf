@@ -12,6 +12,8 @@ The application should provide the following features. Sections are in implement
 
 Files are registered in the application by clicking a "+" Icon in the UI or "File > Import" in the global menu. The file is copied to the shared storage location. A file can only be imported once.
 
+Removes the temporary sample Document added by Reading.
+
 ## 3. File Gallery
 
 The file gallery renders the first page and title of all imported files in a vertically scrollable grid. The first entry is an empty cell with a "+" icon - another way to import files. Clicking on any imported file opens it up in reading mode.
