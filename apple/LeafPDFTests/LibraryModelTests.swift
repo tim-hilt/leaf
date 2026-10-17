@@ -61,4 +61,24 @@ import Testing
 
         #expect(try LibraryModel(root: root).documents.count == 1)
     }
+
+    @Test func aRunningImportShowsTheTitleAndProgressUntilItFinishes() async throws {
+        let library = try LibraryModel(root: root)
+        let source = try writePDF(named: "big.pdf", metadataTitle: "Big One", paddedTo: 64_000_000)
+        #expect(library.runningImport == nil)
+
+        let importing = Task { @MainActor in _ = await library.import(source) }
+        var seen: [RunningImport] = []
+        while seen.last?.fraction ?? 0 < 1 {
+            if let running = library.runningImport { seen.append(running) }
+            if library.runningImport == nil, !seen.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        await importing.value
+
+        #expect(!seen.isEmpty)
+        #expect(seen.allSatisfy { $0.title == "Big One" && (0...1).contains($0.fraction) })
+        #expect(zip(seen, seen.dropFirst()).allSatisfy { $0.fraction <= $1.fraction })
+        #expect(library.runningImport == nil)
+    }
 }

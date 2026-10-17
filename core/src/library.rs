@@ -42,7 +42,10 @@ impl Library {
 
     /// Copies the File at `source` into the Library, unchanged. Importing a
     /// File that is already there copies nothing and returns its Document.
-    pub fn import(&self, source: &Path) -> io::Result<Document> {
+    ///
+    /// `progress(copied, total)` is called with the bytes processed so far out
+    /// of the File's size: first with 0, last with the total.
+    pub fn import(&self, source: &Path, progress: impl FnMut(u64, u64)) -> io::Result<Document> {
         let name = source.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "source has no file name")
         })?;
@@ -55,7 +58,7 @@ impl Library {
         ));
         fs::create_dir(&staged)?;
 
-        let result = copy_hashed(source, &staged.join(name)).and_then(|id| {
+        let result = copy_hashed(source, &staged.join(name), progress).and_then(|id| {
             let dir = self.root.join(&id);
             if !dir.exists() {
                 fs::rename(&staged, &dir)?;
@@ -96,8 +99,11 @@ impl Library {
 }
 
 /// Streams `from` into a new file at `to`, returning the SHA-256 of the bytes.
-fn copy_hashed(from: &Path, to: &Path) -> io::Result<String> {
+fn copy_hashed(from: &Path, to: &Path, mut progress: impl FnMut(u64, u64)) -> io::Result<String> {
     let mut input = File::open(from)?;
+    let total = input.metadata()?.len();
+    let mut copied = 0;
+    progress(copied, total);
     let mut output = File::create_new(to)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; 256 * 1024];
@@ -108,6 +114,8 @@ fn copy_hashed(from: &Path, to: &Path) -> io::Result<String> {
         }
         hasher.update(&buffer[..n]);
         output.write_all(&buffer[..n])?;
+        copied += n as u64;
+        progress(copied, total);
     }
     output.sync_all()?;
     Ok(format!("{:x}", hasher.finalize()))
@@ -168,6 +176,10 @@ mod tests {
         }
     }
 
+    fn import(library: &Library, source: &Path) -> io::Result<Document> {
+        library.import(source, |_, _| {})
+    }
+
     // SHA-256 of "abc", from FIPS 180-2.
     const ABC_SHA256: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
@@ -177,7 +189,7 @@ mod tests {
         let library = scratch.library();
         let source = scratch.file("Paper.pdf", b"abc");
 
-        let document = library.import(&source).unwrap();
+        let document = import(&library, &source).unwrap();
 
         assert_eq!(document.id, ABC_SHA256);
         assert_eq!(
@@ -189,12 +201,35 @@ mod tests {
     }
 
     #[test]
+    fn import_reports_bytes_copied_until_it_reaches_the_total() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let size = 600 * 1024;
+        let source = scratch.file("big.pdf", &vec![7; size]);
+
+        let mut reports = Vec::new();
+        library
+            .import(&source, |copied, total| reports.push((copied, total)))
+            .unwrap();
+
+        let total = size as u64;
+        assert!(reports.len() > 2, "expected progress in steps: {reports:?}");
+        assert!(
+            reports
+                .iter()
+                .all(|&(copied, t)| t == total && copied <= total)
+        );
+        assert!(reports.windows(2).all(|w| w[0].0 <= w[1].0));
+        assert_eq!(reports.last(), Some(&(total, total)));
+    }
+
+    #[test]
     fn documents_lists_newest_import_first() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let first = library.import(&scratch.file("a.pdf", b"first")).unwrap();
+        let first = import(&library, &scratch.file("a.pdf", b"first")).unwrap();
         sleep(Duration::from_millis(20));
-        let second = library.import(&scratch.file("b.pdf", b"second")).unwrap();
+        let second = import(&library, &scratch.file("b.pdf", b"second")).unwrap();
 
         assert_eq!(library.documents().unwrap(), vec![second, first]);
     }
@@ -209,9 +244,13 @@ mod tests {
     fn a_failed_import_leaves_the_library_unchanged() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        library.import(&scratch.file("a.pdf", b"abc")).unwrap();
+        import(&library, &scratch.file("a.pdf", b"abc")).unwrap();
 
-        assert!(library.import(&scratch.0.join("missing.pdf")).is_err());
+        assert!(
+            library
+                .import(&scratch.0.join("missing.pdf"), |_, _| {})
+                .is_err()
+        );
 
         assert_eq!(library.documents().unwrap().len(), 1);
         assert_eq!(
@@ -246,9 +285,9 @@ mod tests {
     fn importing_the_same_bytes_again_adds_no_second_document() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let first = library.import(&scratch.file("a.pdf", b"abc")).unwrap();
+        let first = import(&library, &scratch.file("a.pdf", b"abc")).unwrap();
 
-        let again = library.import(&scratch.file("b.pdf", b"abc")).unwrap();
+        let again = import(&library, &scratch.file("b.pdf", b"abc")).unwrap();
 
         assert_eq!(again, first);
         assert_eq!(library.documents().unwrap(), vec![first]);

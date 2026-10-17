@@ -51,6 +51,14 @@ impl From<leafpdf_core::library::Document> for Document {
     }
 }
 
+/// Receives the progress of an Import. Implemented by the client and called
+/// from the thread that runs the Import, not the main thread.
+#[uniffi::export(with_foreign)]
+pub trait ImportProgress: Send + Sync {
+    /// `copied` bytes of the File's `total` are processed.
+    fn report(&self, copied: u64, total: u64);
+}
+
 /// The Library folder, see `leafpdf_core::library::Library`.
 #[derive(uniffi::Object)]
 pub struct Library(leafpdf_core::library::Library);
@@ -62,8 +70,15 @@ impl Library {
         Ok(Arc::new(Self(leafpdf_core::library::Library::open(root)?)))
     }
 
-    pub fn import(&self, source: String) -> Result<Document, LibraryError> {
-        Ok(self.0.import(source.as_ref())?.into())
+    pub fn import(
+        &self,
+        source: String,
+        progress: Arc<dyn ImportProgress>,
+    ) -> Result<Document, LibraryError> {
+        let document = self.0.import(source.as_ref(), |copied, total| {
+            progress.report(copied, total)
+        })?;
+        Ok(document.into())
     }
 
     pub fn documents(&self) -> Result<Vec<Document>, LibraryError> {

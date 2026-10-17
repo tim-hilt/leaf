@@ -31,6 +31,10 @@ struct FileGalleryView: View {
                 Button("Import…", systemImage: "plus") { isImporting = true }
             }
         }
+        .disabled(library.runningImport != nil)
+        .overlay {
+            if let running = library.runningImport { ImportProgressModal(running: running) }
+        }
         .fileImporter(
             isPresented: $isImporting, allowedContentTypes: [.pdf], allowsMultipleSelection: false
         ) { result in

@@ -4,11 +4,11 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Core Import reports bytes copied out of the total through a progress callback; progress reaches the total (Rust test)
-- [ ] Progress reaches Swift through a UniFFI callback interface
-- [ ] The core runs off the main thread; the UI stays responsive
-- [ ] The UI is disabled from the start of an Import until it finishes
-- [ ] The modal appears only after about 0.5 s; quick Imports show no modal
+- [x] Core Import reports bytes copied out of the total through a progress callback; progress reaches the total (Rust test)
+- [x] Progress reaches Swift through a UniFFI callback interface
+- [x] The core runs off the main thread; the UI stays responsive
+- [x] The UI is disabled from the start of an Import until it finishes
+- [x] The modal appears only after about 0.5 s; quick Imports show no modal
 - [ ] Manually checked on iPhone, iPad and Mac with a large File
