@@ -285,6 +285,20 @@ import Testing
         #expect(savedCovers().count == 1)
     }
 
+    @Test func aSavedCoverIsLoadedWithoutRenderingAMissingOne() async throws {
+        let library = try openLibrary()
+        guard case .opened(let document) = await library.import(try writePDF(named: "a.pdf")) else {
+            Issue.record("expected .opened")
+            return
+        }
+        #expect(await library.savedCover(for: document) != nil)
+
+        try FileManager.default.removeItem(at: coversFolder)
+
+        #expect(await library.savedCover(for: document) == nil)
+        #expect(savedCovers().isEmpty)
+    }
+
     @Test func aSavedCoverSurvivesReopeningTheLibrary() async throws {
         guard case .opened(let document) = await (try openLibrary()).import(try writePDF(named: "a.pdf")) else {
             Issue.record("expected .opened")

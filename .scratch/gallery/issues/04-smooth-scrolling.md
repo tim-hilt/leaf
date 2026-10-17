@@ -4,9 +4,9 @@
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Saved Covers load as soon as a cell appears, even while scrolling
-- [ ] New renders are queued for visible cells only, and start once scrolling has been still for about 150 ms
-- [ ] Requests for cells that scrolled away are dropped
+- [x] Saved Covers load as soon as a cell appears, even while scrolling
+- [x] New renders are queued for visible cells only, and start once scrolling has been still for about 150 ms
+- [x] Requests for cells that scrolled away are dropped
 - [ ] Manual check on iPhone, iPad and Mac with a few hundred real PDFs: fast launch, smooth scrolling, renders only after scrolling stops

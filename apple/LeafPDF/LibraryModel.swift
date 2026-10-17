@@ -105,10 +105,19 @@ final class LibraryModel {
             coversFolder: caches.appending(path: "Covers", directoryHint: .isDirectory))
     }
 
+    /// The saved Cover of `document`, loaded off the main thread, or nil if
+    /// there is none. Cheap, so safe to call while scrolling; never renders.
+    func savedCover(for document: LibraryDocument) async -> CGImage? {
+        let covers = covers, id = document.id
+        return await Task.detached { covers.saved(id) }.value
+    }
+
     /// The Cover of `document`: the saved one, or page 1 rendered off the main
     /// thread and saved. Nil if it can't be rendered; the Gallery then keeps
-    /// the placeholder.
+    /// the placeholder. A caller that is already cancelled gets nil without
+    /// any rendering, so requests of cells that scrolled away are dropped.
     func cover(for document: LibraryDocument) async -> CGImage? {
+        guard !Task.isCancelled else { return nil }
         let covers = covers, id = document.id, file = document.file
         return await Task.detached { covers.cover(id: id, file: file) }.value
     }

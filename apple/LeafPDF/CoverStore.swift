@@ -60,6 +60,9 @@ struct CoverStore: Sendable {
         try? FileManager.default.removeItem(at: url(id))
     }
 
+    /// The saved Cover of Document `id`, or nil if there is none. Never renders.
+    func saved(_ id: String) -> CGImage? { load(id) }
+
     private func load(_ id: String) -> CGImage? {
         CGImageSourceCreateWithURL(url(id) as CFURL, nil)
             .flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }

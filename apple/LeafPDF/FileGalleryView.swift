@@ -16,6 +16,7 @@ struct FileGalleryView: View {
     @State private var duplicate: LibraryDocument?
     @State private var removal: LibraryDocument?
     @State private var removedWhileOpen: LibraryDocument?
+    @State private var scroll = ScrollActivity()
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -35,6 +36,8 @@ struct FileGalleryView: View {
                 .buttonStyle(.plain)
                 .padding(16)
             }
+            .onScrollPhaseChange { _, phase in scroll.scrollingChanged(isScrolling: phase != .idle) }
+            .environment(scroll)
             .navigationTitle("LeafPDF")
             .navigationDestination(for: LibraryDocument.self) { ReaderView(document: $0) }
             .toolbar {

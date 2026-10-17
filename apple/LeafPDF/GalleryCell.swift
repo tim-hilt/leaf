@@ -30,10 +30,13 @@ extension ShapeStyle where Self == Color {
 }
 
 /// A Document's cell. The placeholder stands in until the Cover exists, then
-/// the Cover fades in. A Cover that is wider than the cell's page shape is
+/// the Cover fades in. A saved Cover loads as soon as the cell appears; a new
+/// one is rendered only while the Gallery is still (see `ScrollActivity`), and
+/// that request is dropped if the cell scrolls away first. A Cover that is wider than the cell's page shape is
 /// scaled to fit and sits on the bottom edge; the space above it is transparent.
 struct DocumentCell: View {
     @Environment(LibraryModel.self) private var library
+    @Environment(ScrollActivity.self) private var scroll
     let document: LibraryDocument
     @State private var cover: CGImage?
 
@@ -52,8 +55,19 @@ struct DocumentCell: View {
             }
             .animation(.default, value: cover == nil)
         }
-        .task(id: document.id) { cover = await library.cover(for: document) }
+        .task(id: LoadKey(document: document.id, galleryIsStill: scroll.isStill)) {
+            if cover == nil { cover = await library.savedCover(for: document) }
+            guard cover == nil, scroll.isStill else { return }
+            cover = await library.cover(for: document)
+        }
     }
+}
+
+/// Restarts a cell's Cover loading when its Document changes or the Gallery
+/// stops (a new render may start) or starts moving (a pending one is dropped).
+private struct LoadKey: Equatable {
+    let document: String
+    let galleryIsStill: Bool
 }
 
 /// The first cell: a white "+" on the placeholder grey.
