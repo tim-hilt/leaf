@@ -10,7 +10,8 @@ final class ReaderHandle {
 /// your place: the content at the top of the viewport stays put when the view
 /// is resized or rotated, and when zooming with the keyboard. PDFKit's own
 /// pinch gesture does the pinch zooming, so the content under the fingers
-/// stays put; on iOS a double-tap toggles between fit-to-width and zoomed in.
+/// stays put; on iOS a double-tap toggles between fit-to-width and zoomed in,
+/// and a single tap calls `onSingleTap`.
 final class ReaderPDFView: PDFView {
     /// Where the viewport was before a size change, to be restored once the
     /// new layout is known.
@@ -24,6 +25,9 @@ final class ReaderPDFView: PDFView {
     /// refreshed on every layout. Nil until the first layout.
     private var zoomRange: ZoomRange?
     private var viewpoint: Viewpoint?
+
+    /// Called on a single tap on the page (iOS only; macOS clicks never fire it).
+    var onSingleTap: () -> Void = {}
 
     convenience init(handle: ReaderHandle) {
         self.init(frame: .zero)
@@ -94,11 +98,30 @@ final class ReaderPDFView: PDFView {
     }
 
     #if os(iOS)
+        /// PDFView is already the delegate of its own recognizers, so ours gets
+        /// a separate one rather than overriding PDFView's.
+        private final class SimultaneousTaps: NSObject, UIGestureRecognizerDelegate {
+            func gestureRecognizer(
+                _ gestureRecognizer: UIGestureRecognizer,
+                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+            ) -> Bool { true }
+        }
+
+        // Recognizers hold their delegate weakly.
+        private static let simultaneousTaps = SimultaneousTaps()
+
         override init(frame: CGRect) {
             super.init(frame: frame)
             let doubleTap = UITapGestureRecognizer(target: self, action: #selector(didDoubleTap))
             doubleTap.numberOfTapsRequired = 2
             addGestureRecognizer(doubleTap)
+            // A double-tap zooms, so a single tap only counts once it can no
+            // longer become one.
+            let singleTap = UITapGestureRecognizer(target: self, action: #selector(didSingleTap))
+            singleTap.require(toFail: doubleTap)
+            // PDFKit's own tap handling (links, selection) must keep working.
+            singleTap.delegate = Self.simultaneousTaps
+            addGestureRecognizer(singleTap)
         }
 
         @available(*, unavailable)
@@ -131,11 +154,15 @@ final class ReaderPDFView: PDFView {
             go(to: PDFDestination(page: page, at: convert(corner, to: page)))
         }
 
+        @objc private func didSingleTap(_ tap: UITapGestureRecognizer) {
+            onSingleTap()
+        }
+
         @objc private func didDoubleTap(_ tap: UITapGestureRecognizer) {
             guard let range = zoomRange else { return }
             zoom(to: range.doubleTapTarget(from: scaleFactor), keeping: tap.location(in: self))
         }
-    #else
+        #else
         override func setFrameSize(_ newSize: NSSize) {
             sizeWillChange(to: newSize, from: frame.size)
             super.setFrameSize(newSize)

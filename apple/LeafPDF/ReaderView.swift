@@ -4,19 +4,37 @@ import SwiftUI
 /// Shows one Document's pages in a single continuously scrolling vertical
 /// column, titled with the Document's Title. Must be pushed onto a
 /// `NavigationStack`, which provides the back chevron and iOS edge swipe.
+///
+/// Immersive Mode hides everything but the pages. On iOS a single tap toggles
+/// it; on macOS it is the native full screen, which needs no code here.
+/// Scrolling never changes it, and the Reader always opens with its UI showing.
 struct ReaderView: View {
     let document: PDFDocument
     @State private var handle = ReaderHandle()
+    #if os(iOS)
+        @State private var isImmersive = false
+    #endif
 
     var body: some View {
-        PDFKitView(document: document, handle: handle)
+        PDFKitView(document: document, handle: handle, onSingleTap: toggleImmersive)
             .navigationTitle(document.title)
             #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbarVisibility(isImmersive ? .hidden : .automatic, for: .navigationBar)
+                .statusBarHidden(isImmersive)
+                // Hiding system overlays also lets the home indicator fade.
+                .persistentSystemOverlays(isImmersive ? .hidden : .automatic)
+                .animation(.default, value: isImmersive)
             #else
                 .background(BackShortcut())
                 .focusedSceneValue(\.reader, handle)
             #endif
+    }
+
+    private func toggleImmersive() {
+        #if os(iOS)
+            isImmersive.toggle()
+        #endif
     }
 }
 
@@ -35,11 +53,12 @@ struct ReaderView: View {
 #endif
 
 /// PDFKit's native viewer, laid out as one vertical, continuously scrolling
-/// column. Opens at fit-to-width; see `ReaderPDFView` for zooming and keeping
-/// your place.
+/// column. Opens at fit-to-width; see `ReaderPDFView` for zooming, keeping
+/// your place and taps.
 private struct PDFKitView {
     let document: PDFDocument
     let handle: ReaderHandle
+    let onSingleTap: () -> Void
 
     @MainActor
     fileprivate func makePDFView() -> PDFView {
@@ -48,6 +67,7 @@ private struct PDFKitView {
         view.displayDirection = .vertical
         view.autoScales = true
         view.document = document
+        view.onSingleTap = onSingleTap
         return view
     }
 }
