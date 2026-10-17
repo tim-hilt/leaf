@@ -16,9 +16,13 @@ Documents are removed by long pressing (mobile) or right clicking (desktop) and 
 
 Removes the temporary sample Document added by Reading.
 
-## 3. File Gallery
+## 3. Gallery
 
-The file gallery renders the first page and title of all imported files in a vertically scrollable grid. The first entry is an empty cell with a "+" icon - another way to import files. Clicking on any imported file opens it in the Reader.
+The Gallery shows the Cover and Title of every Document in a vertically scrollable grid. The first cell is a "+", another way to Import. Clicking a Document opens it in the Reader.
+
+- Sort by Date Imported or Title
+- Library Search by Title, file name or Author
+- Arrow keys move a highlight through the grid
 
 ## 4. Reading Progress
 

@@ -16,6 +16,10 @@ _Avoid_: Document (when meaning the bytes)
 The name shown for a Document: the title stored in the PDF, or the file name if the PDF has none.
 _Avoid_: Name, filename
 
+**Author**:
+The author stored in the PDF, if any.
+_Avoid_: Creator
+
 **Library**:
 The set of Documents the user has imported.
 _Avoid_: Collection, Gallery (when meaning the set)
@@ -31,6 +35,18 @@ _Avoid_: Delete
 **Gallery**:
 The view showing the Library.
 _Avoid_: File gallery, home
+
+**Cover**:
+The image of a Document's first page, shown for it in the Gallery.
+_Avoid_: Thumbnail, preview, first page
+
+**Library Search**:
+Finding Documents in the Gallery by Title, file name or Author.
+_Avoid_: Search (unqualified), filter
+
+**Document Search**:
+Finding text inside a single Document.
+_Avoid_: Search (unqualified), find
 
 **Reader**:
 The view in which a single Document is read.
