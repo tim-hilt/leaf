@@ -150,10 +150,27 @@ import Testing
             for _ in 0..<40 where session.resultCount != 3 { try await Task.sleep(for: .milliseconds(50)) }
             #expect(session.resultCount == 3)
 
-            session.highlightNextResult(in: .forward)
+            // The first match is current, and all are marked on the pages.
             for _ in 0..<40 where reader.highlightedSelections?.count != 3 { try await Task.sleep(for: .milliseconds(50)) }
             #expect(session.highlightedResultIndex == 0)
             #expect(reader.highlightedSelections?.count == 3)
+
+            session.highlightNextResult(in: .forward)
+            #expect(session.highlightedResultIndex == 1)
+            session.highlightNextResult(in: .backward)
+            session.highlightNextResult(in: .backward)
+            #expect(session.highlightedResultIndex == 2)
+
+            // The results list reads the same matches, and choosing one makes it current.
+            #expect(reader.results.matches.count == 3)
+            #expect(reader.results.current == 2)
+            reader.results.onChoose(0)
+            #expect(session.highlightedResultIndex == 0)
+            #expect(reader.results.current == 0)
+
+            interaction.dismissFindNavigator()
+            #expect(reader.results.matches.isEmpty)
+            #expect(!reader.results.isFindBarOpen)
         }
     #endif
 
@@ -187,6 +204,21 @@ import Testing
             try await waitForANewMatch { reader.find.next() }
             #expect(reader.currentSelection?.string == "app")
             #expect(reader.currentSelection?.pages.first == reader.document?.page(at: 2))
+
+            // The results list follows the bar's search, and its current match.
+            for _ in 0..<40 where reader.results.matches.count != 3 { try await Task.sleep(for: .milliseconds(50)) }
+            #expect(reader.results.isFindBarOpen)
+            #expect(reader.results.matches.map(\.pageIndex) == [0, 2, 2])
+            #expect(reader.results.current == 1)
+
+            // Choosing a match makes it current, and the bar goes on from there.
+            reader.results.onChoose(2)
+            #expect(reader.currentSelection?.pages.first == reader.document?.page(at: 2))
+            try await Task.sleep(for: .milliseconds(300))
+            #expect(reader.results.current == 2)
+            reader.find.previous()
+            for _ in 0..<40 where reader.results.current != 1 { try await Task.sleep(for: .milliseconds(50)) }
+            #expect(reader.results.current == 1)
         }
     #endif
 

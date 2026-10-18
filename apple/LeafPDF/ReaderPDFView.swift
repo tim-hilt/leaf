@@ -55,9 +55,13 @@ final class ReaderPDFView: PDFView {
         }
     }
 
-    convenience init(handle: ReaderHandle) {
+    /// The matches of the Document Search that is going on, for the results list.
+    private(set) var results = SearchResults()
+
+    convenience init(handle: ReaderHandle, results: SearchResults = SearchResults()) {
         self.init(frame: .zero)
         handle.view = self
+        self.results = results
     }
 
     /// Makes the Document, once it is set and laid out, open with `place` at the
@@ -247,7 +251,7 @@ final class ReaderPDFView: PDFView {
         }
 
         /// The native find bar over Document Search.
-        private(set) lazy var find = DocumentFind(view: self)
+        private(set) lazy var find = DocumentFind(view: self, results: results)
 
         /// Shows the find bar; matches are revealed and marked as they are found.
         func presentFind() { find.present() }
@@ -307,7 +311,7 @@ final class ReaderPDFView: PDFView {
         }
     #else
         /// The native find bar over the Document's text.
-        private(set) lazy var find = DocumentFind(view: self)
+        private(set) lazy var find = DocumentFind(view: self, results: results)
 
         /// Shows the find bar; the current match is the view's selection.
         func presentFind() { find.present() }

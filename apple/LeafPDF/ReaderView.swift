@@ -22,16 +22,22 @@ import SwiftUI
 ///
 /// A trailing toolbar button opens the native find bar for Document Search,
 /// unless Immersive Mode hides it. ⌘F opens it too: on iOS with a keyboard, on
-/// macOS from Edit > Find, which also has ⌘G and ⇧⌘G.
+/// macOS from Edit > Find, which also has ⌘G and ⇧⌘G. All matches are listed
+/// with their surrounding text and page numbers: in a leading sidebar while the
+/// find bar is open and has matches, or on compact widths in a sheet that the
+/// find bar's options open.
 struct ReaderView: View {
     let document: LibraryDocument
     @Environment(LibraryModel.self) private var library
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var pdf: PDFDocument?
     @State private var handle = ReaderHandle()
     @State private var saver: ReadingProgressSaver?
     @State private var contents: TableOfContents?
     @State private var isShowingContents = false
+    @State private var results = SearchResults()
+    @State private var isShowingResults = false
     /// Printed page number of the Back place; nil when there is none.
     @State private var backPageNumber: String?
     #if os(iOS)
@@ -39,24 +45,17 @@ struct ReaderView: View {
     #endif
 
     var body: some View {
-        Group {
-            if let pdf {
-                PDFKitView(
-                    document: pdf, handle: handle, place: document.place, onSingleTap: toggleImmersive,
-                    onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
-                    onBackChange: { backPageNumber = $0 })
-            } else {
-                Color.clear
+        HStack(spacing: 0) {
+            if showsResultsSidebar {
+                SearchResultsList(results: results)
+                    .frame(width: 320)
+                    .transition(.move(edge: .leading))
+                Divider()
             }
+            pages
         }
-        .overlay(alignment: .bottom) {
-            if let backPageNumber {
-                BackCapsule(pageNumber: backPageNumber) { handle.view?.goBack() }
-                    .padding(.bottom)
-                    .transition(.opacity)
-            }
-        }
-        .animation(.default, value: backPageNumber)
+        .animation(.default, value: showsResultsSidebar)
+        .sheet(isPresented: $isShowingResults) { SearchResultsSheet(results: results) }
         .task {
             guard pdf == nil else { return }
             saver = ReadingProgressSaver(library: library, document: document, handle: handle)
@@ -103,6 +102,31 @@ struct ReaderView: View {
             .windowToolbarFullScreenVisibility(.onHover)
         #endif
     }
+
+    private var pages: some View {
+        Group {
+            if let pdf {
+                PDFKitView(
+                    document: pdf, handle: handle, results: results, place: document.place,
+                    onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
+                    onBackChange: { backPageNumber = $0 }, onShowResults: { isShowingResults = true })
+            } else {
+                Color.clear
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if let backPageNumber {
+                BackCapsule(pageNumber: backPageNumber) { handle.view?.goBack() }
+                    .padding(.bottom)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.default, value: backPageNumber)
+    }
+
+    /// Whether the matches are listed in a sidebar: while the find bar is open
+    /// and has matches, unless the width is compact, which has a sheet instead.
+    private var showsResultsSidebar: Bool { results.isListable && sizeClass != .compact }
 
     /// Whether the toolbar's buttons are shown. On macOS Immersive Mode is the
     /// full screen, where the toolbar hides itself.
@@ -169,15 +193,18 @@ private struct BackCapsule: View {
 private struct PDFKitView {
     let document: PDFDocument
     let handle: ReaderHandle
+    let results: SearchResults
     let place: Place?
     let onSingleTap: () -> Void
     let onOpen: () -> Void
     let onScroll: () -> Void
     let onBackChange: (String?) -> Void
+    /// Called when the reader asks for the list of matches in the find bar (iOS only).
+    let onShowResults: () -> Void
 
     @MainActor
     fileprivate func makePDFView() -> PDFView {
-        let view = ReaderPDFView(handle: handle)
+        let view = ReaderPDFView(handle: handle, results: results)
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
         view.autoScales = true
@@ -187,6 +214,9 @@ private struct PDFKitView {
         view.onOpen = onOpen
         view.onScroll = onScroll
         view.onBackChange = onBackChange
+        #if os(iOS)
+            view.find.onShowResults = onShowResults
+        #endif
         return view
     }
 }

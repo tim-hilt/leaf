@@ -4,153 +4,150 @@
 
     /// The native iOS find bar for a Reader, driven by Document Search. PDFView's
     /// built-in find session doesn't expose its matches, so this runs our own
-    /// `UIFindInteraction` session over `FindableDocument`: the bar, the match
-    /// count ("3 of 27"), next/previous and the page highlights all come from
-    /// one set of matches. The bar passes on the reader's case and whole-word
-    /// options, and searches as they type.
+    /// `UIFindSession`: the bar, the match count ("3 of 27"), next/previous, the
+    /// page highlights and the results list all come from one set of matches
+    /// (`SearchResults`). The bar passes on the reader's case and whole-word
+    /// options, and searches as they type. On compact widths the bar's options
+    /// have a "Show All Results" item, which calls `onShowResults`.
     @MainActor
     final class DocumentFind: NSObject, UIFindInteractionDelegate {
         private weak var view: ReaderPDFView?
+        private let results: SearchResults
         /// The system's find interaction; its session is ours.
         private(set) lazy var interaction = UIFindInteraction(sessionDelegate: self)
-        /// The searchable object of the active session, which holds it only weakly.
-        private var findable: FindableDocument?
+        /// Called when the reader asks for the list of matches in the find bar's options.
+        var onShowResults: () -> Void = {}
 
-        init(view: ReaderPDFView) {
+        init(view: ReaderPDFView, results: SearchResults) {
             self.view = view
+            self.results = results
             super.init()
+            interaction.optionsMenuProvider = { [weak self] defaults in
+                UIMenu(children: defaults + (self?.resultsMenu ?? []))
+            }
             view.addInteraction(interaction)
         }
 
         /// Shows the find bar.
         func present() { interaction.presentFindNavigator(showingReplace: false) }
 
+        /// The options item that opens the list, on compact widths, where there is no sidebar.
+        private var resultsMenu: [UIMenuElement] {
+            guard view?.traitCollection.horizontalSizeClass == .compact else { return [] }
+            let show = UIAction(
+                title: "Show All Results", image: UIImage(systemName: "list.bullet"),
+                attributes: results.matches.isEmpty ? .disabled : []
+            ) { [weak self] _ in self?.onShowResults() }
+            return [UIMenu(options: .displayInline, children: [show])]
+        }
+
         func findInteraction(_ interaction: UIFindInteraction, sessionFor view: UIView) -> UIFindSession? {
             guard let reader = self.view, let document = reader.document else { return nil }
-            let findable = FindableDocument(document: document, view: reader)
-            self.findable = findable
-            return UITextSearchingFindSession(searchableObject: findable)
+            return FindSession(document: document, view: reader, results: results, interaction: interaction)
+        }
+
+        func findInteraction(_ interaction: UIFindInteraction, didBegin session: UIFindSession) {
+            results.isFindBarOpen = true
         }
 
         func findInteraction(_ interaction: UIFindInteraction, didEnd session: UIFindSession) {
-            findable?.stop()
-            findable = nil
+            (session as? FindSession)?.stop()
+            results.isFindBarOpen = false
         }
     }
 
-    /// A Document, searchable by the find bar. Ranges are matches of Document
-    /// Search, numbered in the order they arrive, which is reading order.
+    /// One find session over a Document: searches as the bar asks, numbers the
+    /// matches as they arrive (reading order) and keeps the current one.
     @MainActor
-    private final class FindableDocument: NSObject, @preconcurrency UITextSearching {
+    private final class FindSession: UIFindSession {
         private let search: DocumentSearch
         private weak var view: ReaderPDFView?
-        private var matchCount = 0
-        /// Matches marked on the pages, by number; the style is on the selection's colour.
-        private var marked: [Int: PDFSelection] = [:]
+        private let results: SearchResults
+        private weak var interaction: UIFindInteraction?
         private var isRefreshScheduled = false
 
-        init(document: PDFDocument, view: ReaderPDFView) {
+        init(document: PDFDocument, view: ReaderPDFView, results: SearchResults, interaction: UIFindInteraction) {
             search = DocumentSearch(document)
             self.view = view
+            self.results = results
+            self.interaction = interaction
+            super.init()
+            results.onChoose = { [weak self] in self?.makeCurrent($0) }
         }
 
+        /// Ends the session: its matches are forgotten and unmarked.
         func stop() {
-            search.cancel()
-            clearAllDecoratedFoundText()
+            invalidateFoundResults()
+            results.onChoose = { _ in }
         }
 
-        // MARK: UITextSearching
+        override var resultCount: Int { results.matches.count }
+        override var highlightedResultIndex: Int { results.current ?? NSNotFound }
 
-        /// Searches always start from the first match.
-        var selectedTextRange: UITextRange? { nil }
-
-        func compare(_ foundRange: UITextRange, toRange: UITextRange, document: AnyHashable??) -> ComparisonResult {
-            guard let a = foundRange as? FoundRange, let b = toRange as? FoundRange else { return .orderedSame }
-            return a.number < b.number ? .orderedAscending : a.number > b.number ? .orderedDescending : .orderedSame
-        }
-
-        func performTextSearch(
-            queryString string: String, options: UITextSearchOptions,
-            resultAggregator aggregator: UITextSearchAggregator<AnyHashable?>
-        ) {
-            clearAllDecoratedFoundText()
-            matchCount = 0
+        override func performSearch(query: String, options: UITextSearchOptions?) {
+            invalidateFoundResults()
             search.search(
-                DocumentSearch.Query(string, options: options),
+                DocumentSearch.Query(query, options: options),
                 onMatch: { [self] match in
-                    aggregator.foundRange(
-                        FoundRange(number: matchCount, match: match), searchString: string, document: nil)
-                    matchCount += 1
+                    results.append(match)
+                    match.selection.color = Self.otherColor
+                    if results.current == nil { makeCurrent(0) }
+                    refreshSoon()
                 },
-                onFinish: { aggregator.finishedSearching() })
+                onFinish: {})
         }
 
-        func decorate(foundTextRange range: UITextRange, document: AnyHashable??, usingStyle style: UITextSearchFoundTextStyle) {
-            guard let found = range as? FoundRange else { return }
-            switch style {
-            case .normal:
-                marked[found.number] = nil
-            case .found:
-                found.match.selection.color = .systemYellow.withAlphaComponent(0.4)
-                marked[found.number] = found.match.selection
-            case .highlighted:
-                found.match.selection.color = .systemOrange
-                marked[found.number] = found.match.selection
-            @unknown default:
-                break
-            }
-            refreshMarksSoon()
+        override func highlightNextResult(in direction: UITextStorageDirection) {
+            let count = results.matches.count
+            guard count > 0 else { return }
+            let step = direction == .backward ? count - 1 : 1
+            makeCurrent(((results.current ?? -step) + step) % count)
         }
 
-        func clearAllDecoratedFoundText() {
-            marked = [:]
+        override func invalidateFoundResults() {
+            search.cancel()
+            results.removeAll()
             view?.highlightedSelections = nil
+            interaction?.updateResultCount()
         }
 
-        func scrollRangeToVisible(_ range: UITextRange, inDocument document: AnyHashable??) {
-            if let found = range as? FoundRange { view?.reveal(found.match.selection) }
+        /// Makes match `number` the current one, orange among the others, and shows it.
+        private func makeCurrent(_ number: Int) {
+            guard results.matches.indices.contains(number) else { return }
+            if let old = results.current { results.matches[old].selection.color = Self.otherColor }
+            results.setCurrent(number)
+            results.matches[number].selection.color = Self.currentColor
+            view?.reveal(results.matches[number].selection)
+            refreshSoon()
         }
 
-        /// Decorating is called once per match as they stream in; PDFView takes
-        /// them all at once, so they are applied together at the end of the turn.
-        private func refreshMarksSoon() {
+        private static let otherColor = UIColor.systemYellow.withAlphaComponent(0.4)
+        private static let currentColor = UIColor.systemOrange
+
+        /// Matches stream in one by one; PDFView takes all marks at once, and
+        /// the bar its count, so both are updated together at the end of the turn.
+        private func refreshSoon() {
             guard !isRefreshScheduled else { return }
             isRefreshScheduled = true
             Task { @MainActor in
                 isRefreshScheduled = false
-                view?.highlightedSelections = Array(marked.values)
+                view?.highlightedSelections = results.matches.map(\.selection)
+                interaction?.updateResultCount()
             }
         }
     }
 
-    /// A match as the find bar sees it: an opaque range, ordered by `number`.
-    private final class FoundRange: UITextRange {
-        /// Position among the matches of its search, in reading order.
-        let number: Int
-        let match: DocumentSearch.Match
-
-        init(number: Int, match: DocumentSearch.Match) {
-            self.number = number
-            self.match = match
-        }
-
-        // The bar only compares and decorates ranges, through `FindableDocument`.
-        override var start: UITextPosition { UITextPosition() }
-        override var end: UITextPosition { UITextPosition() }
-        override var isEmpty: Bool { false }
-    }
-
     extension DocumentSearch.Query {
         /// The reader's choices in the system find bar.
-        @MainActor fileprivate init(_ text: String, options: UITextSearchOptions) {
+        @MainActor fileprivate init(_ text: String, options: UITextSearchOptions?) {
             let wordMatch: DocumentSearch.WordMatch =
-                switch options.wordMatchMethod {
+                switch options?.wordMatchMethod {
                 case .startsWith: .startsWith
                 case .fullWord: .fullWord
                 default: .contains
                 }
             self.init(
-                text, caseSensitive: !options.stringCompareOptions.contains(.caseInsensitive),
+                text, caseSensitive: !(options?.stringCompareOptions.contains(.caseInsensitive) ?? true),
                 wordMatch: wordMatch)
         }
     }
@@ -164,21 +161,36 @@
     /// word-match options itself. It searches as they type; the match count,
     /// next and previous come with the bar, and the current match is the
     /// PDFView's selection. Made once the Reader has its Document.
+    ///
+    /// For the results list, Document Search runs alongside while the bar is
+    /// showing, on the bar's search string and options, which it keeps in the
+    /// system's find pasteboard. NSTextFinder reports neither its matches nor
+    /// when the search changes, so the pasteboard is watched, and the current
+    /// match NSTextFinder scrolls to is looked up in the list.
     @MainActor
     final class DocumentFind: NSObject, @preconcurrency NSTextFinderClient {
         private weak var view: ReaderPDFView?
+        private let results: SearchResults
         let finder = NSTextFinder()
         /// NSTextFinder searches it on a background queue.
         private let text: DocumentText
         /// The current match, in the Document's text; empty before the first.
         private var selected = NSRange()
+        private let search: DocumentSearch
+        /// The search the list shows; nil while the bar is hidden.
+        private var listed: DocumentSearch.Query?
+        private var barObservation: NSKeyValueObservation?
+        private var watch: Timer?
 
-        init(view: ReaderPDFView) {
+        init(view: ReaderPDFView, results: SearchResults) {
             self.view = view
+            self.results = results
             text = DocumentText(view.document)
+            search = DocumentSearch(view.document ?? PDFDocument())
             super.init()
             finder.client = self
             finder.isIncrementalSearchingEnabled = true
+            results.onChoose = { [weak self] in self?.choose($0) }
         }
 
         /// Shows the find bar.
@@ -192,8 +204,78 @@
 
         private func perform(_ action: NSTextFinder.Action) {
             // PDFView lays out inside its own scroll view, which hosts the bar.
-            finder.findBarContainer = view?.documentView?.enclosingScrollView
+            let container = view?.documentView?.enclosingScrollView
+            finder.findBarContainer = container
+            if barObservation == nil {
+                barObservation = container?.observe(\.isFindBarVisible, options: [.new]) { [weak self] _, change in
+                    let isVisible = change.newValue ?? false
+                    MainActor.assumeIsolated { self?.barVisibilityChanged(isVisible) }
+                }
+            }
             finder.performAction(action)
+        }
+
+        // MARK: Results list
+
+        private func barVisibilityChanged(_ isVisible: Bool) {
+            results.isFindBarOpen = isVisible
+            guard isVisible else {
+                watch?.invalidate()
+                watch = nil
+                listed = nil
+                search.cancel()
+                results.removeAll()
+                return
+            }
+            refreshList()
+            watch = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] timer in
+                guard let self else { return timer.invalidate() }
+                MainActor.assumeIsolated { self.refreshList() }
+            }
+        }
+
+        /// Lists the matches of the bar's search, if it has changed since the list was made.
+        private func refreshList() {
+            let query = DocumentSearch.Query(findPasteboard: NSPasteboard(name: .find))
+            guard query != listed else { return }
+            listed = query
+            results.removeAll()
+            search.search(
+                query,
+                onMatch: { [self] match in
+                    results.append(match)
+                    if location(of: match) == selected.location, selected.length > 0 {
+                        results.setCurrent(results.matches.count - 1)
+                    }
+                },
+                onFinish: {})
+        }
+
+        /// Where the match starts in the Document's text.
+        private func location(of match: DocumentSearch.Match) -> Int {
+            text.range(ofPageAt: match.pageIndex).location + match.range.location
+        }
+
+        /// Goes to the listed match with the given number, as if the bar had found it.
+        private func choose(_ number: Int) {
+            guard results.matches.indices.contains(number) else { return }
+            let match = results.matches[number]
+            scrollRangeToVisible(NSRange(location: location(of: match), length: match.range.length))
+            // NSTextFinder keeps its own place in its matches; this makes it
+            // go on from the selection.
+            finder.noteClientStringWillChange()
+        }
+
+        /// Number of the listed match starting at `location`, if there is one.
+        private func number(ofMatchAt location: Int) -> Int? {
+            let matches = results.matches
+            var low = 0
+            var high = matches.count
+            while low < high {
+                let mid = (low + high) / 2
+                if self.location(of: matches[mid]) < location { low = mid + 1 } else { high = mid }
+            }
+            return low < matches.count && self.location(of: matches[low]) == location ? low : nil
         }
 
         // MARK: NSTextFinderClient
@@ -235,6 +317,7 @@
         private func select(_ range: NSRange) {
             selected = range
             view?.currentSelection = selection(for: range)
+            results.setCurrent(range.length > 0 ? number(ofMatchAt: range.location) : nil)
         }
 
         func contentView(at index: Int, effectiveCharacterRange outRange: NSRangePointer) -> NSView {
@@ -257,6 +340,28 @@
 
         private func selection(for range: NSRange) -> PDFSelection? {
             view?.document?.selection(for: range, in: text)
+        }
+    }
+
+    extension DocumentSearch.Query {
+        /// The search in the system's find pasteboard: the search string and
+        /// options the find bar shows and every app's find bar shares.
+        @MainActor init(findPasteboard pasteboard: NSPasteboard) {
+            let options =
+                pasteboard.data(forType: .textFinderOptions)
+                .flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] } ?? [:]
+            let caseInsensitive = options[NSPasteboard.PasteboardType.TextFinderOptionKey.textFinderCaseInsensitiveKey.rawValue]
+            let matching = options[NSPasteboard.PasteboardType.TextFinderOptionKey.textFinderMatchingTypeKey.rawValue]
+            let wordMatch: DocumentSearch.WordMatch =
+                switch (matching as? Int).flatMap(NSTextFinder.MatchingType.init(rawValue:)) {
+                case .startsWith: .startsWith
+                case .endsWith: .endsWith
+                case .fullWord: .fullWord
+                default: .contains
+                }
+            self.init(
+                pasteboard.string(forType: .string) ?? "", caseSensitive: (caseInsensitive as? Bool) == false,
+                wordMatch: wordMatch)
         }
     }
 #endif

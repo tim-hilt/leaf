@@ -1,6 +1,10 @@
 import PDFKit
 import Testing
 
+#if os(macOS)
+    import AppKit
+#endif
+
 @testable import LeafPDF
 
 @MainActor @Suite struct DocumentSearchTests {
@@ -57,6 +61,98 @@ import Testing
         #expect(matches.count == 1)
     }
 
+    @Test func endsWithMatchesAtTheEndOfAWord() async throws {
+        let search = DocumentSearch(try makePDF(named: "Cats.pdf", pageTexts: [Self.cats]))
+        let matches = await search.run(.init("cat", wordMatch: .endsWith))
+        // Not "category" or "cats": a letter follows.
+        #expect(matches.count == 5)
+    }
+
+    // MARK: Excerpt
+
+    @Test func anExcerptIsTheTextAroundTheMatchWithItsRange() async throws {
+        let search = DocumentSearch(
+            try makePDF(named: "Fox.pdf", pageTexts: ["The quick brown fox jumps over the lazy dog"]))
+
+        let match = try #require(await search.run(.init("fox")).first)
+
+        #expect(match.excerpt.text == "The quick brown fox jumps over the lazy dog")
+        #expect(match.excerpt.text[match.excerpt.matchRange] == "fox")
+    }
+
+    @Test func anExcerptIsShortAndOnOneLine() async throws {
+        let filler = Array(repeating: "lorem ipsum dolor sit amet", count: 20).joined(separator: " ")
+        let search = DocumentSearch(
+            try makePDF(named: "Long.pdf", pageTexts: ["\(filler) needle \(filler)"]))
+
+        let match = try #require(await search.run(.init("needle")).first)
+
+        #expect(match.excerpt.text[match.excerpt.matchRange] == "needle")
+        #expect(match.excerpt.text.count < 200)
+        #expect(!match.excerpt.text.contains { $0.isNewline })
+        #expect(!match.excerpt.text.hasPrefix(" ") && !match.excerpt.text.hasSuffix(" "))
+    }
+
+    @Test func anExcerptAtTheEdgesOfThePageIsCutThere() async throws {
+        let search = DocumentSearch(try makePDF(named: "Edge.pdf", pageTexts: ["cat sat on a cat"]))
+
+        let matches = await search.run(.init("cat"))
+
+        #expect(matches.map(\.excerpt.text) == ["cat sat on a cat", "cat sat on a cat"])
+        #expect(matches.map { $0.excerpt.text.distance(from: $0.excerpt.text.startIndex, to: $0.excerpt.matchRange.lowerBound) } == [0, 13])
+    }
+
+    // MARK: Printed page number
+
+    @Test func aMatchCarriesThePrintedNumberOfItsPage() async throws {
+        let search = DocumentSearch(
+            try makePDF(
+                named: "Labelled.pdf", pageCount: 3, pageLabels: ["i", "ii", "1"],
+                pageTexts: ["apple", "apple", "apple"]))
+
+        let matches = await search.run(.init("apple"))
+
+        #expect(matches.map(\.pageNumber) == ["i", "ii", "1"])
+    }
+
+    @Test func aPageWithoutALabelIsNumberedByItsPositionInTheFile() async throws {
+        let search = DocumentSearch(
+            try makePDF(named: "Plain.pdf", pageCount: 2, pageTexts: ["", "apple"]))
+
+        let matches = await search.run(.init("apple"))
+
+        #expect(matches.map(\.pageNumber) == ["2"])
+    }
+
+    // MARK: Containing Chapter or Section
+
+    @Test func aMatchKnowsItsChapterOrSection() async throws {
+        let top = CGPoint(x: 0, y: 792)
+        let search = DocumentSearch(
+            try makePDF(
+                named: "Book.pdf", pageCount: 4,
+                outline: [
+                    OutlineEntry(
+                        "Chapter 1", pageIndex: 1, at: top,
+                        children: [OutlineEntry("Section 1.1", pageIndex: 2, at: top)]),
+                    OutlineEntry("Chapter 2", pageIndex: 3, at: top),
+                ],
+                pageTexts: ["preface apple", "apple", "apple", "apple"]))
+
+        let matches = await search.run(.init("apple"))
+
+        // Nothing contains the preface.
+        #expect(matches.map { $0.section?.title } == [nil, "Chapter 1", "Section 1.1", "Chapter 2"])
+    }
+
+    @Test func aMatchHasNoChapterOrSectionWithoutATableOfContents() async throws {
+        let search = DocumentSearch(try makePDF(named: "Plain.pdf", pageTexts: ["apple"]))
+
+        let matches = await search.run(.init("apple"))
+
+        #expect(matches.map { $0.section?.title } == [nil])
+    }
+
     @Test func anEmptyQueryHasNoMatches() async throws {
         let search = DocumentSearch(try makePDF(named: "Fruit.pdf", pageTexts: ["apple"]))
         let matches = await search.run(.init(""))
@@ -83,6 +179,41 @@ import Testing
         #expect(!oldFinished)
     }
 }
+
+#if os(macOS)
+    // MARK: The macOS find bar's search
+
+    @MainActor @Suite struct FindPasteboardQueryTests {
+        /// A find pasteboard of its own, as the find bar fills it.
+        private func pasteboard(_ text: String, options: [String: Any]) throws -> NSPasteboard {
+            let pasteboard = NSPasteboard(name: NSPasteboard.Name(UUID().uuidString))
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            pasteboard.setData(
+                try PropertyListSerialization.data(fromPropertyList: options, format: .binary, options: 0),
+                forType: .textFinderOptions)
+            return pasteboard
+        }
+
+        @Test func readsTheSearchStringAndOptions() throws {
+            let caseKey = NSPasteboard.PasteboardType.TextFinderOptionKey.textFinderCaseInsensitiveKey.rawValue
+            let matchKey = NSPasteboard.PasteboardType.TextFinderOptionKey.textFinderMatchingTypeKey.rawValue
+
+            let query = DocumentSearch.Query(
+                findPasteboard: try pasteboard("cat", options: [caseKey: false, matchKey: 3]))
+
+            #expect(query == DocumentSearch.Query("cat", caseSensitive: true, wordMatch: .endsWith))
+        }
+
+        @Test func withoutOptionsItIsCaseInsensitiveAndContains() {
+            let pasteboard = NSPasteboard(name: NSPasteboard.Name(UUID().uuidString))
+            pasteboard.clearContents()
+            pasteboard.setString("cat", forType: .string)
+
+            #expect(DocumentSearch.Query(findPasteboard: pasteboard) == DocumentSearch.Query("cat"))
+        }
+    }
+#endif
 
 // MARK: Document text, for clients that search the text themselves
 
