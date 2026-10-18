@@ -19,6 +19,9 @@ import SwiftUI
 /// "Back to p. 42" returns to where the reader was; it also shows in Immersive
 /// Mode, where it is the only way back. Following a link in the Document is a
 /// Jump too, and tapping a link doesn't switch Immersive Mode.
+///
+/// On iOS, a trailing toolbar button (⌘F with a keyboard) opens the native
+/// find bar for Document Search, unless Immersive Mode hides it.
 struct ReaderView: View {
     let document: LibraryDocument
     @Environment(LibraryModel.self) private var library
@@ -77,6 +80,14 @@ struct ReaderView: View {
             }
         }
         #if os(iOS)
+            .toolbar {
+                if !isImmersive {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Find", systemImage: "magnifyingglass") { handle.view?.presentFind() }
+                            .keyboardShortcut("f", modifiers: .command)
+                    }
+                }
+            }
             .navigationBarTitleDisplayMode(.inline)
             .toolbarVisibility(isImmersive ? .hidden : .automatic, for: .navigationBar)
             .statusBarHidden(isImmersive)

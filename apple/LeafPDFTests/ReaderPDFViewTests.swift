@@ -120,6 +120,43 @@ import Testing
         #expect(scrolls > 0)
     }
 
+    // MARK: Revealing a search match
+
+    @Test func revealingAnOffScreenMatchBringsItIntoView() throws {
+        let (reader, match) = try makeReaderWithMatch()
+        reader.go(to: Place(pageIndex: 0, point: CGPoint(x: 0, y: 792)))
+        reader.reveal(match)
+        try expectVisible(match, in: reader)
+    }
+
+    @Test func revealingAMatchAlreadyInViewDoesNotScroll() throws {
+        let (reader, match) = try makeReaderWithMatch()
+        reader.reveal(match)
+        let top = try #require(reader.topOfViewport)
+        reader.reveal(match)
+        try expectAtTop(top, of: reader)
+    }
+
+    #if os(iOS)
+        @Test func theFindBarIsDrivenByDocumentSearch() async throws {
+            let reader = try makeReader(size: portrait, pageTexts: ["apple", "", "an apple, apple"], inScene: true)
+            reader.presentFind()
+            let interaction = reader.find.interaction
+            #expect(interaction.isFindNavigatorVisible)
+
+            // As the bar does when the reader types (and "next" when they press it).
+            let session = try #require(interaction.activeFindSession)
+            session.performSearch(query: "app", options: nil)
+            for _ in 0..<40 where session.resultCount != 3 { try await Task.sleep(for: .milliseconds(50)) }
+            #expect(session.resultCount == 3)
+
+            session.highlightNextResult(in: .forward)
+            for _ in 0..<40 where reader.highlightedSelections?.count != 3 { try await Task.sleep(for: .milliseconds(50)) }
+            #expect(session.highlightedResultIndex == 0)
+            #expect(reader.highlightedSelections?.count == 3)
+        }
+    #endif
+
     // MARK: Links
 
     /// A link on page 6 to `target`, and one to a web page just below it.
@@ -152,6 +189,21 @@ import Testing
     }
 }
 
+/// A Reader on a Document with "apple" on page 6, and that match.
+@MainActor
+private func makeReaderWithMatch() throws -> (ReaderPDFView, PDFSelection) {
+    let reader = try makeReader(size: CGSize(width: 400, height: 800), pageTexts: ["", "", "", "", "", "apple"])
+    let match = try #require(reader.document?.findString("apple", withOptions: []).first)
+    return (reader, match)
+}
+
+@MainActor
+private func expectVisible(_ match: PDFSelection, in reader: ReaderPDFView) throws {
+    let page = try #require(match.pages.first)
+    let rect = reader.convert(match.bounds(for: page), from: page)
+    #expect(reader.bounds.contains(rect))
+}
+
 /// The action of the link annotation on page 6 inside `rect`.
 @MainActor
 private func action(of rect: CGRect, in reader: ReaderPDFView) -> PDFAction? {
@@ -164,11 +216,18 @@ private func viewPoint(of rect: CGRect, in reader: ReaderPDFView) -> CGPoint {
     reader.convert(CGPoint(x: rect.midX, y: rect.midY), from: reader.document!.page(at: 5)!)
 }
 
+#if os(iOS)
+    /// Windows of the Readers under test, which a view only holds weakly.
+    @MainActor private var openWindows: [UIWindow] = []
+#endif
+
 /// A Reader on an eight-page Document, laid out in a window of `size`. With
-/// `openingAt`, it is asked to open there before the Document is set.
+/// `openingAt`, it is asked to open there before the Document is set. On iOS,
+/// `inScene` puts the window in the app's scene, as the find bar needs.
 @MainActor
 private func makeReader(
-    size: CGSize, openingAt place: Place? = nil, links: [LinkEntry] = []
+    size: CGSize, openingAt place: Place? = nil, links: [LinkEntry] = [], pageTexts: [String] = [],
+    inScene: Bool = false
 ) throws -> ReaderPDFView {
     let reader = ReaderPDFView(handle: ReaderHandle())
     if let place { reader.open(at: place) }
@@ -176,9 +235,12 @@ private func makeReader(
     reader.autoScales = true
     reader.frame = CGRect(origin: .zero, size: size)
     #if os(iOS)
-        let window = UIWindow(frame: reader.frame)
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        let window = inScene ? scene.map(UIWindow.init(windowScene:)) ?? UIWindow() : UIWindow()
+        window.frame = reader.frame
         window.addSubview(reader)
-        window.isHidden = false
+        window.makeKeyAndVisible()
+        openWindows.append(window)
     #else
         let window = NSWindow(
             contentRect: reader.frame, styleMask: [.titled, .resizable], backing: .buffered,
@@ -186,7 +248,7 @@ private func makeReader(
         window.isReleasedWhenClosed = false
         window.contentView = reader
     #endif
-    reader.document = try makePDF(named: "Long.pdf", pageCount: 8, links: links)
+    reader.document = try makePDF(named: "Long.pdf", pageCount: 8, links: links, pageTexts: pageTexts)
     layout(reader)
     return reader
 }

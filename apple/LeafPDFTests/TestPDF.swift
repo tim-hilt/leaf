@@ -45,14 +45,15 @@ struct LinkEntry {
 /// Writes a PDF with `pageCount` US Letter pages to a fresh temporary directory
 /// and returns its URL; the file keeps the given name. `metadataTitle` and
 /// `author` are stored in the PDF. With an `outline`, the PDF has a table of
-/// contents. `links` are drawn on their pages. `pageLabels` gives the printed number of each page, in order. With `paddedTo`, junk
+/// contents. `links` are drawn on their pages. `pageLabels` gives the printed number of each page, in order.
+/// `pageTexts` gives the text drawn on each page, in order; a page without an entry has none. With `paddedTo`, junk
 /// after the end of the PDF makes the file at least that many bytes. Passwords
 /// encrypt the PDF: with a `userPassword` it is locked until unlocked; with only
 /// an `ownerPassword` it opens freely and just restricts permissions.
 func writePDF(
     named fileName: String, metadataTitle: String? = nil, author: String? = nil, pageCount: Int = 1,
     outline: [OutlineEntry] = [], links: [LinkEntry] = [], pageLabels: [String] = [],
-    paddedTo size: Int = 0, userPassword: String? = nil, ownerPassword: String? = nil
+    pageTexts: [String] = [], paddedTo size: Int = 0, userPassword: String? = nil, ownerPassword: String? = nil
 ) throws -> URL {
     let directory = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -79,6 +80,7 @@ func writePDF(
                 }
             }
         }
+        if pageIndex < pageTexts.count { draw(pageTexts[pageIndex], in: context, pageBox: box) }
         context.endPDFPage()
     }
     if !outline.isEmpty {
@@ -101,13 +103,24 @@ func writePDF(
 /// an imported Document does.
 func makePDF(
     named fileName: String, metadataTitle: String? = nil, pageCount: Int = 1,
-    outline: [OutlineEntry] = [], links: [LinkEntry] = [], pageLabels: [String] = []
+    outline: [OutlineEntry] = [], links: [LinkEntry] = [], pageLabels: [String] = [],
+    pageTexts: [String] = []
 ) throws -> PDFDocument {
     try #require(
         PDFDocument(
             url: writePDF(
                 named: fileName, metadataTitle: metadataTitle, pageCount: pageCount, outline: outline,
-                links: links, pageLabels: pageLabels)))
+                links: links, pageLabels: pageLabels, pageTexts: pageTexts)))
+}
+
+/// Draws `text` as real, extractable text, wrapped inside a one-inch margin of
+/// the current page.
+private func draw(_ text: String, in context: CGContext, pageBox: CGRect) {
+    let font = CTFontCreateWithName("Helvetica" as CFString, 14, nil)
+    let string = NSAttributedString(string: text, attributes: [.font: font])
+    let frame = CTFramesetterCreateFrame(
+        CTFramesetterCreateWithAttributedString(string), CFRange(), CGPath(rect: pageBox.insetBy(dx: 72, dy: 72), transform: nil), nil)
+    CTFrameDraw(frame, context)
 }
 
 /// Appends an incremental update to the PDF at `url` that gives page `i` the

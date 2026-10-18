@@ -124,6 +124,20 @@ final class ReaderPDFView: PDFView {
         go(to: place)
     }
 
+    /// Scrolls a Document Search match into view, a third of the way down the
+    /// viewport; does nothing if it is already fully in view. Not a Jump.
+    func reveal(_ selection: PDFSelection) {
+        guard let page = selection.pages.first, let document, let top = topOfViewport else { return }
+        let rect = selection.bounds(for: page)
+        let viewRect = convert(rect, from: page)
+        guard !viewportRect.contains(viewRect) else { return }
+        // Keeps the horizontal scroll, unless the match is off to the side.
+        let fitsAcross = viewportRect.minX <= viewRect.minX && viewRect.maxX <= viewportRect.maxX
+        let x = fitsAcross ? top.point.x : rect.minX - 20 / scaleFactor
+        let y = rect.maxY + viewportRect.height / 3 / scaleFactor
+        go(to: Place(pageIndex: document.index(for: page), point: CGPoint(x: x, y: y)))
+    }
+
     // MARK: Links
 
     /// Whether a link (to the Document or the web) is at `point`, in the view's
@@ -209,6 +223,11 @@ final class ReaderPDFView: PDFView {
         /// Below any part of the view hidden behind bars.
         private var viewportTopLeft: CGPoint { CGPoint(x: 0, y: safeAreaInsets.top) }
 
+        /// The part of the view showing pages, in the view's coordinates.
+        private var viewportRect: CGRect {
+            CGRect(x: 0, y: safeAreaInsets.top, width: bounds.width, height: bounds.height - safeAreaInsets.top)
+        }
+
         /// Scrolls so that `point` on `page` lands at `viewPoint`, as far as the
         /// Document's edges allow. PDFKit's `go(to:)` can't do this: on iOS it
         /// lands up to a page off, so this moves PDFKit's scroll view directly.
@@ -226,6 +245,15 @@ final class ReaderPDFView: PDFView {
             offset.y = min(max(offset.y + current.y - viewPoint.y, minimum.y), max(maximum.y, minimum.y))
             scrollView.contentOffset = offset
         }
+
+        /// The native find bar over Document Search.
+        private(set) lazy var find = DocumentFind(view: self)
+
+        /// Shows the find bar; matches are revealed and marked as they are found.
+        func presentFind() { find.present() }
+
+        // The find bar is presented from the first responder.
+        override var canBecomeFirstResponder: Bool { true }
 
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -280,6 +308,9 @@ final class ReaderPDFView: PDFView {
     #else
         /// PDFView isn't flipped: its top edge is at `bounds.maxY`.
         private var viewportTopLeft: CGPoint { CGPoint(x: 0, y: bounds.maxY) }
+
+        /// The part of the view showing pages, in the view's coordinates.
+        private var viewportRect: CGRect { bounds }
 
         private func observeScrolling() {
             guard let clip = documentView?.enclosingScrollView?.contentView else { return }
