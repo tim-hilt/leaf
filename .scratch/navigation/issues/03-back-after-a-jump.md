@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** in-review
+**Status:** done
 
 - [x] The Reader view offers Jump to Place and Back
 - [x] A Jump stores the top-of-viewport Place as the Back place, then goes to the target; a new Jump replaces it

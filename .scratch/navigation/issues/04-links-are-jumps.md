@@ -4,7 +4,7 @@
 
 **Blocked by:** 03
 
-**Status:** in-review
+**Status:** done
 
 - [x] Links to places inside the Document go through Jump and show the Back capsule
 - [x] On iOS, a single tap on a link doesn't switch Immersive Mode

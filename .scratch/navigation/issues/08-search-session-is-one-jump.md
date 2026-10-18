@@ -4,7 +4,7 @@
 
 **Blocked by:** 03, 05, 06
 
-**Status:** in-review
+**Status:** done
 
 - [x] The first move away from where the search started records the Back place; later moves in the same session, from the find bar or the results list, don't replace it
 - [x] The session ends when the find bar closes; the capsule then offers Back to where the search started

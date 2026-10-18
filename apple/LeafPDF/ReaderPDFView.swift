@@ -18,7 +18,7 @@ final class ReaderHandle {
 /// can return there. Only the latest Jump is remembered, and only for as long
 /// as the view lives. Following a link to a place in the Document is a Jump;
 /// links to web pages keep PDFKit's behaviour and are not. A Document Search
-/// session counts as one Jump: its first move records where the search started.
+/// session counts as one Jump from where the search started.
 final class ReaderPDFView: PDFView {
     /// Where the viewport was before a size change, to be restored once the
     /// new layout is known.
@@ -129,13 +129,13 @@ final class ReaderPDFView: PDFView {
         go(to: place)
     }
 
-    /// Where the current Document Search session started, until its first move
-    /// has recorded it as the Back place. Nil outside a session and after that move.
+    /// Where the current Document Search session started; nil outside a session.
     private var searchStart: Place?
 
     /// Starts a Document Search session, called when the find bar opens. Until
-    /// `endSearchSession()`, the first `reveal` that moves the view makes the
-    /// top of the viewport now the Back place; later ones leave it alone.
+    /// `endSearchSession()`, every `reveal` that moves the view makes the
+    /// current top of the viewport the Back place, so the session is one Jump:
+    /// Back returns to where the search started, also after an earlier Back.
     func beginSearchSession() { searchStart = topOfViewport }
 
     /// Ends the Document Search session, called when the find bar closes. The
@@ -144,7 +144,7 @@ final class ReaderPDFView: PDFView {
 
     /// Scrolls a Document Search match into view, a third of the way down the
     /// viewport; does nothing if it is already fully in view. Within a search
-    /// session the first move is a Jump; see `beginSearchSession()`.
+    /// session the move is part of one Jump; see `beginSearchSession()`.
     func reveal(_ selection: PDFSelection) {
         guard let page = selection.pages.first, let document, let top = topOfViewport else { return }
         let rect = selection.bounds(for: page)
@@ -154,10 +154,7 @@ final class ReaderPDFView: PDFView {
         let fitsAcross = viewportRect.minX <= viewRect.minX && viewRect.maxX <= viewportRect.maxX
         let x = fitsAcross ? top.point.x : rect.minX - 20 / scaleFactor
         let y = rect.maxY + viewportRect.height / 3 / scaleFactor
-        if let start = searchStart {
-            backPlace = start
-            searchStart = nil
-        }
+        if let searchStart { backPlace = searchStart }
         go(to: Place(pageIndex: document.index(for: page), point: CGPoint(x: x, y: y)))
     }
 

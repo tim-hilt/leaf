@@ -117,7 +117,7 @@
         private func makeCurrent(_ number: Int) {
             guard results.matches.indices.contains(number) else { return }
             if let old = results.current { results.matches[old].selection.color = Self.otherColor }
-            results.setCurrent(number)
+            results.current = number
             results.matches[number].selection.color = Self.currentColor
             view?.reveal(results.matches[number].selection)
             refreshSoon()
@@ -249,7 +249,7 @@
                 onMatch: { [self] match in
                     results.append(match)
                     if location(of: match) == selected.location, selected.length > 0 {
-                        results.setCurrent(results.matches.count - 1)
+                        results.current = results.matches.count - 1
                     }
                 },
                 onFinish: {})
@@ -321,7 +321,7 @@
         private func select(_ range: NSRange) {
             selected = range
             view?.currentSelection = selection(for: range)
-            results.setCurrent(range.length > 0 ? number(ofMatchAt: range.location) : nil)
+            results.current = range.length > 0 ? number(ofMatchAt: range.location) : nil
         }
 
         func contentView(at index: Int, effectiveCharacterRange outRange: NSRangePointer) -> NSView {

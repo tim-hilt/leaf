@@ -23,8 +23,8 @@ final class SearchResults {
     /// `matches` in groups, in order. A Document without a Table of Contents
     /// has a single, untitled group.
     private(set) var groups: [Group] = []
-    /// Number of the current match, if any.
-    private(set) var current: Int?
+    /// Number of the current match, if any; the find bar's adapter keeps it.
+    var current: Int?
     /// Whether the find bar is showing.
     var isFindBarOpen = false
 
@@ -46,9 +46,6 @@ final class SearchResults {
             groups.append(Group(id: number, title: match.section?.title, matches: number..<number + 1, sectionID: sectionID))
         }
     }
-
-    /// Makes the match with the given number current, or none.
-    func setCurrent(_ number: Int?) { current = number }
 
     /// Forgets every match, as when a new search starts or the find bar closes.
     func removeAll() {

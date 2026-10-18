@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** in-review
+**Status:** done
 
 - [x] The Table of Contents module, built from a `PDFDocument`, gives Chapters and nested Sections (any depth) with title, printed page number (page label, falling back to the 1-based position in the File) and target Place
 - [x] It is empty when the outline is missing or has no children; entries without a target are listed but can't be chosen

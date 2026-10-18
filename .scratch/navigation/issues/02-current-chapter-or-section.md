@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** in-review
+**Status:** done
 
 - [x] The Table of Contents module returns, for a Place, the current Chapter or Section (the deepest whose target is at or before the Place, in reading order) and the Chapters and Sections containing it
 - [x] The current entry is shown in bold, its containing entries are unfolded, and the list opens scrolled to it

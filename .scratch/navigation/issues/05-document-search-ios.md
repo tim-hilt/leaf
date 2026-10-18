@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** in-review
+**Status:** done
 
 - [x] Spike first: confirm the iOS find interaction can be driven by our own matches (own find session over a searchable object) and receives the user's options; if not, pick the closest native setup that still does, without custom search UI
 - [x] The Document Search module takes a query, case sensitivity and a word-match method (Contains, Starts With, Full Word) and returns matches in reading order with page index and PDFKit selection

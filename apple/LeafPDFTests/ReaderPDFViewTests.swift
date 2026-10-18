@@ -155,6 +155,17 @@ import Testing
         try expectAtTop(start, of: reader)
     }
 
+    @Test func aSearchMoveAfterBackRecordsWhereTheSearchStartedAgain() throws {
+        let (reader, matches) = try makeReaderWithMatches()
+        reader.go(to: Place(pageIndex: 3, point: CGPoint(x: 0, y: 400)))
+        let start = try #require(reader.topOfViewport)
+        reader.beginSearchSession()
+        reader.reveal(matches[0])
+        reader.goBack()
+        reader.reveal(matches[1])
+        #expect(reader.backPlace == start)
+    }
+
     @Test func aSearchMoveThatLeavesTheViewWhereItIsRecordsNothing() throws {
         let (reader, matches) = try makeReaderWithMatches()
         reader.reveal(matches[0])
