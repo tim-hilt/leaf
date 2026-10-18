@@ -22,6 +22,9 @@ import SwiftUI
 /// Mode, where it is the only way back. Following a link in the Document is a
 /// Jump too, and tapping a link doesn't switch Immersive Mode.
 ///
+/// A trailing toolbar cog opens a popover, on iPhone too, to change Page Style
+/// while reading, unless Immersive Mode hides it.
+///
 /// A trailing toolbar button opens the native find bar for Document Search,
 /// unless Immersive Mode hides it. ⌘F opens it too: on iOS with a keyboard, on
 /// macOS from Edit > Find, which also has ⌘G and ⇧⌘G. All matches are listed
@@ -40,6 +43,7 @@ struct ReaderView: View {
     @State private var saver: ReadingProgressSaver?
     @State private var contents: TableOfContents?
     @State private var isShowingContents = false
+    @State private var isShowingPageStyle = false
     @State private var results = SearchResults()
     @State private var isShowingResults = false
     /// Printed page number of the Back place; nil when there is none.
@@ -88,6 +92,10 @@ struct ReaderView: View {
                         #if os(iOS)
                             .keyboardShortcut("f", modifiers: .command)
                         #endif
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Page Style", systemImage: "gearshape") { isShowingPageStyle = true }
+                        .popover(isPresented: $isShowingPageStyle) { PageStylePopover() }
                 }
             }
         }
