@@ -48,11 +48,13 @@
 
         func findInteraction(_ interaction: UIFindInteraction, didBegin session: UIFindSession) {
             results.isFindBarOpen = true
+            view?.beginSearchSession()
         }
 
         func findInteraction(_ interaction: UIFindInteraction, didEnd session: UIFindSession) {
             (session as? FindSession)?.stop()
             results.isFindBarOpen = false
+            view?.endSearchSession()
         }
     }
 
@@ -220,6 +222,7 @@
         private func barVisibilityChanged(_ isVisible: Bool) {
             results.isFindBarOpen = isVisible
             guard isVisible else {
+                view?.endSearchSession()
                 watch?.invalidate()
                 watch = nil
                 listed = nil
@@ -227,6 +230,7 @@
                 results.removeAll()
                 return
             }
+            view?.beginSearchSession()
             refreshList()
             watch = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] timer in
                 guard let self else { return timer.invalidate() }

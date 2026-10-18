@@ -137,6 +137,49 @@ import Testing
         try expectAtTop(top, of: reader)
     }
 
+    // MARK: Search session
+
+    @Test func aSearchSessionRecordsASingleBackPlaceWhereItStarted() throws {
+        let (reader, matches) = try makeReaderWithMatches()
+        reader.go(to: Place(pageIndex: 3, point: CGPoint(x: 0, y: 400)))
+        let start = try #require(reader.topOfViewport)
+        reader.beginSearchSession()
+        reader.reveal(matches[0])
+        #expect(reader.backPlace == start)
+        reader.reveal(matches[1])
+        reader.reveal(matches[0])
+        #expect(reader.backPlace == start)
+        reader.endSearchSession()
+        #expect(reader.backPlace == start)
+        reader.goBack()
+        try expectAtTop(start, of: reader)
+    }
+
+    @Test func aSearchMoveThatLeavesTheViewWhereItIsRecordsNothing() throws {
+        let (reader, matches) = try makeReaderWithMatches()
+        reader.reveal(matches[0])
+        reader.beginSearchSession()
+        reader.reveal(matches[0])
+        #expect(reader.backPlace == nil)
+    }
+
+    @Test func aNewSearchSessionReplacesTheBackPlace() throws {
+        let (reader, matches) = try makeReaderWithMatches()
+        reader.beginSearchSession()
+        reader.reveal(matches[0])
+        reader.endSearchSession()
+        let second = try #require(reader.topOfViewport)
+        reader.beginSearchSession()
+        reader.reveal(matches[1])
+        #expect(reader.backPlace == second)
+    }
+
+    @Test func revealingOutsideASearchSessionRecordsNothing() throws {
+        let (reader, matches) = try makeReaderWithMatches()
+        reader.reveal(matches[0])
+        #expect(reader.backPlace == nil)
+    }
+
     #if os(iOS)
         @Test func theFindBarIsDrivenByDocumentSearch() async throws {
             let reader = try makeReader(size: portrait, pageTexts: ["apple", "", "an apple, apple"], inScene: true)
@@ -271,6 +314,14 @@ private func makeReaderWithMatch() throws -> (ReaderPDFView, PDFSelection) {
     let reader = try makeReader(size: CGSize(width: 400, height: 800), pageTexts: ["", "", "", "", "", "apple"])
     let match = try #require(reader.document?.findString("apple", withOptions: []).first)
     return (reader, match)
+}
+
+/// A Reader on a Document with "apple" on pages 3 and 6, and those matches.
+@MainActor
+private func makeReaderWithMatches() throws -> (ReaderPDFView, [PDFSelection]) {
+    let reader = try makeReader(size: CGSize(width: 400, height: 800), pageTexts: ["", "", "apple", "", "", "apple"])
+    let matches = try #require(reader.document?.findString("apple", withOptions: []))
+    return (reader, matches)
 }
 
 @MainActor

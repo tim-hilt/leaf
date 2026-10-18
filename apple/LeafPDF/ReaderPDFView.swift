@@ -17,7 +17,8 @@ final class ReaderHandle {
 /// A Jump goes to a Place and remembers where the viewport was, so that Back
 /// can return there. Only the latest Jump is remembered, and only for as long
 /// as the view lives. Following a link to a place in the Document is a Jump;
-/// links to web pages keep PDFKit's behaviour and are not.
+/// links to web pages keep PDFKit's behaviour and are not. A Document Search
+/// session counts as one Jump: its first move records where the search started.
 final class ReaderPDFView: PDFView {
     /// Where the viewport was before a size change, to be restored once the
     /// new layout is known.
@@ -128,8 +129,22 @@ final class ReaderPDFView: PDFView {
         go(to: place)
     }
 
+    /// Where the current Document Search session started, until its first move
+    /// has recorded it as the Back place. Nil outside a session and after that move.
+    private var searchStart: Place?
+
+    /// Starts a Document Search session, called when the find bar opens. Until
+    /// `endSearchSession()`, the first `reveal` that moves the view makes the
+    /// top of the viewport now the Back place; later ones leave it alone.
+    func beginSearchSession() { searchStart = topOfViewport }
+
+    /// Ends the Document Search session, called when the find bar closes. The
+    /// Back place it recorded stays.
+    func endSearchSession() { searchStart = nil }
+
     /// Scrolls a Document Search match into view, a third of the way down the
-    /// viewport; does nothing if it is already fully in view. Not a Jump.
+    /// viewport; does nothing if it is already fully in view. Within a search
+    /// session the first move is a Jump; see `beginSearchSession()`.
     func reveal(_ selection: PDFSelection) {
         guard let page = selection.pages.first, let document, let top = topOfViewport else { return }
         let rect = selection.bounds(for: page)
@@ -139,6 +154,10 @@ final class ReaderPDFView: PDFView {
         let fitsAcross = viewportRect.minX <= viewRect.minX && viewRect.maxX <= viewportRect.maxX
         let x = fitsAcross ? top.point.x : rect.minX - 20 / scaleFactor
         let y = rect.maxY + viewportRect.height / 3 / scaleFactor
+        if let start = searchStart {
+            backPlace = start
+            searchStart = nil
+        }
         go(to: Place(pageIndex: document.index(for: page), point: CGPoint(x: x, y: y)))
     }
 
