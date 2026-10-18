@@ -157,6 +157,39 @@ import Testing
         }
     #endif
 
+    #if os(macOS)
+        @Test func theFindBarStepsThroughMatchesInTheDocumentText() async throws {
+            let reader = try makeReader(size: portrait, pageTexts: ["x Apple", "", "an apple, apple"])
+            // The bar's options are remembered on the find pasteboard.
+            let pasteboard = NSPasteboard(name: .find)
+            pasteboard.clearContents()
+            pasteboard.setPropertyList(
+                [NSPasteboard.PasteboardType.TextFinderOptionKey.textFinderCaseInsensitiveKey: true],
+                forType: .textFinderOptions)
+            reader.presentFind()
+            #expect(reader.documentView?.enclosingScrollView?.isFindBarVisible == true)
+
+            func waitForANewMatch(after action: () -> Void) async throws {
+                let before = reader.currentSelection
+                action()
+                // The search runs on a background queue.
+                for _ in 0..<40 where reader.currentSelection == before { try await Task.sleep(for: .milliseconds(50)) }
+            }
+            // As the reader does when they type, and when they press ⌘G.
+            let field = try #require(findBarSearchField(in: reader))
+            try await waitForANewMatch {
+                field.stringValue = "app"
+                field.sendAction(field.action, to: field.target)
+            }
+            #expect(reader.currentSelection?.string == "App")
+            #expect(reader.currentSelection?.pages.first == reader.document?.page(at: 0))
+
+            try await waitForANewMatch { reader.find.next() }
+            #expect(reader.currentSelection?.string == "app")
+            #expect(reader.currentSelection?.pages.first == reader.document?.page(at: 2))
+        }
+    #endif
+
     // MARK: Links
 
     /// A link on page 6 to `target`, and one to a web page just below it.
@@ -188,6 +221,17 @@ import Testing
         #expect(!reader.hasLink(at: viewPoint(of: CGRect(x: 50, y: 100, width: 10, height: 10), in: reader)))
     }
 }
+
+#if os(macOS)
+    /// The search field of the Reader's find bar.
+    @MainActor
+    private func findBarSearchField(in reader: ReaderPDFView) -> NSSearchField? {
+        func find(in view: NSView) -> NSSearchField? {
+            (view as? NSSearchField) ?? view.subviews.lazy.compactMap(find(in:)).first
+        }
+        return reader.documentView?.enclosingScrollView?.findBarView.flatMap(find(in:))
+    }
+#endif
 
 /// A Reader on a Document with "apple" on page 6, and that match.
 @MainActor

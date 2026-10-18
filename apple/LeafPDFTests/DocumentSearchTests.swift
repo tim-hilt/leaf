@@ -84,6 +84,42 @@ import Testing
     }
 }
 
+// MARK: Document text, for clients that search the text themselves
+
+@MainActor @Suite struct DocumentTextTests {
+    @Test func joinsThePagesTextEndToEnd() throws {
+        let text = DocumentText(try makePDF(named: "Fruit.pdf", pageCount: 3, pageTexts: ["apple", "", "banana"]))
+        let first = text.chunk(at: 0)
+        let last = text.chunk(at: text.length - 1)
+
+        #expect(first.range == NSRange(location: 0, length: first.string.utf16.count))
+        #expect(first.string.hasPrefix("apple"))
+        #expect(last.string.hasPrefix("banana"))
+        #expect(last.range.location == first.string.utf16.count)
+        #expect(NSMaxRange(last.range) == text.length)
+    }
+
+    @Test func aRangeIsTheSelectionOnItsPage() throws {
+        let document = try makePDF(named: "Fruit.pdf", pageCount: 2, pageTexts: ["apple", "pie, banana"])
+        let text = DocumentText(document)
+        let second = text.chunk(at: text.length - 1).range
+        let range = NSRange(location: second.location + 5, length: 6)
+
+        let selection = try #require(document.selection(for: range, in: text))
+
+        #expect(selection.string == "banana")
+        #expect(selection.pages.count == 1)
+        #expect(selection.pages.first.map { document.index(for: $0) } == 1)
+    }
+
+    @Test func aDocumentWithoutTextIsEmpty() throws {
+        let document = try makePDF(named: "Scan.pdf", pageCount: 2)
+        let text = DocumentText(document)
+        #expect(text.length == 0)
+        #expect(document.selection(for: NSRange(location: 0, length: 1), in: text) == nil)
+    }
+}
+
 extension DocumentSearch {
     /// Everything `query` finds, once the search has finished.
     func run(_ query: Query) async -> [Match] {

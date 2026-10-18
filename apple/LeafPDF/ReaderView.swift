@@ -20,8 +20,9 @@ import SwiftUI
 /// Mode, where it is the only way back. Following a link in the Document is a
 /// Jump too, and tapping a link doesn't switch Immersive Mode.
 ///
-/// On iOS, a trailing toolbar button (⌘F with a keyboard) opens the native
-/// find bar for Document Search, unless Immersive Mode hides it.
+/// A trailing toolbar button opens the native find bar for Document Search,
+/// unless Immersive Mode hides it. ⌘F opens it too: on iOS with a keyboard, on
+/// macOS from Edit > Find, which also has ⌘G and ⇧⌘G.
 struct ReaderView: View {
     let document: LibraryDocument
     @Environment(LibraryModel.self) private var library
@@ -78,16 +79,16 @@ struct ReaderView: View {
                         }
                 }
             }
-        }
-        #if os(iOS)
-            .toolbar {
-                if !isImmersive {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Find", systemImage: "magnifyingglass") { handle.view?.presentFind() }
+            if showsToolbarButtons {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Find", systemImage: "magnifyingglass") { handle.view?.presentFind() }
+                        #if os(iOS)
                             .keyboardShortcut("f", modifiers: .command)
-                    }
+                        #endif
                 }
             }
+        }
+        #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             .toolbarVisibility(isImmersive ? .hidden : .automatic, for: .navigationBar)
             .statusBarHidden(isImmersive)
@@ -103,12 +104,19 @@ struct ReaderView: View {
         #endif
     }
 
+    /// Whether the toolbar's buttons are shown. On macOS Immersive Mode is the
+    /// full screen, where the toolbar hides itself.
+    private var showsToolbarButtons: Bool {
+        #if os(iOS)
+            !isImmersive
+        #else
+            true
+        #endif
+    }
+
     /// The Table of Contents, unless it is empty or Immersive Mode hides it.
     private var availableContents: TableOfContents? {
-        #if os(iOS)
-            if isImmersive { return nil }
-        #endif
-        guard let contents, !contents.isEmpty else { return nil }
+        guard showsToolbarButtons, let contents, !contents.isEmpty else { return nil }
         return contents
     }
 

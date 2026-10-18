@@ -10,7 +10,7 @@
         @Entry var showTableOfContents: Binding<Bool>?
     }
 
-    /// View menu zoom commands and the Go menu, acting on the focused window's Reader.
+    /// View menu zoom commands, Edit > Find and the Go menu, acting on the focused window's Reader.
     struct ReaderCommands: Commands {
         @FocusedValue(\.reader) private var reader
         @FocusedValue(\.showTableOfContents) private var showTableOfContents
@@ -27,6 +27,17 @@
                 Button("Fit to Width") { reader?.view?.zoomToFitWidth() }
                     .keyboardShortcut("0", modifiers: .command)
                     .disabled(reader == nil)
+            }
+            CommandGroup(after: .textEditing) {
+                Menu("Find") {
+                    Button("Find…") { reader?.view?.presentFind() }
+                        .keyboardShortcut("f", modifiers: .command)
+                    Button("Find Next") { reader?.view?.find.next() }
+                        .keyboardShortcut("g", modifiers: .command)
+                    Button("Find Previous") { reader?.view?.find.previous() }
+                        .keyboardShortcut("g", modifiers: [.shift, .command])
+                }
+                .disabled(reader == nil)
             }
             CommandMenu("Go") {
                 Button(backPageNumber.map { "Back to p. \($0)" } ?? "Back") { reader?.view?.goBack() }

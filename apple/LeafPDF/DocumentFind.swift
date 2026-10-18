@@ -154,4 +154,109 @@
                 wordMatch: wordMatch)
         }
     }
+#elseif os(macOS)
+    import AppKit
+    import PDFKit
+
+    /// The native macOS find bar (`NSTextFinder`) for a Reader. NSTextFinder does
+    /// its own matching and can't be handed matches, so this client gives it the
+    /// Document's text (see `DocumentText`) and it applies the reader's case and
+    /// word-match options itself. It searches as they type; the match count,
+    /// next and previous come with the bar, and the current match is the
+    /// PDFView's selection. Made once the Reader has its Document.
+    @MainActor
+    final class DocumentFind: NSObject, @preconcurrency NSTextFinderClient {
+        private weak var view: ReaderPDFView?
+        let finder = NSTextFinder()
+        /// NSTextFinder searches it on a background queue.
+        private let text: DocumentText
+        /// The current match, in the Document's text; empty before the first.
+        private var selected = NSRange()
+
+        init(view: ReaderPDFView) {
+            self.view = view
+            text = DocumentText(view.document)
+            super.init()
+            finder.client = self
+            finder.isIncrementalSearchingEnabled = true
+        }
+
+        /// Shows the find bar.
+        func present() { perform(.showFindInterface) }
+
+        /// Goes to the next match of the bar's search, wrapping around.
+        func next() { perform(.nextMatch) }
+
+        /// Goes to the previous match of the bar's search, wrapping around.
+        func previous() { perform(.previousMatch) }
+
+        private func perform(_ action: NSTextFinder.Action) {
+            // PDFView lays out inside its own scroll view, which hosts the bar.
+            finder.findBarContainer = view?.documentView?.enclosingScrollView
+            finder.performAction(action)
+        }
+
+        // MARK: NSTextFinderClient
+
+        var isSelectable: Bool { true }
+        var allowsMultipleSelection: Bool { false }
+        var isEditable: Bool { false }
+
+        // The text is read from NSTextFinder's search queue.
+
+        nonisolated func stringLength() -> Int { text.length }
+
+        nonisolated func string(
+            at characterIndex: Int, effectiveRange outRange: NSRangePointer,
+            endsWithSearchBoundary outFlag: UnsafeMutablePointer<ObjCBool>
+        ) -> String {
+            let (string, range) = text.chunk(at: characterIndex)
+            outRange.pointee = range
+            // A match never spans pages.
+            outFlag.pointee = true
+            return string
+        }
+
+        var firstSelectedRange: NSRange { selected }
+
+        var selectedRanges: [NSValue] {
+            get { [NSValue(range: selected)] }
+            set { select(newValue.first?.rangeValue ?? NSRange()) }
+        }
+
+        /// NSTextFinder never sets the selection to a match it found; it only
+        /// asks for the match to be scrolled into view. So that is where the
+        /// current match changes.
+        func scrollRangeToVisible(_ range: NSRange) {
+            select(range)
+            if let selection = view?.currentSelection { view?.reveal(selection) }
+        }
+
+        private func select(_ range: NSRange) {
+            selected = range
+            view?.currentSelection = selection(for: range)
+        }
+
+        func contentView(at index: Int, effectiveCharacterRange outRange: NSRangePointer) -> NSView {
+            outRange.pointee = NSRange(location: 0, length: text.length)
+            return view ?? NSView()
+        }
+
+        func rects(forCharacterRange range: NSRange) -> [NSValue]? {
+            guard let view, let selection = selection(for: range) else { return nil }
+            return selection.selectionsByLine().flatMap { line in
+                line.pages.map { NSValue(rect: view.convert(line.bounds(for: $0), from: $0)) }
+            }
+        }
+
+        /// The pages on screen, which is where incremental matches are marked.
+        var visibleCharacterRanges: [NSValue] {
+            guard let view, let document = view.document else { return [] }
+            return view.visiblePages.map { NSValue(range: text.range(ofPageAt: document.index(for: $0))) }
+        }
+
+        private func selection(for range: NSRange) -> PDFSelection? {
+            view?.document?.selection(for: range, in: text)
+        }
+    }
 #endif

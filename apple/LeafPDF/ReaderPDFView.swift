@@ -306,6 +306,12 @@ final class ReaderPDFView: PDFView {
             zoom(to: range.doubleTapTarget(from: scaleFactor), keeping: tap.location(in: self))
         }
     #else
+        /// The native find bar over the Document's text.
+        private(set) lazy var find = DocumentFind(view: self)
+
+        /// Shows the find bar; the current match is the view's selection.
+        func presentFind() { find.present() }
+
         /// PDFView isn't flipped: its top edge is at `bounds.maxY`.
         private var viewportTopLeft: CGPoint { CGPoint(x: 0, y: bounds.maxY) }
 
