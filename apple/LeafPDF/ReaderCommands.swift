@@ -4,6 +4,8 @@
     extension FocusedValues {
         /// The Reader of the focused window, if one is showing.
         @Entry var reader: ReaderHandle?
+        /// Printed page number of the focused Reader's Back place; nil when it has none.
+        @Entry var backPageNumber: String?
         /// Opens the focused Reader's Table of Contents; nil when it has none.
         @Entry var showTableOfContents: Binding<Bool>?
     }
@@ -12,6 +14,7 @@
     struct ReaderCommands: Commands {
         @FocusedValue(\.reader) private var reader
         @FocusedValue(\.showTableOfContents) private var showTableOfContents
+        @FocusedValue(\.backPageNumber) private var backPageNumber
 
         var body: some Commands {
             CommandGroup(after: .toolbar) {
@@ -26,6 +29,8 @@
                     .disabled(reader == nil)
             }
             CommandMenu("Go") {
+                Button(backPageNumber.map { "Back to p. \($0)" } ?? "Back") { reader?.view?.goBack() }
+                    .disabled(backPageNumber == nil)
                 Button("Table of Contents") { showTableOfContents?.wrappedValue = true }
                     .keyboardShortcut("t", modifiers: [.option, .command])
                     .disabled(showTableOfContents == nil)

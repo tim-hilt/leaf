@@ -16,6 +16,10 @@ struct Place: Equatable {
         pageIndex != other.pageIndex ? pageIndex < other.pageIndex : point.y >= other.point.y - 1
     }
 
+    /// Whether this Place is the same spot as `other`: neither comes before the
+    /// other (see `isAtOrBefore`).
+    func isSameSpot(as other: Place) -> Bool { isAtOrBefore(other) && isAtOrAfter(other) }
+
     /// Whether this Place comes no earlier than `other`; see `isAtOrBefore`.
     func isAtOrAfter(_ other: Place) -> Bool { other.isAtOrBefore(self) }
 }

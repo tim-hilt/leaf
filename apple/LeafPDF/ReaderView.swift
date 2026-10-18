@@ -15,7 +15,9 @@ import SwiftUI
 ///
 /// A trailing toolbar button opens the Table of Contents, in a popover (a sheet
 /// on iPhone), unless the Document has none. It shows where the top of the
-/// page is, and choosing an entry goes there.
+/// page is, and choosing an entry is a Jump. After a Jump, a floating capsule
+/// "Back to p. 42" returns to where the reader was; it also shows in Immersive
+/// Mode, where it is the only way back.
 struct ReaderView: View {
     let document: LibraryDocument
     @Environment(LibraryModel.self) private var library
@@ -25,6 +27,8 @@ struct ReaderView: View {
     @State private var saver: ReadingProgressSaver?
     @State private var contents: TableOfContents?
     @State private var isShowingContents = false
+    /// Printed page number of the Back place; nil when there is none.
+    @State private var backPageNumber: String?
     #if os(iOS)
         @State private var isImmersive = false
     #endif
@@ -34,11 +38,20 @@ struct ReaderView: View {
             if let pdf {
                 PDFKitView(
                     document: pdf, handle: handle, place: document.place, onSingleTap: toggleImmersive,
-                    onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() })
+                    onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
+                    onBackChange: { backPageNumber = $0 })
             } else {
                 Color.clear
             }
         }
+        .overlay(alignment: .bottom) {
+            if let backPageNumber {
+                BackCapsule(pageNumber: backPageNumber) { handle.view?.goBack() }
+                    .padding(.bottom)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.default, value: backPageNumber)
         .task {
             guard pdf == nil else { return }
             saver = ReadingProgressSaver(library: library, document: document, handle: handle)
@@ -55,7 +68,7 @@ struct ReaderView: View {
                     Button("Table of Contents", systemImage: "list.bullet") { isShowingContents = true }
                         .popover(isPresented: $isShowingContents) {
                             TableOfContentsView(contents: contents, position: position(in: contents)) {
-                                handle.view?.go(to: $0)
+                                handle.view?.jump(to: $0)
                             }
                                 .presentationCompactAdaptation(.sheet)
                         }
@@ -72,6 +85,7 @@ struct ReaderView: View {
         #else
             .background(BackShortcut())
             .focusedSceneValue(\.reader, handle)
+            .focusedSceneValue(\.backPageNumber, backPageNumber)
             .focusedSceneValue(\.showTableOfContents, availableContents == nil ? nil : $isShowingContents)
             .windowToolbarFullScreenVisibility(.onHover)
         #endif
@@ -99,6 +113,22 @@ struct ReaderView: View {
     }
 }
 
+/// The floating "Back to p. 42" button, on a native material.
+private struct BackCapsule: View {
+    let pageNumber: String
+    let action: () -> Void
+
+    var body: some View {
+        Button("Back to p. \(pageNumber)", systemImage: "arrow.uturn.backward", action: action)
+            .font(.subheadline.weight(.medium))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.regularMaterial, in: Capsule())
+            .buttonStyle(.plain)
+            .accessibilityLabel("Back to page \(pageNumber)")
+    }
+}
+
 #if os(macOS)
     /// Invisible button that makes ⌘[ pop the Reader, as in other macOS apps.
     private struct BackShortcut: View {
@@ -123,6 +153,7 @@ private struct PDFKitView {
     let onSingleTap: () -> Void
     let onOpen: () -> Void
     let onScroll: () -> Void
+    let onBackChange: (String?) -> Void
 
     @MainActor
     fileprivate func makePDFView() -> PDFView {
@@ -135,6 +166,7 @@ private struct PDFKitView {
         view.onSingleTap = onSingleTap
         view.onOpen = onOpen
         view.onScroll = onScroll
+        view.onBackChange = onBackChange
         return view
     }
 }

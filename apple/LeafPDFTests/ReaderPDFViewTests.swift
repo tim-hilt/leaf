@@ -46,6 +46,79 @@ import Testing
         reader.zoomToFitWidth()
         try expectAtTop(place, of: reader)
     }
+
+    // MARK: Jump and Back
+
+    let target = Place(pageIndex: 2, point: CGPoint(x: 0, y: 300))
+
+    @Test func jumpGoesToTheTargetAndBackReturnsToTheExactPlace() throws {
+        let reader = try makeReader(size: portrait)
+        reader.go(to: place)
+        let start = try #require(reader.topOfViewport)
+        reader.jump(to: target)
+        try expectAtTop(target, of: reader)
+        #expect(reader.backPlace == start)
+        reader.goBack()
+        try expectAtTop(start, of: reader)
+    }
+
+    @Test func backKeepsTheCurrentZoom() throws {
+        let reader = try makeReader(size: portrait)
+        reader.go(to: place)
+        reader.jump(to: target)
+        reader.zoomIn()
+        let zoom = reader.scaleFactor
+        reader.goBack()
+        #expect(reader.scaleFactor == zoom)
+    }
+
+    @Test func aSecondJumpReplacesTheBackPlace() throws {
+        let reader = try makeReader(size: portrait)
+        reader.go(to: place)
+        reader.jump(to: target)
+        let second = try #require(reader.topOfViewport)
+        reader.jump(to: Place(pageIndex: 7, point: CGPoint(x: 0, y: 200)))
+        #expect(reader.backPlace == second)
+    }
+
+    @Test func aJumpToTheCurrentPlaceRecordsNothing() throws {
+        let reader = try makeReader(size: portrait)
+        reader.go(to: place)
+        reader.jump(to: try #require(reader.topOfViewport))
+        #expect(reader.backPlace == nil)
+        reader.jump(to: place)
+        #expect(reader.backPlace == nil)
+    }
+
+    @Test func thereIsNoBackPlaceAfterBack() throws {
+        let reader = try makeReader(size: portrait)
+        reader.jump(to: target)
+        reader.goBack()
+        #expect(reader.backPlace == nil)
+        let top = try #require(reader.topOfViewport)
+        reader.goBack()
+        try expectAtTop(top, of: reader)
+    }
+
+    @Test func reportsTheBackPlaceAsItComesAndGoes() throws {
+        let reader = try makeReader(size: portrait)
+        var reported: [String?] = []
+        reader.onBackChange = { reported.append($0) }
+        reader.jump(to: target)
+        reader.goBack()
+        #expect(reported == ["1", nil])
+    }
+
+    @Test func jumpsAndBackReportScrolling() throws {
+        let reader = try makeReader(size: portrait)
+        var scrolls = 0
+        reader.onScroll = { scrolls += 1 }
+        reader.jump(to: target)
+        #expect(scrolls > 0)
+        scrolls = 0
+        reader.goBack()
+        #expect(scrolls > 0)
+    }
 }
 
 /// A Reader on an eight-page Document, laid out in a window of `size`. With

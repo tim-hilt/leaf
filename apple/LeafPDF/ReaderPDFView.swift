@@ -13,6 +13,10 @@ final class ReaderHandle {
 /// stays put; on iOS a double-tap toggles between fit-to-width and zoomed in,
 /// and a single tap calls `onSingleTap`. It reports when it has opened and
 /// whenever it scrolls, so the Reader can save Reading Progress.
+///
+/// A Jump goes to a Place and remembers where the viewport was, so that Back
+/// can return there. Only the latest Jump is remembered, and only for as long
+/// as the view lives.
 final class ReaderPDFView: PDFView {
     /// Where the viewport was before a size change, to be restored once the
     /// new layout is known.
@@ -37,6 +41,18 @@ final class ReaderPDFView: PDFView {
     var onOpen: () -> Void = {}
     /// Called whenever the viewport scrolls, however it was moved: often, so keep it cheap.
     var onScroll: () -> Void = {}
+    /// Called when the Back place appears, changes or goes, with its printed
+    /// page number; nil when there is none.
+    var onBackChange: (String?) -> Void = { _ in }
+
+    /// Where Back returns to: the top of the viewport before the latest Jump.
+    /// Nil before any Jump and after Back.
+    private(set) var backPlace: Place? {
+        didSet {
+            guard backPlace != oldValue else { return }
+            onBackChange(backPlace.flatMap { document?.printedPageNumber(at: $0.pageIndex) })
+        }
+    }
 
     convenience init(handle: ReaderHandle) {
         self.init(frame: .zero)
@@ -88,6 +104,23 @@ final class ReaderPDFView: PDFView {
         #else
             go(to: PDFDestination(page: page, at: place.point))
         #endif
+    }
+
+    /// Jump: goes to `place`, remembering the top of the viewport for `goBack()`
+    /// in place of any earlier Back place. Does nothing if `place` is already
+    /// at the top.
+    func jump(to place: Place) {
+        guard let top = topOfViewport, !place.isSameSpot(as: top) else { return }
+        backPlace = top
+        go(to: place)
+    }
+
+    /// Back: returns to the Back place at the current zoom and forgets it.
+    /// Does nothing without one.
+    func goBack() {
+        guard let place = backPlace else { return }
+        backPlace = nil
+        go(to: place)
     }
 
     /// Remembers the viewport; call just before the view's size changes.

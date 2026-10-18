@@ -72,8 +72,10 @@ struct TableOfContents {
         guard let destination, let page = destination.page else { return nil }
         let index = document.index(for: page)
         guard index != NSNotFound else { return nil }
-        let pageNumber = page.label.flatMap { $0.isEmpty ? nil : $0 } ?? String(index + 1)
-        return (Place(pageIndex: index, point: point(of: destination, on: page)), pageNumber)
+        return (
+            Place(pageIndex: index, point: point(of: destination, on: page)),
+            document.printedPageNumber(at: index)
+        )
     }
 
     /// The destination's point, with a coordinate the outline leaves open
