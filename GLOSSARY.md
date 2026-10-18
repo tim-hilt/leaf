@@ -87,3 +87,23 @@ _Avoid_: Bookmark, position, furthest page
 **Last Read**:
 When the Reader last showed a Document.
 _Avoid_: Last opened, recently opened
+
+**Theme**:
+Whether LeafPDF looks light or dark: System, Light or Dark.
+_Avoid_: Appearance, dark mode, color scheme
+
+**Page Style**:
+How a Document's pages are shown: Light Pages, Dark Pages, or Match Theme, which follows the Theme.
+_Avoid_: Page theme, page color, page mode
+
+**Light Pages**:
+Showing a Document's pages in their original colors.
+_Avoid_: Normal, original mode
+
+**Dark Pages**:
+Showing a Document's pages with their brightness reversed, in Page Colors.
+_Avoid_: Invert, night mode
+
+**Page Colors**:
+The paper and ink colors the user picks for Dark Pages.
+_Avoid_: Palette, page theme

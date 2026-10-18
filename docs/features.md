@@ -41,9 +41,14 @@ First piece of synced state; establishes the local Automerge model (ADR-0008) be
 
 ## 6. Theme
 
-The clients should offer settings for using a light theme, dark theme or complying with the system theme. When the dark theme is active, The pdf colors are reversed: The background is dark while the foreground is light.
+- Theme: System, Light or Dark, for the interface
+- Page Style: Light Pages (default), Dark Pages or Match Theme, as three circles
+- Dark Pages reverse brightness but keep hue, in adjustable Page Colors; the File never changes
+- Settings (⌘, on macOS, Gallery gear on iOS) and a Reader cog popover; macOS View menu and ⇧⌘D
+- Covers follow Page Style
+- All per device, not synced
 
-Comes before markup so overlays are designed for both themes from the start.
+Comes before markup so overlays are designed for Light and Dark Pages from the start.
 
 ## 7. Markup
 
