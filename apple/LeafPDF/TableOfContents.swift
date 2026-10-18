@@ -18,6 +18,14 @@ struct TableOfContents {
         let sections: [Entry]
     }
 
+    /// Where a Place is in the Table of Contents.
+    struct Position {
+        /// The deepest Chapter or Section starting at or before the Place.
+        let current: Entry
+        /// The Chapters and Sections that contain `current`, outermost first.
+        let containing: [Entry]
+    }
+
     let chapters: [Entry]
 
     var isEmpty: Bool { chapters.isEmpty }
@@ -35,6 +43,26 @@ struct TableOfContents {
             }
         }
         chapters = document.outlineRoot.map(entries(under:)) ?? []
+    }
+
+    /// Where `place` is: the last Chapter or Section, in reading order, that
+    /// starts at or before it (a Section wins over the entry containing it when
+    /// both start at the same spot). Nil before the first entry. Entries
+    /// without a target are skipped.
+    func position(at place: Place) -> Position? {
+        var best: (entry: Entry, containing: [Entry])?
+        func search(_ entries: [Entry], containing: [Entry]) {
+            for entry in entries {
+                if let start = entry.place, start.isAtOrBefore(place) {
+                    // `best` always has a Place, so a missing one means no rival.
+                    let isLater = best?.entry.place.map(start.isAtOrAfter) ?? true
+                    if isLater { best = (entry, containing) }
+                }
+                search(entry.sections, containing: containing + [entry])
+            }
+        }
+        search(chapters, containing: [])
+        return best.map { Position(current: $0.entry, containing: $0.containing) }
     }
 
     private static func target(

@@ -71,4 +71,78 @@ import Testing
         #expect(sections[2].place == nil)
         #expect(sections[2].pageNumber == "")
     }
+
+    // MARK: Where you are
+
+    private func locate(
+        at pageIndex: Int, _ y: CGFloat = 792, in contents: TableOfContents
+    ) -> (current: String, containing: [String])? {
+        contents.position(at: Place(pageIndex: pageIndex, point: CGPoint(x: 0, y: y))).map {
+            ($0.current.title, $0.containing.map(\.title))
+        }
+    }
+
+    @Test func currentIsTheDeepestEntryAtOrBeforeThePlace() throws {
+        let contents = TableOfContents(try makePDF(named: "Book.pdf", pageCount: 5, outline: outline))
+
+        #expect(locate(at: 1, 500, in: contents)?.current == "Setup")  // exactly at its target
+        #expect(locate(at: 1, 100, in: contents)?.current == "Setup")  // further down the page
+        #expect(locate(at: 2, in: contents)?.current == "Usage")
+        #expect(locate(at: 4, 1, in: contents)?.current == "Part Two")
+    }
+
+    @Test func anEntryBelowThePlaceOnItsPageIsNotYetCurrent() throws {
+        let contents = TableOfContents(try makePDF(named: "Book.pdf", pageCount: 5, outline: outline))
+
+        #expect(locate(at: 1, 502, in: contents)?.current == "Part One")
+    }
+
+    @Test func aHairBelowAnEntrysTargetStillCountsAsAtIt() throws {
+        let contents = TableOfContents(try makePDF(named: "Book.pdf", pageCount: 5, outline: outline))
+
+        #expect(locate(at: 1, 500.4, in: contents)?.current == "Setup")
+    }
+
+    @Test func hasNoCurrentEntryBeforeTheFirstOne() throws {
+        let later = [OutlineEntry("Chapter", pageIndex: 2, at: CGPoint(x: 0, y: 400))]
+        let contents = TableOfContents(try makePDF(named: "Book.pdf", pageCount: 5, outline: later))
+
+        #expect(locate(at: 1, in: contents) == nil)
+        #expect(locate(at: 2, 402, in: contents) == nil)
+    }
+
+    @Test func currentCanBeInsideANestedSection() throws {
+        let contents = TableOfContents(try makePDF(named: "Book.pdf", pageCount: 5, outline: outline))
+
+        let found = try #require(locate(at: 3, 10, in: contents))
+        #expect(found.current == "Advanced")
+        #expect(found.containing == ["Part One", "Usage"])
+    }
+
+    @Test func aChapterIsContainedInNothing() throws {
+        let contents = TableOfContents(try makePDF(named: "Book.pdf", pageCount: 5, outline: outline))
+
+        #expect(locate(at: 4, in: contents)?.containing == [])
+    }
+
+    @Test func currentIgnoresEntriesWithoutATarget() throws {
+        let document = try makePDF(named: "Book.pdf", pageCount: 5, outline: outline)
+        let untargeted = PDFOutline()
+        untargeted.label = "Dangling"
+        let root = try #require(document.outlineRoot)
+        try #require(root.child(at: 0)).insertChild(untargeted, at: 2)
+
+        #expect(locate(at: 3, in: TableOfContents(document))?.current == "Usage")
+    }
+
+    @Test func aLaterEntryAtTheSamePlaceWinsAndTheDeepestOneAtItDoes() throws {
+        let nested = [
+            OutlineEntry("Chapter", pageIndex: 1, children: [OutlineEntry("Opening Section", pageIndex: 1)])
+        ]
+        let contents = TableOfContents(try makePDF(named: "Book.pdf", pageCount: 3, outline: nested))
+
+        let found = try #require(locate(at: 1, in: contents))
+        #expect(found.current == "Opening Section")
+        #expect(found.containing == ["Chapter"])
+    }
 }

@@ -14,7 +14,8 @@ import SwiftUI
 /// when it disappears and when the scene goes to the background.
 ///
 /// A trailing toolbar button opens the Table of Contents, in a popover (a sheet
-/// on iPhone), unless the Document has none. Choosing an entry goes there.
+/// on iPhone), unless the Document has none. It shows where the top of the
+/// page is, and choosing an entry goes there.
 struct ReaderView: View {
     let document: LibraryDocument
     @Environment(LibraryModel.self) private var library
@@ -53,7 +54,9 @@ struct ReaderView: View {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Table of Contents", systemImage: "list.bullet") { isShowingContents = true }
                         .popover(isPresented: $isShowingContents) {
-                            TableOfContentsView(contents: contents) { handle.view?.go(to: $0) }
+                            TableOfContentsView(contents: contents, position: position(in: contents)) {
+                                handle.view?.go(to: $0)
+                            }
                                 .presentationCompactAdaptation(.sheet)
                         }
                 }
@@ -81,6 +84,12 @@ struct ReaderView: View {
         #endif
         guard let contents, !contents.isEmpty else { return nil }
         return contents
+    }
+
+    /// Where the top of the viewport is, as of now: the Table of Contents is
+    /// built when it opens, so this is read then.
+    private func position(in contents: TableOfContents) -> TableOfContents.Position? {
+        handle.view?.topOfViewport.flatMap(contents.position(at:))
     }
 
     private func toggleImmersive() {
