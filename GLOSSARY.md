@@ -48,9 +48,33 @@ _Avoid_: Search (unqualified), filter
 Finding text inside a single Document.
 _Avoid_: Search (unqualified), find
 
+**Table of Contents**:
+The Chapters and Sections stored in a Document, in reading order.
+_Avoid_: TOC, outline, bookmarks
+
+**Chapter**:
+A top-level entry in the Table of Contents, pointing to a place in the Document.
+_Avoid_: Bookmark, outline item
+
+**Section**:
+An entry in the Table of Contents nested under a Chapter or another Section, at any depth.
+_Avoid_: Subchapter, subsection
+
 **Reader**:
 The view in which a single Document is read.
 _Avoid_: Reading mode, viewer
+
+**Jump**:
+Moving to another place in a Document by choosing a Chapter, Section, Document Search match or link, rather than by scrolling.
+_Avoid_: Navigate, go to
+
+**Back**:
+Returning to where the reader was before the latest Jump.
+_Avoid_: Undo, history, Go to Gallery
+
+**Go to Gallery**:
+Leaving the Reader for the Gallery.
+_Avoid_: Back, close
 
 **Immersive Mode**:
 A state of the Reader in which everything except the Document's pages is hidden.

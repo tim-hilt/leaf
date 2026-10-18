@@ -35,8 +35,9 @@ First piece of synced state; establishes the local Automerge model (ADR-0008) be
 
 ## 5. Navigation
 
-- Table of Contents (TOC) are shown, user can jump to chapters from TOC menu
-- Realtime full text search with settings for "Full word" and case sensitivity
+- Table of Contents: Chapters and Sections with printed page numbers, current one in bold; choosing one Jumps there
+- Document Search: native find bar, updates as you type, with the system's "Full word" and case options, plus a results list
+- Back: after a Jump (Chapter, Section, search or link), a "Back to p. 42" capsule returns to where you were
 
 ## 6. Theme
 
