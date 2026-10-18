@@ -17,6 +17,17 @@ struct PageColors: Equatable, Sendable {
 
     static let `default` = PageColors(
         paper: RGB(0x1E / 255, 0x1E / 255, 0x1E / 255), ink: RGB(0xD6 / 255, 0xD6 / 255, 0xD6 / 255))
+
+    /// Paper then ink, as red, green and blue each: the form saved in user defaults.
+    var components: [Double] { [paper.r, paper.g, paper.b, ink.r, ink.g, ink.b] }
+
+    /// Nil unless `components` holds exactly the six values of `components`.
+    init?(components c: [Double]) {
+        guard c.count == 6, c.allSatisfy({ (0...1).contains($0) }) else { return nil }
+        self.init(paper: RGB(c[0], c[1], c[2]), ink: RGB(c[3], c[4], c[5]))
+    }
+
+    init(paper: RGB, ink: RGB) { (self.paper, self.ink) = (paper, ink) }
 }
 
 /// How pages are drawn: as they are in the File (Light Pages), or with their

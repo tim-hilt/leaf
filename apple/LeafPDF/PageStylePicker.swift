@@ -4,6 +4,7 @@ import SwiftUI
 /// for Dark Pages, half and half for Match Theme. An accent ring marks the chosen one.
 struct PageStylePicker: View {
     @Binding var selection: PageStyle
+    let paper: RGB
 
     var body: some View {
         HStack(spacing: 20) {
@@ -25,19 +26,14 @@ struct PageStylePicker: View {
         .frame(maxWidth: .infinity)
     }
 
-    private var paper: Color {
-        let paper = PageColors.default.paper
-        return Color(.sRGB, red: paper.r, green: paper.g, blue: paper.b)
-    }
-
     @ViewBuilder
     private func swatch(_ style: PageStyle) -> some View {
         switch style {
         case .light: Circle().fill(Color.white)
-        case .dark: Circle().fill(paper)
+        case .dark: Circle().fill(Color(paper))
         case .match:
             Circle().fill(Color.white)
-                .overlay { HalfDisc().fill(paper) }
+                .overlay { HalfDisc().fill(Color(paper)) }
         }
     }
 }

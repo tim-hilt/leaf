@@ -28,6 +28,13 @@ final class AppSettings {
         didSet { defaults.set(pageStyle.rawValue, forKey: Self.pageStyleName) }
     }
 
+    /// The paper and ink of Dark Pages. Changing them redraws open Readers at once and is saved.
+    var pageColors: PageColors {
+        didSet { defaults.set(pageColors.components, forKey: Self.pageColorsName) }
+    }
+
+    func resetPageColors() { pageColors = .default }
+
     /// Whether pages are dark under the current Page Style. Match Theme follows
     /// the Theme; with System that is the device's `systemScheme`.
     func arePagesDark(systemScheme: ColorScheme) -> Bool {
@@ -49,16 +56,18 @@ final class AppSettings {
 
     /// How pages are drawn under the current Page Style.
     func pageAppearance(systemScheme: ColorScheme) -> PageAppearance {
-        arePagesDark(systemScheme: systemScheme) ? .dark(.default) : .light
+        arePagesDark(systemScheme: systemScheme) ? .dark(pageColors) : .light
     }
 
     @ObservationIgnored private let defaults: UserDefaults
     private static let themeName = "settings.theme"
     private static let pageStyleName = "settings.pageStyle"
+    private static let pageColorsName = "settings.pageColors"
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
         theme = defaults.string(forKey: Self.themeName).flatMap(Theme.init) ?? .system
         pageStyle = defaults.string(forKey: Self.pageStyleName).flatMap(PageStyle.init) ?? .light
+        pageColors = (defaults.array(forKey: Self.pageColorsName) as? [Double]).flatMap(PageColors.init) ?? .default
     }
 }

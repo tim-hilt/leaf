@@ -97,3 +97,39 @@ extension AppSettingsTests {
         #expect(settings.pageStyle == target)
     }
 }
+
+extension AppSettingsTests {
+    @Test func pageColorsDefaultToDarkGreyAndLightGrey() {
+        #expect(AppSettings(defaults: defaults).pageColors == .default)
+    }
+
+    @Test func chosenPageColorsSurviveARestart() {
+        AppSettings(defaults: defaults).pageColors = .sepia
+        #expect(AppSettings(defaults: defaults).pageColors == .sepia)
+    }
+
+    @Test func resetRestoresTheDefaultPageColors() {
+        let settings = AppSettings(defaults: defaults)
+        settings.pageColors = .sepia
+        settings.resetPageColors()
+        #expect(settings.pageColors == .default)
+        #expect(AppSettings(defaults: defaults).pageColors == .default)
+    }
+
+    @Test func unreadableSavedPageColorsFallBackToTheDefaults() {
+        defaults.set([0.1, 0.2], forKey: "settings.pageColors")
+        #expect(AppSettings(defaults: defaults).pageColors == .default)
+    }
+
+    @Test func darkPagesAreDrawnInTheChosenPageColors() {
+        let settings = AppSettings(defaults: defaults)
+        settings.pageStyle = .dark
+        settings.pageColors = .sepia
+        #expect(settings.pageAppearance(systemScheme: .light) == .dark(.sepia))
+    }
+}
+
+extension PageColors {
+    fileprivate static let sepia = PageColors(
+        paper: RGB(0x2B / 255, 0x21 / 255, 0x16 / 255), ink: RGB(0xE0 / 255, 0xC8 / 255, 0xA0 / 255))
+}

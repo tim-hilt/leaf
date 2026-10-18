@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The Settings: Theme and Page Style. A window on Mac (⌘,), a sheet from the
+/// The Settings: Theme, Page Style and Page Colors. A window on Mac (⌘,), a sheet from the
 /// Gallery's gear on iPhone and iPad.
 struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
@@ -18,7 +18,12 @@ struct SettingsView: View {
                 .labelsHidden()
             }
             Section("Page Style") {
-                PageStylePicker(selection: $settings.pageStyle)
+                PageStylePicker(selection: $settings.pageStyle, paper: settings.pageColors.paper)
+            }
+            Section("Page Colors") {
+                PageColorsEditor()
+                    .disabled(settings.pageStyle == .light)
+                PageColorsPreview(colors: settings.pageColors)
             }
         }
         .formStyle(.grouped)
