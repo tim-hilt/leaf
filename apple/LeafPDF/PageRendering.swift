@@ -83,29 +83,8 @@ private final class StyledPage: PDFPage {
         bitmap.setFillColor(gray: 1, alpha: 1)
         bitmap.fill(area)
         super.draw(with: box, to: bitmap)
-        guard let original = bitmap.makeImage(), let reversed = Self.reverse(original, in: colors) else { return }
+        guard let original = bitmap.makeImage(), let reversed = original.reversed(in: colors) else { return }
         context.draw(reversed, in: area)
-    }
-
-    /// No color management: the matrix below mixes the colors as they are, not in linear light.
-    private static let core = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
-
-    /// Inverts, then rotates the hue by half a turn to bring the colors back
-    /// (grays stay gray), then maps black to the paper and white to the ink.
-    private static func reverse(_ image: CGImage, in colors: PageColors) -> CGImage? {
-        let (paper, ink) = (colors.paper, colors.ink)
-        let mapped = CIImage(cgImage: image)
-            .applyingFilter("CIColorInvert")
-            .applyingFilter("CIHueAdjust", parameters: [kCIInputAngleKey: Double.pi])
-            .applyingFilter(
-                "CIColorMatrix",
-                parameters: [
-                    "inputRVector": CIVector(x: ink.r - paper.r, y: 0, z: 0, w: 0),
-                    "inputGVector": CIVector(x: 0, y: ink.g - paper.g, z: 0, w: 0),
-                    "inputBVector": CIVector(x: 0, y: 0, z: ink.b - paper.b, w: 0),
-                    "inputBiasVector": CIVector(x: paper.r, y: paper.g, z: paper.b, w: 0),
-                ])
-        return core.createCGImage(mapped, from: mapped.extent, format: .RGBA8, colorSpace: .sRGB)
     }
 }
 
@@ -128,6 +107,37 @@ extension PDFPage {
         context.clip(to: box)
         draw(with: .cropBox, to: context)
         return context.makeImage()
+    }
+}
+
+extension CGImage {
+    /// This image of a page as it looks in `appearance`: unchanged on Light
+    /// Pages, reversed in Page Colors on Dark Pages. Used to show a saved page
+    /// image, like a Cover, the way the Reader draws the page. Safe to call from any thread.
+    func shown(as appearance: PageAppearance) -> CGImage {
+        guard case .dark(let colors) = appearance else { return self }
+        return reversed(in: colors) ?? self
+    }
+
+    /// No color management: the matrix below mixes the colors as they are, not in linear light.
+    private static let core = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+
+    /// Inverts, then rotates the hue by half a turn to bring the colors back
+    /// (grays stay gray), then maps black to the paper and white to the ink.
+    fileprivate func reversed(in colors: PageColors) -> CGImage? {
+        let (paper, ink) = (colors.paper, colors.ink)
+        let mapped = CIImage(cgImage: self)
+            .applyingFilter("CIColorInvert")
+            .applyingFilter("CIHueAdjust", parameters: [kCIInputAngleKey: Double.pi])
+            .applyingFilter(
+                "CIColorMatrix",
+                parameters: [
+                    "inputRVector": CIVector(x: ink.r - paper.r, y: 0, z: 0, w: 0),
+                    "inputGVector": CIVector(x: 0, y: ink.g - paper.g, z: 0, w: 0),
+                    "inputBVector": CIVector(x: 0, y: 0, z: ink.b - paper.b, w: 0),
+                    "inputBiasVector": CIVector(x: paper.r, y: paper.g, z: paper.b, w: 0),
+                ])
+        return Self.core.createCGImage(mapped, from: mapped.extent, format: .RGBA8, colorSpace: .sRGB)
     }
 }
 
