@@ -42,18 +42,25 @@ struct LinkEntry {
     let target: Target
 }
 
+/// A filled rectangle (PDF page space) of colored ink on every page of a test PDF.
+struct Ink {
+    let rect: CGRect
+    let color: CGColor
+}
+
 /// Writes a PDF with `pageCount` US Letter pages to a fresh temporary directory
 /// and returns its URL; the file keeps the given name. `metadataTitle` and
 /// `author` are stored in the PDF. With an `outline`, the PDF has a table of
 /// contents. `links` are drawn on their pages. `pageLabels` gives the printed number of each page, in order.
-/// `pageTexts` gives the text drawn on each page, in order; a page without an entry has none. With `paddedTo`, junk
+/// `pageTexts` gives the text drawn on each page, in order; a page without an entry has none. `inks` are
+/// painted on every page. With `paddedTo`, junk
 /// after the end of the PDF makes the file at least that many bytes. Passwords
 /// encrypt the PDF: with a `userPassword` it is locked until unlocked; with only
 /// an `ownerPassword` it opens freely and just restricts permissions.
 func writePDF(
     named fileName: String, metadataTitle: String? = nil, author: String? = nil, pageCount: Int = 1,
     outline: [OutlineEntry] = [], links: [LinkEntry] = [], pageLabels: [String] = [],
-    pageTexts: [String] = [], paddedTo size: Int = 0, userPassword: String? = nil, ownerPassword: String? = nil
+    pageTexts: [String] = [], inks: [Ink] = [], paddedTo size: Int = 0, userPassword: String? = nil, ownerPassword: String? = nil
 ) throws -> URL {
     let directory = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -81,6 +88,10 @@ func writePDF(
             }
         }
         if pageIndex < pageTexts.count { draw(pageTexts[pageIndex], in: context, pageBox: box) }
+        for ink in inks {
+            context.setFillColor(ink.color)
+            context.fill(ink.rect)
+        }
         context.endPDFPage()
     }
     if !outline.isEmpty {

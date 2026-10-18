@@ -36,6 +36,15 @@ final class ReaderPDFView: PDFView {
     private var openingPlace: Place?
     private var hasOpened = false
 
+    /// How the pages are drawn. Changing it redraws them, keeping the viewport.
+    var pageAppearance = PageAppearance.light {
+        didSet {
+            guard pageAppearance != oldValue, let styled = document as? StyledDocument else { return }
+            styled.appearance = pageAppearance
+            layoutDocumentView()
+        }
+    }
+
     /// Called on a single tap on the page (iOS only; macOS clicks never fire it).
     var onSingleTap: () -> Void = {}
     /// Called once, after the Document is first laid out at fit-to-width and

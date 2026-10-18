@@ -9,6 +9,8 @@ import SwiftUI
 /// it; on macOS it is the native full screen, with the toolbar shown on hover.
 /// Scrolling never changes it, and the Reader always opens with its UI showing.
 ///
+/// Pages are drawn per the Page Style in Settings, and redrawn live when it changes.
+///
 /// Opens at the Document's Reading Progress at fit-to-width, or at page 1, and
 /// saves it (see `ReadingProgressSaver`) when opened, after scrolling stops,
 /// when it disappears and when the scene goes to the background.
@@ -29,9 +31,10 @@ import SwiftUI
 struct ReaderView: View {
     let document: LibraryDocument
     @Environment(LibraryModel.self) private var library
+    @Environment(AppSettings.self) private var settings
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var sizeClass
-    @State private var pdf: PDFDocument?
+    @State private var pdf: StyledDocument?
     @State private var handle = ReaderHandle()
     @State private var saver: ReadingProgressSaver?
     @State private var contents: TableOfContents?
@@ -59,7 +62,7 @@ struct ReaderView: View {
         .task {
             guard pdf == nil else { return }
             saver = ReadingProgressSaver(library: library, document: document, handle: handle)
-            let opened = PDFDocument(url: document.file)
+            let opened = StyledDocument(url: document.file)
             contents = opened.map(TableOfContents.init)
             pdf = opened
         }
@@ -107,7 +110,8 @@ struct ReaderView: View {
         Group {
             if let pdf {
                 PDFKitView(
-                    document: pdf, handle: handle, results: results, place: document.place,
+                    document: pdf, appearance: settings.pageAppearance, handle: handle, results: results,
+                    place: document.place,
                     onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
                     onBackChange: { backPageNumber = $0 }, onShowResults: { isShowingResults = true })
             } else {
@@ -191,7 +195,8 @@ private struct BackCapsule: View {
 /// column. Opens at fit-to-width, at `place` if there is one; see
 /// `ReaderPDFView` for zooming, keeping your place, taps and scrolling.
 private struct PDFKitView {
-    let document: PDFDocument
+    let document: StyledDocument
+    let appearance: PageAppearance
     let handle: ReaderHandle
     let results: SearchResults
     let place: Place?
@@ -210,6 +215,7 @@ private struct PDFKitView {
         view.autoScales = true
         if let place { view.open(at: place) }
         view.document = document
+        view.pageAppearance = appearance
         view.onSingleTap = onSingleTap
         view.onOpen = onOpen
         view.onScroll = onScroll
@@ -224,11 +230,11 @@ private struct PDFKitView {
 #if os(iOS)
     extension PDFKitView: UIViewRepresentable {
         func makeUIView(context: Context) -> PDFView { makePDFView() }
-        func updateUIView(_ view: PDFView, context: Context) {}
+        func updateUIView(_ view: PDFView, context: Context) { (view as? ReaderPDFView)?.pageAppearance = appearance }
     }
 #else
     extension PDFKitView: NSViewRepresentable {
         func makeNSView(context: Context) -> PDFView { makePDFView() }
-        func updateNSView(_ view: PDFView, context: Context) {}
+        func updateNSView(_ view: PDFView, context: Context) { (view as? ReaderPDFView)?.pageAppearance = appearance }
     }
 #endif

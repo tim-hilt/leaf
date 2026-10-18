@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The Settings: a Theme picker. A window on Mac (⌘,), a sheet from the
+/// The Settings: Theme and Page Style. A window on Mac (⌘,), a sheet from the
 /// Gallery's gear on iPhone and iPad.
 struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
@@ -16,6 +16,9 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+            }
+            Section("Page Style") {
+                PageStylePicker(selection: $settings.pageStyle)
             }
         }
         .formStyle(.grouped)

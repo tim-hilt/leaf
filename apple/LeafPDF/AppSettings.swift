@@ -23,11 +23,26 @@ final class AppSettings {
         didSet { defaults.set(theme.rawValue, forKey: Self.themeName) }
     }
 
+    /// Changing it redraws open Readers at once and is saved.
+    var pageStyle: PageStyle {
+        didSet { defaults.set(pageStyle.rawValue, forKey: Self.pageStyleName) }
+    }
+
+    /// How pages are drawn under the current Page Style.
+    var pageAppearance: PageAppearance {
+        switch pageStyle {
+        case .light: .light
+        case .dark: .dark(.default)
+        }
+    }
+
     @ObservationIgnored private let defaults: UserDefaults
     private static let themeName = "settings.theme"
+    private static let pageStyleName = "settings.pageStyle"
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
         theme = defaults.string(forKey: Self.themeName).flatMap(Theme.init) ?? .system
+        pageStyle = defaults.string(forKey: Self.pageStyleName).flatMap(PageStyle.init) ?? .light
     }
 }
