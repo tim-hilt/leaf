@@ -65,6 +65,24 @@ import Testing
         #expect(after.isClose(to: PageColors.default.paper))
     }
 
+    @Test func darkPagesPaintNothingOutsideThePage() throws {
+        let document = try document(in: .dark(.default))
+        let page = try #require(document.page(at: 0))
+        // A blue canvas with 10 pt around the page and no clip, so the page alone limits what it paints.
+        let context = try #require(
+            CGContext(
+                data: nil, width: 632, height: 812, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(red: 0, green: 0, blue: 1, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: 632, height: 812))
+        context.translateBy(x: 10, y: 10)
+        page.draw(with: .cropBox, to: context)
+        let image = try #require(context.makeImage())
+
+        #expect(image.pixel(x: 5, y: 5).isClose(to: RGB(0, 0, 1)))
+        #expect(image.pixel(x: 316, y: 406).isClose(to: PageColors.default.paper))
+    }
+
     @Test func defaultPageColorsAreDarkGreyPaperAndLightGreyInk() {
         #expect(PageColors.default.paper.isClose(to: RGB(0x1E / 255, 0x1E / 255, 0x1E / 255)))
         #expect(PageColors.default.ink.isClose(to: RGB(0xD6 / 255, 0xD6 / 255, 0xD6 / 255)))
@@ -74,6 +92,23 @@ import Testing
 extension RGB {
     func isClose(to other: RGB, tolerance: Double = 0.02) -> Bool {
         abs(r - other.r) <= tolerance && abs(g - other.g) <= tolerance && abs(b - other.b) <= tolerance
+    }
+}
+
+extension PDFPage {
+    /// The whole page on white, as drawn in its document, `pixelWidth` pixels wide.
+    func image(pixelWidth: Int) -> CGImage? {
+        let box = bounds(for: .cropBox).applying(transform(for: .cropBox))
+        let scale = CGFloat(pixelWidth) / box.width
+        let context = CGContext(
+            data: nil, width: pixelWidth, height: Int((box.height * scale).rounded()), bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        context?.scaleBy(x: scale, y: scale)
+        context?.setFillColor(gray: 1, alpha: 1)
+        context?.fill(box)
+        context.map { draw(with: .cropBox, to: $0) }
+        return context?.makeImage()
     }
 }
 

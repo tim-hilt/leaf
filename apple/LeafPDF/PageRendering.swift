@@ -21,7 +21,7 @@ struct PageColors: Equatable, Sendable {
     /// Paper then ink, as red, green and blue each: the form saved in user defaults.
     var components: [Double] { [paper.r, paper.g, paper.b, ink.r, ink.g, ink.b] }
 
-    /// Nil unless `components` holds exactly the six values of `components`.
+    /// Nil unless `c` holds six values from 0 to 1, in the order of `components`.
     init?(components c: [Double]) {
         guard c.count == 6, c.allSatisfy({ (0...1).contains($0) }) else { return nil }
         self.init(paper: RGB(c[0], c[1], c[2]), ink: RGB(c[3], c[4], c[5]))
@@ -66,10 +66,10 @@ private final class StyledPage: PDFPage {
         guard case .dark(let colors) = (document as? StyledDocument)?.appearance else {
             return super.draw(with: box, to: context)
         }
-        // The area being drawn, in the same space PDFKit draws the page in.
-        var area = context.boundingBoxOfClipPath
-        if area.isInfinite || area.isNull { area = bounds(for: box) }
-        area = area.integral
+        // The part of the page being drawn, in the context's space. Like
+        // `super`, never paint outside the page (rotated and cropped).
+        let page = bounds(for: box).applying(transform(for: box))
+        let area = context.boundingBoxOfClipPath.intersection(page).integral
         let scale = hypot(context.ctm.a, context.ctm.b)
         let size = CGSize(width: ceil(area.width * scale), height: ceil(area.height * scale))
         guard size.width >= 1, size.height >= 1,
@@ -85,28 +85,6 @@ private final class StyledPage: PDFPage {
         super.draw(with: box, to: bitmap)
         guard let original = bitmap.makeImage(), let reversed = original.reversed(in: colors) else { return }
         context.draw(reversed, in: area)
-    }
-}
-
-extension PDFPage {
-    /// The whole page, as it is drawn in its document, `pixelWidth` pixels
-    /// wide. Nil if the page has no size.
-    func image(pixelWidth: Int) -> CGImage? {
-        let box = bounds(for: .cropBox)
-        guard box.width > 0, box.height > 0, pixelWidth > 0 else { return nil }
-        let scale = CGFloat(pixelWidth) / box.width
-        guard
-            let context = CGContext(
-                data: nil, width: pixelWidth, height: Int((box.height * scale).rounded()), bitsPerComponent: 8,
-                bytesPerRow: 0, space: .sRGB, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return nil }
-        context.scaleBy(x: scale, y: scale)
-        context.translateBy(x: -box.minX, y: -box.minY)
-        context.setFillColor(gray: 1, alpha: 1)
-        context.fill(box)
-        context.clip(to: box)
-        draw(with: .cropBox, to: context)
-        return context.makeImage()
     }
 }
 

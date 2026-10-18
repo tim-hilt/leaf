@@ -37,10 +37,12 @@ final class ReaderPDFView: PDFView {
     private var hasOpened = false
 
     /// How the pages are drawn. Changing it redraws them, keeping the viewport.
-    var pageAppearance = PageAppearance.light {
-        didSet {
-            guard pageAppearance != oldValue, let styled = document as? StyledDocument else { return }
-            styled.appearance = pageAppearance
+    /// Set it after the Document, which must be a `StyledDocument`.
+    var pageAppearance: PageAppearance {
+        get { (document as? StyledDocument)?.appearance ?? .light }
+        set {
+            guard newValue != pageAppearance, let styled = document as? StyledDocument else { return }
+            styled.appearance = newValue
             layoutDocumentView()
         }
     }

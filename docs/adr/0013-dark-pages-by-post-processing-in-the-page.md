@@ -1,6 +1,6 @@
 # Dark Pages are drawn by post-processing each page in a PDFPage subclass
 
-A `PDFDocument` subclass makes PDFKit create `PDFPage` subclasses (`classForPage`). In Dark Pages, a page renders itself into a bitmap, and Core Image inverts it, rotates the hue by 180° (so colors come back and grays stay gray), and maps black to the Page color and white to the Text color with one color matrix. Light Pages draw the page unchanged. PDFKit draws the selection and search highlights on top of the page, outside the page's `draw`, so they keep their colors. The same page draws in the Reader and in a bitmap, so Covers can reuse it. Changing the style redraws a `PDFView` with `layoutDocumentView()`; scroll position is kept.
+A `PDFDocument` subclass makes PDFKit create `PDFPage` subclasses (`classForPage`). In Dark Pages, a page renders itself into a bitmap, and Core Image inverts it, rotates the hue by 180° (so colors come back and grays stay gray), and maps black to the Page color and white to the Text color with one color matrix. Light Pages draw the page unchanged. PDFKit draws the selection and search highlights on top of the page, outside the page's `draw`, so they keep their colors. Covers reuse the same Core Image step on the saved Cover image (`CGImage.shown(as:)`). Changing the style redraws a `PDFView` with `layoutDocumentView()`; scroll position is kept.
 
 Measured on a generated 300-page Document (text, vector lines, a gradient image on half the pages), mean of 40 pages on an Apple M1 Mac, drawing to a bitmap:
 
