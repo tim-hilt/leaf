@@ -28,12 +28,19 @@ final class AppSettings {
         didSet { defaults.set(pageStyle.rawValue, forKey: Self.pageStyleName) }
     }
 
-    /// How pages are drawn under the current Page Style.
-    var pageAppearance: PageAppearance {
+    /// Whether pages are dark under the current Page Style. Match Theme follows
+    /// the Theme; with System that is the device's `systemScheme`.
+    func arePagesDark(systemScheme: ColorScheme) -> Bool {
         switch pageStyle {
-        case .light: .light
-        case .dark: .dark(.default)
+        case .light: false
+        case .dark: true
+        case .match: (theme.colorScheme ?? systemScheme) == .dark
         }
+    }
+
+    /// How pages are drawn under the current Page Style.
+    func pageAppearance(systemScheme: ColorScheme) -> PageAppearance {
+        arePagesDark(systemScheme: systemScheme) ? .dark(.default) : .light
     }
 
     @ObservationIgnored private let defaults: UserDefaults

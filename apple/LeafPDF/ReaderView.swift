@@ -32,6 +32,7 @@ struct ReaderView: View {
     let document: LibraryDocument
     @Environment(LibraryModel.self) private var library
     @Environment(AppSettings.self) private var settings
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var pdf: StyledDocument?
@@ -110,7 +111,7 @@ struct ReaderView: View {
         Group {
             if let pdf {
                 PDFKitView(
-                    document: pdf, appearance: settings.pageAppearance, handle: handle, results: results,
+                    document: pdf, appearance: settings.pageAppearance(systemScheme: colorScheme), handle: handle, results: results,
                     place: document.place,
                     onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
                     onBackChange: { backPageNumber = $0 }, onShowResults: { isShowingResults = true })
