@@ -12,6 +12,9 @@ import SwiftUI
 /// Opens at the Document's Reading Progress at fit-to-width, or at page 1, and
 /// saves it (see `ReadingProgressSaver`) when opened, after scrolling stops,
 /// when it disappears and when the scene goes to the background.
+///
+/// A trailing toolbar button opens the Table of Contents, in a popover (a sheet
+/// on iPhone), unless the Document has none. Choosing an entry goes there.
 struct ReaderView: View {
     let document: LibraryDocument
     @Environment(LibraryModel.self) private var library
@@ -19,6 +22,8 @@ struct ReaderView: View {
     @State private var pdf: PDFDocument?
     @State private var handle = ReaderHandle()
     @State private var saver: ReadingProgressSaver?
+    @State private var contents: TableOfContents?
+    @State private var isShowingContents = false
     #if os(iOS)
         @State private var isImmersive = false
     #endif
@@ -36,11 +41,24 @@ struct ReaderView: View {
         .task {
             guard pdf == nil else { return }
             saver = ReadingProgressSaver(library: library, document: document, handle: handle)
-            pdf = PDFDocument(url: document.file)
+            let opened = PDFDocument(url: document.file)
+            contents = opened.map(TableOfContents.init)
+            pdf = opened
         }
         .onDisappear { saver?.saveIfMoved() }
         .onChange(of: scenePhase) { if scenePhase == .background { saver?.saveIfMoved() } }
         .navigationTitle(document.title)
+        .toolbar {
+            if let contents = availableContents {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Table of Contents", systemImage: "list.bullet") { isShowingContents = true }
+                        .popover(isPresented: $isShowingContents) {
+                            TableOfContentsView(contents: contents) { handle.view?.go(to: $0) }
+                                .presentationCompactAdaptation(.sheet)
+                        }
+                }
+            }
+        }
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             .toolbarVisibility(isImmersive ? .hidden : .automatic, for: .navigationBar)
@@ -51,8 +69,18 @@ struct ReaderView: View {
         #else
             .background(BackShortcut())
             .focusedSceneValue(\.reader, handle)
+            .focusedSceneValue(\.showTableOfContents, availableContents == nil ? nil : $isShowingContents)
             .windowToolbarFullScreenVisibility(.onHover)
         #endif
+    }
+
+    /// The Table of Contents, unless it is empty or Immersive Mode hides it.
+    private var availableContents: TableOfContents? {
+        #if os(iOS)
+            if isImmersive { return nil }
+        #endif
+        guard let contents, !contents.isEmpty else { return nil }
+        return contents
     }
 
     private func toggleImmersive() {

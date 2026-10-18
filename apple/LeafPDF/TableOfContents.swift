@@ -1,0 +1,60 @@
+import PDFKit
+
+/// The Chapters and Sections stored in a Document's outline, in reading order.
+/// Empty when the Document has no outline or the outline has no entries.
+/// Read once from a `PDFDocument`; nothing is stored or synced.
+struct TableOfContents {
+    /// A Chapter (top level) or Section (nested under another entry).
+    struct Entry: Identifiable {
+        /// Unique within a Table of Contents; numbers entries in reading order.
+        let id: Int
+        let title: String
+        /// The printed page number (page label), or the 1-based position in the
+        /// File when the target page has none. Empty without a target.
+        let pageNumber: String
+        /// Where the entry points. Nil when the outline gives it no target page:
+        /// such an entry is listed but can't be chosen.
+        let place: Place?
+        let sections: [Entry]
+    }
+
+    let chapters: [Entry]
+
+    var isEmpty: Bool { chapters.isEmpty }
+
+    init(_ document: PDFDocument) {
+        var nextID = 0
+        func entries(under outline: PDFOutline) -> [Entry] {
+            (0..<outline.numberOfChildren).compactMap { outline.child(at: $0) }.map { child in
+                let id = nextID
+                nextID += 1
+                let target = Self.target(of: child, in: document)
+                return Entry(
+                    id: id, title: child.label ?? "", pageNumber: target?.pageNumber ?? "", place: target?.place,
+                    sections: entries(under: child))
+            }
+        }
+        chapters = document.outlineRoot.map(entries(under:)) ?? []
+    }
+
+    private static func target(
+        of outline: PDFOutline, in document: PDFDocument
+    ) -> (place: Place, pageNumber: String)? {
+        let destination = outline.destination ?? (outline.action as? PDFActionGoTo)?.destination
+        guard let destination, let page = destination.page else { return nil }
+        let index = document.index(for: page)
+        guard index != NSNotFound else { return nil }
+        let pageNumber = page.label.flatMap { $0.isEmpty ? nil : $0 } ?? String(index + 1)
+        return (Place(pageIndex: index, point: point(of: destination, on: page)), pageNumber)
+    }
+
+    /// The destination's point, with a coordinate the outline leaves open
+    /// (PDF's "null") taken as the page's top-left corner.
+    private static func point(of destination: PDFDestination, on page: PDFPage) -> CGPoint {
+        let bounds = page.bounds(for: .cropBox)
+        let point = destination.point
+        return CGPoint(
+            x: point.x == kPDFDestinationUnspecifiedValue ? bounds.minX : point.x,
+            y: point.y == kPDFDestinationUnspecifiedValue ? bounds.maxY : point.y)
+    }
+}
