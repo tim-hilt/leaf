@@ -1,30 +1,41 @@
-# Issue tracker: Local Markdown
+# Issue tracker: loop
 
-Issues and specs for this repo live as markdown files in `.scratch/`.
+Specs and tasks live in `loop` sessions (CLI, state outside the repo). One session = one spec + ordered tasks. Run `loop --help` for all commands.
 
 ## Conventions
 
-- One feature per directory: `.scratch/<feature-slug>/`
-- The spec is `.scratch/<feature-slug>/spec.md`
-- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
-- Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
-- Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- Spec: markdown passed to `loop new`; title defaults to its first heading.
+- Task: one per ticket, with a short `--title`, a markdown `--body`, and `--check` shell commands (all must exit 0, e.g. `cargo test`).
+- Task status: `pending` (default), `running`, `in-review`, `done`, `failed`. `loop run` skips non-pending tasks.
+- Task ids are global across sessions; see `loop show --id <n> --json`.
+- `--blocked-by` is advisory: `loop run` does not enforce it; `loop task ready` honors it. Export/import keep type and blockers.
+- Comments: none; amend the task body with `loop task edit`.
+
+## Operations
+
+- Create spec: `loop new --spec-file spec.md [--title t]` (prints session id). Use `--json -`/`@file` for stdin/file input; `loop schema new` shows the format.
+- Add task: `loop task add --id <session> --title t --body-file b.md --check "cargo test"`; `loop schema task` shows the format.
+- Fetch ticket: `loop task show --task <n>`; whole session: `loop show --id <n>`; all sessions: `loop ls`.
+- Edit ticket: `loop task edit --task <n> [--title|--body|--check|--status|--type|--blocked-by]`.
+- Edit spec: `loop edit --id <n> [--title t] [--spec s | --spec-file f]`.
+- Execute: `loop run --id <n>` (blocking; `loop stop|status|logs --id <n>`).
+- Persist to git: `loop export --id <n> --to dir` (writes `spec.md`, `issues/NN-slug.md`); `loop import --from dir`.
 
 ## When a skill says "publish to the issue tracker"
 
-Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
+`loop new` for a spec, `loop task add` per ticket (never one combined ticket).
 
 ## When a skill says "fetch the relevant ticket"
 
-Read the file at the referenced path. The user will normally pass the path or the issue number directly.
+`loop task show --task <n>` (or `loop show --id <n>` for the session). The user normally passes the number.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
+Used by `/wayfinder`. The **map** is the session spec; each **child** is a task.
 
-- **Map**: `.scratch/<effort>/map.md` (the Notes / Decisions-so-far / Fog body).
-- **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Status:` line records `claimed`/`resolved`.
-- **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
-- **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.
-- **Claim**: set `Status: claimed` and save before any work.
-- **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
+- **Map**: session spec (Notes / Decisions-so-far / Fog body); update with `loop edit --id <n> --spec-file map.md`.
+- **Child ticket**: task with the question in `--body` and `--type research|prototype|grilling|task`.
+- **Blocking**: `--blocked-by <task id>` (repeatable). A task is unblocked when every blocker is `done`.
+- **Frontier**: `loop task ready --id <n> [--json]` (pending and unblocked); first by id wins.
+- **Claim**: `loop task edit --task <n> --status running` before any work.
+- **Resolve**: append the answer under `## Answer` via `loop task edit --body`, set `--status done`, then append a pointer to the map's Decisions-so-far with `loop edit`.

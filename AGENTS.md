@@ -25,11 +25,7 @@ Native, cross platform PDF Reader with cloud syncing
 
 ### Issue tracker
 
-Issues and specs are local markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Default five-role vocabulary, recorded as `Status:` lines. See `docs/agents/triage-labels.md`.
+Issues and specs are `loop` sessions and tasks (`loop --help`). See `docs/agents/issue-tracker.md`.
 
 ### Domain docs
 
