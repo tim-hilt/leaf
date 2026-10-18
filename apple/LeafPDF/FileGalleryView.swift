@@ -20,6 +20,7 @@ struct FileGalleryView: View {
     @Environment(LibraryModel.self) private var library
     @State private var path: [LibraryDocument] = []
     @State private var isImporting = false
+    @State private var isShowingSettings = false
     @State private var rejection: ImportAlert?
     @State private var duplicate: LibraryDocument?
     @State private var removal: LibraryDocument?
@@ -90,7 +91,13 @@ struct FileGalleryView: View {
             .toolbar {
                 SortMenu(sort: Bindable(library).sort)
                 Button("Import…", systemImage: "plus") { isImporting = true }
+                #if os(iOS)
+                    Button("Settings", systemImage: "gear") { isShowingSettings = true }
+                #endif
             }
+            #if os(iOS)
+                .sheet(isPresented: $isShowingSettings) { SettingsSheet() }
+            #endif
         }
         .onKeyPress(phases: [.down, .repeat]) { press in
             guard let arrow = GridHighlight.Arrow(press.key) else { return .ignored }

@@ -6,10 +6,14 @@ struct LeafPDFApp: App {
         do { return try .inApplicationSupport() } catch { fatalError("Can't open the Library: \(error)") }
     }()
 
+    @State private var settings = AppSettings(defaults: .standard)
+
     var body: some Scene {
         WindowGroup {
             FileGalleryView()
                 .environment(library)
+                .environment(settings)
+                .preferredColorScheme(settings.theme.colorScheme)
         }
         .commands {
             ImportCommands()
@@ -17,5 +21,13 @@ struct LeafPDFApp: App {
                 ReaderCommands()
             #endif
         }
+        #if os(macOS)
+            Settings {
+                SettingsView()
+                    .environment(settings)
+                    .preferredColorScheme(settings.theme.colorScheme)
+                    .frame(width: 420)
+            }
+        #endif
     }
 }
