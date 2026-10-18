@@ -119,12 +119,57 @@ import Testing
         reader.goBack()
         #expect(scrolls > 0)
     }
+
+    // MARK: Links
+
+    /// A link on page 6 to `target`, and one to a web page just below it.
+    let linkRect = CGRect(x: 50, y: 500, width: 200, height: 50)
+    let webRect = CGRect(x: 50, y: 400, width: 200, height: 50)
+    var links: [LinkEntry] {
+        [
+            LinkEntry(pageIndex: place.pageIndex, rect: linkRect, target: .place(pageIndex: target.pageIndex, point: target.point)),
+            LinkEntry(pageIndex: place.pageIndex, rect: webRect, target: .web(URL(string: "https://example.com")!)),
+        ]
+    }
+
+    @Test func followingALinkInTheDocumentIsAJump() throws {
+        let reader = try makeReader(size: portrait, links: links)
+        reader.go(to: Place(pageIndex: place.pageIndex, point: CGPoint(x: 0, y: 700)))
+        let start = try #require(reader.topOfViewport)
+        reader.perform(try #require(action(of: linkRect, in: reader)))
+        try expectAtTop(target, of: reader)
+        #expect(reader.backPlace == start)
+        reader.goBack()
+        try expectAtTop(start, of: reader)
+    }
+
+    @Test func recognizesLinksAtAPointInTheView() throws {
+        let reader = try makeReader(size: portrait, links: links)
+        reader.go(to: Place(pageIndex: place.pageIndex, point: CGPoint(x: 0, y: 700)))
+        #expect(reader.hasLink(at: viewPoint(of: linkRect, in: reader)))
+        #expect(reader.hasLink(at: viewPoint(of: webRect, in: reader)))
+        #expect(!reader.hasLink(at: viewPoint(of: CGRect(x: 50, y: 100, width: 10, height: 10), in: reader)))
+    }
+}
+
+/// The action of the link annotation on page 6 inside `rect`.
+@MainActor
+private func action(of rect: CGRect, in reader: ReaderPDFView) -> PDFAction? {
+    reader.document?.page(at: 5)?.annotation(at: CGPoint(x: rect.midX, y: rect.midY))?.action
+}
+
+/// The centre of `rect` on page 6, in the view's coordinates.
+@MainActor
+private func viewPoint(of rect: CGRect, in reader: ReaderPDFView) -> CGPoint {
+    reader.convert(CGPoint(x: rect.midX, y: rect.midY), from: reader.document!.page(at: 5)!)
 }
 
 /// A Reader on an eight-page Document, laid out in a window of `size`. With
 /// `openingAt`, it is asked to open there before the Document is set.
 @MainActor
-private func makeReader(size: CGSize, openingAt place: Place? = nil) throws -> ReaderPDFView {
+private func makeReader(
+    size: CGSize, openingAt place: Place? = nil, links: [LinkEntry] = []
+) throws -> ReaderPDFView {
     let reader = ReaderPDFView(handle: ReaderHandle())
     if let place { reader.open(at: place) }
     reader.displayMode = .singlePageContinuous
@@ -141,7 +186,7 @@ private func makeReader(size: CGSize, openingAt place: Place? = nil) throws -> R
         window.isReleasedWhenClosed = false
         window.contentView = reader
     #endif
-    reader.document = try makePDF(named: "Long.pdf", pageCount: 8)
+    reader.document = try makePDF(named: "Long.pdf", pageCount: 8, links: links)
     layout(reader)
     return reader
 }

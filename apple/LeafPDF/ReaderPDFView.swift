@@ -11,12 +11,13 @@ final class ReaderHandle {
 /// is resized or rotated, and when zooming with the keyboard. PDFKit's own
 /// pinch gesture does the pinch zooming, so the content under the fingers
 /// stays put; on iOS a double-tap toggles between fit-to-width and zoomed in,
-/// and a single tap calls `onSingleTap`. It reports when it has opened and
+/// and a single tap, unless it is on a link, calls `onSingleTap`. It reports when it has opened and
 /// whenever it scrolls, so the Reader can save Reading Progress.
 ///
 /// A Jump goes to a Place and remembers where the viewport was, so that Back
 /// can return there. Only the latest Jump is remembered, and only for as long
-/// as the view lives.
+/// as the view lives. Following a link to a place in the Document is a Jump;
+/// links to web pages keep PDFKit's behaviour and are not.
 final class ReaderPDFView: PDFView {
     /// Where the viewport was before a size change, to be restored once the
     /// new layout is known.
@@ -123,6 +124,21 @@ final class ReaderPDFView: PDFView {
         go(to: place)
     }
 
+    // MARK: Links
+
+    /// Whether a link (to the Document or the web) is at `point`, in the view's
+    /// coordinates.
+    func hasLink(at point: CGPoint) -> Bool { areaOfInterest(for: point).contains(.linkArea) }
+
+    /// PDFKit performs a link's action here when the reader follows it. A link
+    /// to a place in the Document becomes a Jump, so Back can undo it.
+    override func perform(_ action: PDFAction) {
+        guard let goTo = action as? PDFActionGoTo, let document,
+            let place = Place(goTo.destination, in: document)
+        else { return super.perform(action) }
+        jump(to: place)
+    }
+
     /// Remembers the viewport; call just before the view's size changes.
     private func sizeWillChange(to size: CGSize, from oldSize: CGSize) {
         guard size != oldSize, viewpoint == nil, let range = zoomRange,
@@ -158,8 +174,20 @@ final class ReaderPDFView: PDFView {
 
     #if os(iOS)
         /// PDFView is already the delegate of its own recognizers, so ours gets
-        /// a separate one rather than overriding PDFView's.
-        private final class SimultaneousTaps: NSObject, UIGestureRecognizerDelegate {
+        /// a separate one rather than overriding PDFView's. It lets ours work
+        /// alongside PDFKit's, and ignores taps that start on a link: PDFKit
+        /// follows those, and that is all a link tap should do. It decides at
+        /// touch-down, since following the link moves the page from under the finger.
+        private final class SingleTapFilter: NSObject, UIGestureRecognizerDelegate {
+            private weak var view: ReaderPDFView?
+
+            init(view: ReaderPDFView) { self.view = view }
+
+            func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+                guard let view else { return false }
+                return !view.hasLink(at: touch.location(in: view))
+            }
+
             func gestureRecognizer(
                 _ gestureRecognizer: UIGestureRecognizer,
                 shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
@@ -167,7 +195,7 @@ final class ReaderPDFView: PDFView {
         }
 
         // Recognizers hold their delegate weakly.
-        private static let simultaneousTaps = SimultaneousTaps()
+        private var singleTapFilter: SingleTapFilter?
 
         private var scrollObservation: NSKeyValueObservation?
 
@@ -209,7 +237,9 @@ final class ReaderPDFView: PDFView {
             let singleTap = UITapGestureRecognizer(target: self, action: #selector(didSingleTap))
             singleTap.require(toFail: doubleTap)
             // PDFKit's own tap handling (links, selection) must keep working.
-            singleTap.delegate = Self.simultaneousTaps
+            let filter = SingleTapFilter(view: self)
+            singleTapFilter = filter
+            singleTap.delegate = filter
             addGestureRecognizer(singleTap)
         }
 

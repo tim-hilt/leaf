@@ -4,9 +4,9 @@
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Links to places inside the Document go through Jump and show the Back capsule
-- [ ] On iOS, a single tap on a link doesn't switch Immersive Mode
-- [ ] Links to web pages keep PDFKit's default behaviour (open in the default browser, no confirmation) and are not Jumps
-- [ ] `ReaderPDFViewTests` cover: following an in-Document link records a Back place and Back returns to it
+- [x] Links to places inside the Document go through Jump and show the Back capsule
+- [x] On iOS, a single tap on a link doesn't switch Immersive Mode
+- [x] Links to web pages keep PDFKit's default behaviour (open in the default browser, no confirmation) and are not Jumps
+- [x] `ReaderPDFViewTests` cover: following an in-Document link records a Back place and Back returns to it

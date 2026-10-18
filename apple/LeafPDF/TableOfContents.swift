@@ -69,22 +69,7 @@ struct TableOfContents {
         of outline: PDFOutline, in document: PDFDocument
     ) -> (place: Place, pageNumber: String)? {
         let destination = outline.destination ?? (outline.action as? PDFActionGoTo)?.destination
-        guard let destination, let page = destination.page else { return nil }
-        let index = document.index(for: page)
-        guard index != NSNotFound else { return nil }
-        return (
-            Place(pageIndex: index, point: point(of: destination, on: page)),
-            document.printedPageNumber(at: index)
-        )
-    }
-
-    /// The destination's point, with a coordinate the outline leaves open
-    /// (PDF's "null") taken as the page's top-left corner.
-    private static func point(of destination: PDFDestination, on page: PDFPage) -> CGPoint {
-        let bounds = page.bounds(for: .cropBox)
-        let point = destination.point
-        return CGPoint(
-            x: point.x == kPDFDestinationUnspecifiedValue ? bounds.minX : point.x,
-            y: point.y == kPDFDestinationUnspecifiedValue ? bounds.maxY : point.y)
+        guard let destination, let place = Place(destination, in: document) else { return nil }
+        return (place, document.printedPageNumber(at: place.pageIndex))
     }
 }

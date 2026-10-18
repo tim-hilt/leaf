@@ -17,7 +17,8 @@ import SwiftUI
 /// on iPhone), unless the Document has none. It shows where the top of the
 /// page is, and choosing an entry is a Jump. After a Jump, a floating capsule
 /// "Back to p. 42" returns to where the reader was; it also shows in Immersive
-/// Mode, where it is the only way back.
+/// Mode, where it is the only way back. Following a link in the Document is a
+/// Jump too, and tapping a link doesn't switch Immersive Mode.
 struct ReaderView: View {
     let document: LibraryDocument
     @Environment(LibraryModel.self) private var library
