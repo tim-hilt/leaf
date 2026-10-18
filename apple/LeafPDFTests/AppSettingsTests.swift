@@ -77,3 +77,23 @@ extension AppSettingsTests {
         #expect(AppSettings(defaults: defaults).pageStyle == .match)
     }
 }
+
+extension AppSettingsTests {
+    @Test(arguments: [
+        (PageStyle.light, Theme.system, ColorScheme.light, PageStyle.dark),
+        (.dark, .system, .light, .light),
+        (.match, .light, .light, .dark),
+        (.match, .system, .dark, .light),
+        (.match, .dark, .light, .light),
+    ])
+    func shortcutSwitchesToTheOppositeOfWhatIsShowing(
+        style: PageStyle, theme: Theme, system: ColorScheme, target: PageStyle
+    ) {
+        let settings = AppSettings(defaults: defaults)
+        settings.pageStyle = style
+        settings.theme = theme
+        #expect(settings.oppositePageStyle(systemScheme: system) == target)
+        settings.switchToOppositePageStyle(systemScheme: system)
+        #expect(settings.pageStyle == target)
+    }
+}

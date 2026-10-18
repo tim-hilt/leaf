@@ -10,6 +10,8 @@ import SwiftUI
 /// Scrolling never changes it, and the Reader always opens with its UI showing.
 ///
 /// Pages are drawn per the Page Style in Settings, and redrawn live when it changes.
+/// ⇧⌘D switches to the opposite of what is showing; on macOS the View menu also
+/// has the three Page Styles.
 ///
 /// Opens at the Document's Reading Progress at fit-to-width, or at page 1, and
 /// saves it (see `ReadingProgressSaver`) when opened, after scrolling stops,
@@ -106,14 +108,30 @@ struct ReaderView: View {
             // Hiding system overlays also lets the home indicator fade.
             .persistentSystemOverlays(isImmersive ? .hidden : .automatic)
             .animation(.default, value: isImmersive)
+            .background(switchPageStyleShortcut)
         #else
             .background(BackShortcut())
             .focusedSceneValue(\.reader, handle)
             .focusedSceneValue(\.backPageNumber, backPageNumber)
+            .focusedSceneValue(\.switchPageStyle, switchPageStyle)
             .focusedSceneValue(\.showTableOfContents, availableContents == nil ? nil : $isShowingContents)
             .windowToolbarFullScreenVisibility(.onHover)
         #endif
     }
+
+    private func switchPageStyle() {
+        settings.switchToOppositePageStyle(systemScheme: colorScheme)
+    }
+
+    #if os(iOS)
+        /// Invisible button giving ⇧⌘D to iPad keyboards; on macOS the View menu has it.
+        private var switchPageStyleShortcut: some View {
+            Button("Switch Light and Dark Pages", action: switchPageStyle)
+                .keyboardShortcut("d", modifiers: [.shift, .command])
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
+    #endif
 
     private var pages: some View {
         Group {

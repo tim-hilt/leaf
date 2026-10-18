@@ -18,7 +18,7 @@ struct LeafPDFApp: App {
         .commands {
             ImportCommands()
             #if os(macOS)
-                ReaderCommands()
+                ReaderCommands(settings: settings)
             #endif
         }
         #if os(macOS)

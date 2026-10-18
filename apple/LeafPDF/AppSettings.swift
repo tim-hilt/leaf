@@ -38,6 +38,15 @@ final class AppSettings {
         }
     }
 
+    /// The Page Style ⇧⌘D switches to: Dark Pages if pages look light, else Light Pages.
+    func oppositePageStyle(systemScheme: ColorScheme) -> PageStyle {
+        arePagesDark(systemScheme: systemScheme) ? .light : .dark
+    }
+
+    func switchToOppositePageStyle(systemScheme: ColorScheme) {
+        pageStyle = oppositePageStyle(systemScheme: systemScheme)
+    }
+
     /// How pages are drawn under the current Page Style.
     func pageAppearance(systemScheme: ColorScheme) -> PageAppearance {
         arePagesDark(systemScheme: systemScheme) ? .dark(.default) : .light

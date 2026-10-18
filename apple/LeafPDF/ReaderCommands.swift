@@ -8,13 +8,17 @@
         @Entry var backPageNumber: String?
         /// Opens the focused Reader's Table of Contents; nil when it has none.
         @Entry var showTableOfContents: Binding<Bool>?
+        /// Switches the focused Reader's pages to the opposite of what is showing (⇧⌘D).
+        @Entry var switchPageStyle: (() -> Void)?
     }
 
-    /// View menu zoom commands, Edit > Find and the Go menu, acting on the focused window's Reader.
+    /// View menu zoom and Page Style commands, Edit > Find and the Go menu, acting on the focused window's Reader.
     struct ReaderCommands: Commands {
         @FocusedValue(\.reader) private var reader
         @FocusedValue(\.showTableOfContents) private var showTableOfContents
         @FocusedValue(\.backPageNumber) private var backPageNumber
+        @FocusedValue(\.switchPageStyle) private var switchPageStyle
+        let settings: AppSettings
 
         var body: some Commands {
             CommandGroup(after: .toolbar) {
@@ -27,6 +31,13 @@
                 Button("Fit to Width") { reader?.view?.zoomToFitWidth() }
                     .keyboardShortcut("0", modifiers: .command)
                     .disabled(reader == nil)
+                Divider()
+                ForEach(PageStyle.allCases) { style in
+                    Toggle(style.title, isOn: Binding(get: { settings.pageStyle == style }, set: { _ in settings.pageStyle = style }))
+                }
+                Button("Switch Light and Dark Pages") { switchPageStyle?() }
+                    .keyboardShortcut("d", modifiers: [.shift, .command])
+                    .disabled(switchPageStyle == nil)
             }
             CommandGroup(after: .textEditing) {
                 Menu("Find") {
