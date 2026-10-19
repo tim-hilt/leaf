@@ -169,6 +169,15 @@ import Testing
         #expect(tabs.activeID == "b")
     }
 
+    @Test func nextAndPreviousWithASingleTabStayOnIt() {
+        let tabs = makeTabs()
+        tabs.open([a])
+        tabs.selectNext()
+        tabs.selectPrevious()
+        #expect(tabs.activeID == "a")
+        #expect(tabs.isShowingReader)
+    }
+
     @Test func numbersPickTabsByPositionFromOne() {
         let tabs = makeTabs()
         tabs.open([a, b, c])

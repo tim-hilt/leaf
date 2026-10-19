@@ -24,13 +24,15 @@ struct TabCommands: Commands {
         #endif
     }
 
+    private var hasSeveralTabs: Bool { (tabs?.openIDs.count ?? 0) > 1 }
+
     @ViewBuilder private var switching: some View {
         Button("Show Next Tab") { tabs?.selectNext() }
             .keyboardShortcut(.tab, modifiers: .control)
-            .disabled(tabs == nil)
+            .disabled(!hasSeveralTabs)
         Button("Show Previous Tab") { tabs?.selectPrevious() }
             .keyboardShortcut(.tab, modifiers: [.control, .shift])
-            .disabled(tabs == nil)
+            .disabled(!hasSeveralTabs)
         Menu("Go to Tab") {
             ForEach(1...9, id: \.self) { number in
                 Button("Tab \(number)") { tabs?.select(number: number) }
