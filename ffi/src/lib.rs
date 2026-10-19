@@ -316,8 +316,14 @@ impl std::fmt::Display for ConnectError {
 #[derive(uniffi::Enum)]
 pub enum SyncStatus {
     Syncing,
-    Synced { at: u64 },
+    Synced {
+        at: u64,
+    },
     Offline,
+    /// Blocked: the server rejected the credentials, see `update_webdav_credentials`.
+    WrongPassword,
+    /// Blocked: another Device synced a newer version than this app knows.
+    UpdateNeeded,
 }
 
 /// Receives what the Sync loop does. Implemented by the client and called from
@@ -361,6 +367,8 @@ impl sync_loop::Observer for Observer {
             Core::Syncing => SyncStatus::Syncing,
             Core::Synced { at } => SyncStatus::Synced { at },
             Core::Offline => SyncStatus::Offline,
+            Core::WrongPassword => SyncStatus::WrongPassword,
+            Core::UpdateNeeded => SyncStatus::UpdateNeeded,
         });
     }
 
@@ -447,6 +455,23 @@ impl Library {
     ) -> Result<(), ConnectError> {
         let storage = WebDavStorage::resume(&url, &username, &password)?;
         self.start_sync(Arc::new(storage), observer, intervals);
+        Ok(())
+    }
+
+    /// Gives the running Connection new credentials, after its status became
+    /// `WrongPassword`: checks them like `connect_webdav` and, if they are
+    /// right, resumes syncing at once. Blocks while it talks to the server.
+    /// Does nothing if not Connected.
+    pub fn update_webdav_credentials(
+        &self,
+        url: String,
+        username: String,
+        password: String,
+    ) -> Result<(), ConnectError> {
+        let storage = WebDavStorage::connect(&url, &username, &password)?;
+        if let Some(sync) = &*self.sync() {
+            sync.use_storage(Arc::new(storage));
+        }
         Ok(())
     }
 

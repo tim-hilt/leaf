@@ -19,8 +19,9 @@ use automerge::{
     transaction::Transactable,
 };
 use std::collections::HashSet;
+use std::io;
 
-const SCHEMA_VERSION: u64 = 1;
+pub(crate) const SCHEMA_VERSION: u64 = 1;
 
 /// Copying a File into the Library on one Device.
 #[derive(Debug, Clone, PartialEq)]
@@ -136,12 +137,27 @@ impl LibraryDoc {
     }
 
     /// Merges what `pulled` fetched into the document; true if that changed it.
-    pub fn merge(&mut self, cursor: &mut Cursor, pulled: Pulled) -> bool {
+    /// Fails with `Unsupported`, merging nothing, if that makes the document
+    /// one of a newer schema version than this app knows.
+    pub fn merge(&mut self, cursor: &mut Cursor, pulled: Pulled) -> io::Result<bool> {
+        let heads = self.doc.get_heads();
+        let before = cursor.clone();
         let merged = cursor.apply(&mut self.doc, pulled);
+        if let Err(e) = state::check_schema(&self.doc, SCHEMA_VERSION) {
+            // Takes what was merged back out.
+            let actor = self.doc.get_actor().clone();
+            self.doc = self
+                .doc
+                .fork_at(&heads)
+                .expect("the document knows its own heads")
+                .with_actor(actor);
+            *cursor = before;
+            return Err(e);
+        }
         if merged {
             self.imports = read_imports(&self.doc);
         }
-        merged
+        Ok(merged)
     }
 
     /// This Device's changes that `cursor` doesn't count as sent.
@@ -157,8 +173,7 @@ impl LibraryDoc {
     /// Writes the current schema version, unless the document has it or a
     /// newer one.
     fn stamp_version(&mut self) {
-        let stored = state::scalar(&self.doc, &ROOT, "version").and_then(|v| v.as_u64());
-        if stored.is_none_or(|version| version < SCHEMA_VERSION) {
+        if state::version(&self.doc) < SCHEMA_VERSION {
             self.doc
                 .put(ROOT, "version", SCHEMA_VERSION)
                 .expect("a root map accepts new keys");

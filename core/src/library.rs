@@ -102,8 +102,8 @@ pub struct Library {
 /// The cursors of the documents `sync` exchanges.
 #[derive(Debug, Default)]
 struct Exchanges {
-    library: Cursor,
-    /// By Import ID, or `PREFERENCES_KEY`; read from disk when first needed.
+    /// By Import ID, `PREFERENCES_KEY` or `LIBRARY_KEY`; read from disk when
+    /// first needed.
     docs: HashMap<String, Cursor>,
 }
 
@@ -146,15 +146,11 @@ impl Library {
         }
         let device_id = load_device_id(&root)?;
         let doc = LibraryDoc::load(fs::read(root.join(LIBRARY)).ok().as_deref(), &device_id);
-        let cursor = fs::read_to_string(root.join(LIBRARY_CURSOR)).unwrap_or_default();
         let library = Library {
             root,
             device_id,
             doc: Mutex::new(doc),
-            exchanges: Mutex::new(Exchanges {
-                library: Cursor::decode(&cursor),
-                docs: HashMap::new(),
-            }),
+            exchanges: Mutex::default(),
             dirty: Mutex::new(Dirty {
                 everything: true,
                 keys: HashSet::new(),

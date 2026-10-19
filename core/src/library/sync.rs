@@ -18,13 +18,16 @@
 //! download in.
 
 use super::*;
-use crate::chunks;
+use crate::chunks::{self, Outgoing};
 use crate::storage::{Blob, Storage};
 
 const LIBRARY_DIR: &str = "v1/library";
 const STATE_DIR: &str = "v1/state";
 const PREFERENCES_DIR: &str = "v1/preferences";
 const FILES_DIR: &str = "v1/files";
+/// What `Exchanges` calls the Library document, as `PREFERENCES_KEY` does for
+/// the Preferences.
+const LIBRARY_KEY: &str = "library";
 
 /// The File transfers of one step, counted in Documents.
 struct Transfers<'a> {
@@ -60,14 +63,47 @@ fn read_cursor(path: &Path) -> Cursor {
     Cursor::decode(&fs::read_to_string(path).unwrap_or_default())
 }
 
+impl Exchanges {
+    /// The cursor of the document `key`, read from `path` when first needed.
+    fn cursor(&mut self, key: &str, path: &Path) -> &mut Cursor {
+        self.docs
+            .entry(key.to_owned())
+            .or_insert_with(|| read_cursor(path))
+    }
+}
+
 /// One synced Automerge document that is stored in a file.
 struct Target {
+    /// Its key in `Exchanges` and `Dirty`.
+    key: String,
+    /// The schema version this app knows of it.
+    schema: u64,
     /// The remote directory of its chunks.
     dir: &'static str,
     /// What its chunks' names start with.
     prefix: String,
     path: PathBuf,
     cursor_path: PathBuf,
+}
+
+/// What a step sends once every document it merged is known to be understood:
+/// nothing is written to the storage before, so a Device that finds a newer
+/// schema version leaves it as it is.
+#[derive(Default)]
+struct Pending {
+    /// This Device's new chunks.
+    sends: Vec<Outbound>,
+    /// Blobs to delete.
+    deletions: Vec<String>,
+}
+
+/// This Device's changes to one document, to be written.
+struct Outbound {
+    dir: &'static str,
+    /// The document's key in `Exchanges` and `Dirty`.
+    key: String,
+    cursor_path: PathBuf,
+    outgoing: Outgoing,
 }
 
 /// What a merge changed in a document: its stored bytes before and after.
@@ -88,6 +124,12 @@ impl Library {
     /// A step with nothing new costs one listing per directory and loads no
     /// document. A File whose bytes don't match its hash is not stored. The
     /// Library is tied to no storage: it sends everything to one that lacks it.
+    ///
+    /// Two failures are not being offline, see `sync_loop::Status`: rejected
+    /// credentials are `PermissionDenied`, and a document of a newer schema
+    /// version than this app knows is `Unsupported`. The latter is found before
+    /// anything is written to the storage, and nothing of that document is
+    /// merged.
     pub fn sync(&self, storage: &dyn Storage) -> io::Result<()> {
         self.sync_reporting(storage, &|_, _| {})
     }
@@ -105,17 +147,17 @@ impl Library {
             .exchanges
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if self.exchange_library(storage, &mut exchanges.library)? {
-            // Removes and names of other Devices.
-            self.sync_changes.fetch_add(1, Relaxed);
-            self.reconcile()?;
-        }
         let everything = std::mem::take(&mut self.dirty().everything);
+        let mut pending = Pending::default();
         let result = self
-            .exchange_preferences(storage, &mut exchanges, everything)
-            .and_then(|()| self.exchange_states(storage, &mut exchanges, everything));
+            .merge_documents(storage, &mut exchanges, everything, &mut pending)
+            .and_then(|()| self.send(storage, &mut exchanges, &mut pending));
         if result.is_err() {
             self.dirty().everything |= everything;
+            // What wasn't sent is found again by the next step.
+            for send in &pending.sends {
+                self.mark_dirty(&send.key);
+            }
         }
         result?;
         let remote_files: HashSet<String> = storage
@@ -136,9 +178,83 @@ impl Library {
         self.dirty.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Merges the other Devices' chunks of the Library document and sends this
-    /// Device's own. True if the Library document changed.
-    fn exchange_library(&self, storage: &dyn Storage, cursor: &mut Cursor) -> io::Result<bool> {
+    /// Merges the other Devices' chunks of the Library document, the
+    /// Preferences and the states, and collects what to send in `pending`.
+    /// Fails with `Unsupported` if one has a newer schema version than this app
+    /// knows.
+    fn merge_documents(
+        &self,
+        storage: &dyn Storage,
+        exchanges: &mut Exchanges,
+        everything: bool,
+        pending: &mut Pending,
+    ) -> io::Result<()> {
+        if self.exchange_library(storage, exchanges, pending)? {
+            // Removes and names of other Devices.
+            self.sync_changes.fetch_add(1, Relaxed);
+            self.reconcile()?;
+        }
+        self.exchange_preferences(storage, exchanges, everything, pending)?;
+        self.exchange_states(storage, exchanges, everything, pending)
+    }
+
+    /// Does what `pending` holds. The cursor of a document is stored after its
+    /// chunk is written, so a chunk is never counted as sent that wasn't.
+    fn send(
+        &self,
+        storage: &dyn Storage,
+        exchanges: &mut Exchanges,
+        pending: &mut Pending,
+    ) -> io::Result<()> {
+        for name in &pending.deletions {
+            storage.delete(name)?;
+        }
+        let mut sends = std::mem::take(&mut pending.sends).into_iter();
+        while let Some(send) = sends.next() {
+            let key = send.key.clone();
+            if let Err(e) = self.send_chunk(storage, exchanges, send) {
+                self.mark_dirty(&key);
+                sends.for_each(|send| self.mark_dirty(&send.key));
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    fn send_chunk(
+        &self,
+        storage: &dyn Storage,
+        exchanges: &mut Exchanges,
+        send: Outbound,
+    ) -> io::Result<()> {
+        let cursor = exchanges.cursor(&send.key, &send.cursor_path);
+        let before = cursor.clone();
+        let sent = chunks::push(storage, send.dir, cursor, send.outgoing);
+        if *cursor != before {
+            self.store_cursor(&send.cursor_path, cursor)?;
+        }
+        sent
+    }
+
+    /// Stores `cursor` in the file `path`. Nothing happens if its folder is
+    /// gone: the Document was Removed.
+    fn store_cursor(&self, path: &Path, cursor: &Cursor) -> io::Result<()> {
+        match write_atomically(&self.staging(), path, cursor.encode().as_bytes()) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
+    }
+
+    /// Merges the other Devices' chunks of the Library document and collects
+    /// this Device's own for `pending`. True if the Library document changed.
+    fn exchange_library(
+        &self,
+        storage: &dyn Storage,
+        exchanges: &mut Exchanges,
+        pending: &mut Pending,
+    ) -> io::Result<bool> {
+        let cursor_path = self.root.join(LIBRARY_CURSOR);
+        let cursor = exchanges.cursor(LIBRARY_KEY, &cursor_path);
         let before = cursor.clone();
         let listing = storage.list(LIBRARY_DIR)?;
         let pulled = chunks::pull(
@@ -151,25 +267,25 @@ impl Library {
         )?;
         let (merged, outgoing) = {
             let mut doc = self.catalog();
-            let merged = doc.merge(cursor, pulled);
+            let merged = doc.merge(cursor, pulled)?;
             if merged && let Err(e) = self.save_catalog(&mut doc) {
                 *cursor = before;
                 return Err(e);
             }
             (merged, doc.outgoing(cursor))
         };
-        // The network runs without the lock, so Imports and Removes aren't held
-        // up. The cursor is stored after the document, so it never counts
+        // The cursor is stored after the document, so it never counts
         // something as applied that was lost.
-        let sent = match outgoing {
-            Some(outgoing) => chunks::push(storage, LIBRARY_DIR, cursor, outgoing),
-            None => Ok(()),
-        };
         if *cursor != before {
-            let path = self.root.join(LIBRARY_CURSOR);
-            write_atomically(&self.staging(), &path, cursor.encode().as_bytes())?;
+            self.store_cursor(&cursor_path, cursor)?;
         }
-        sent.map(|()| merged)
+        pending.sends.extend(outgoing.map(|outgoing| Outbound {
+            dir: LIBRARY_DIR,
+            key: LIBRARY_KEY.to_owned(),
+            cursor_path,
+            outgoing,
+        }));
+        Ok(merged)
     }
 
     /// Exchanges the Preferences. `everything`: send local changes made before
@@ -179,8 +295,11 @@ impl Library {
         storage: &dyn Storage,
         exchanges: &mut Exchanges,
         everything: bool,
+        pending: &mut Pending,
     ) -> io::Result<()> {
         let target = Target {
+            key: PREFERENCES_KEY.to_owned(),
+            schema: preferences::SCHEMA_VERSION,
             dir: PREFERENCES_DIR,
             prefix: String::new(),
             path: self.preferences(),
@@ -188,12 +307,9 @@ impl Library {
         };
         let blobs = storage.list(PREFERENCES_DIR)?;
         let dirty = everything || self.dirty().keys.remove(PREFERENCES_KEY);
-        let cursor = exchanges
-            .docs
-            .entry(PREFERENCES_KEY.to_owned())
-            .or_insert_with(|| read_cursor(&target.cursor_path));
+        let cursor = exchanges.cursor(PREFERENCES_KEY, &target.cursor_path);
         let merged = self
-            .exchange_doc(storage, &target, &blobs, cursor, dirty, |bytes| {
+            .exchange_doc(storage, &target, &blobs, cursor, dirty, pending, |bytes| {
                 write_atomically(&self.staging(), &target.path, bytes).map(|()| true)
             })
             .inspect_err(|_| self.mark_dirty(PREFERENCES_KEY))?;
@@ -219,6 +335,7 @@ impl Library {
         storage: &dyn Storage,
         exchanges: &mut Exchanges,
         everything: bool,
+        pending: &mut Pending,
     ) -> io::Result<()> {
         let listing = storage.list(STATE_DIR)?;
         let mut remote: HashMap<&str, Vec<Blob>> = HashMap::new();
@@ -237,10 +354,14 @@ impl Library {
             }
         }
         exchanges.docs.retain(|import, _| !removed.contains(import));
-        self.delete_own_chunks(storage, &listing, &removed)?;
+        pending
+            .deletions
+            .extend(self.own_chunks_of(&listing, &removed));
         for (import, hash) in imports {
             let folder = self.root.join(&hash);
             let target = Target {
+                key: import.clone(),
+                schema: state::SCHEMA_VERSION,
                 dir: STATE_DIR,
                 prefix: format!("{import}."),
                 path: folder.join(state_name(&import)),
@@ -248,12 +369,9 @@ impl Library {
             };
             let blobs = remote.get(import.as_str()).map_or(&[][..], Vec::as_slice);
             let dirty = everything || self.dirty().keys.remove(&import);
-            let cursor = exchanges
-                .docs
-                .entry(import.clone())
-                .or_insert_with(|| read_cursor(&target.cursor_path));
+            let cursor = exchanges.cursor(&import, &target.cursor_path);
             let merged = self
-                .exchange_doc(storage, &target, blobs, cursor, dirty, |bytes| {
+                .exchange_doc(storage, &target, blobs, cursor, dirty, pending, |bytes| {
                     self.store_state(&folder, &import, &target.path, bytes)
                 })
                 .inspect_err(|_| self.mark_dirty(&import))?;
@@ -264,26 +382,19 @@ impl Library {
         Ok(())
     }
 
-    /// Deletes this Device's chunks among `listing`, the blobs of the state
-    /// directory, of the Imports `removed`. Other Devices delete theirs.
-    fn delete_own_chunks(
-        &self,
-        storage: &dyn Storage,
-        listing: &[Blob],
-        removed: &HashSet<String>,
-    ) -> io::Result<()> {
+    /// The names of this Device's chunks among `listing`, the blobs of the
+    /// state directory, of the Imports `removed`. Other Devices delete theirs.
+    fn own_chunks_of<'a>(
+        &'a self,
+        listing: &'a [Blob],
+        removed: &'a HashSet<String>,
+    ) -> impl Iterator<Item = String> + 'a {
         let device = self.device_id();
-        for blob in listing {
-            let own_of_removed = blob
-                .name
-                .split_once('.')
-                .and_then(|(import, chunk)| Some((import, chunk.rsplit_once('-')?.0)))
-                .is_some_and(|(import, from)| from == device && removed.contains(import));
-            if own_of_removed {
-                storage.delete(&format!("{STATE_DIR}/{}", blob.name))?;
-            }
-        }
-        Ok(())
+        listing.iter().filter_map(move |blob| {
+            let (import, chunk) = blob.name.split_once('.')?;
+            let own = chunk.rsplit_once('-')?.0 == device;
+            (own && removed.contains(import)).then(|| format!("{STATE_DIR}/{}", blob.name))
+        })
     }
 
     /// Deletes the Files `remote` lists that were Removed, unless the Library
@@ -350,10 +461,13 @@ impl Library {
 
     /// Exchanges the document `target` with `storage`, `blobs` being the
     /// listing of its directory: merges other Devices' new chunks into it and
-    /// sends this Device's own changes. Loads the document only if there is
-    /// something to do: `dirty`, new chunks or chunks the storage lost.
-    /// `store` writes merged bytes and tells whether it did (the document may
-    /// be gone). Returns what a merge changed.
+    /// collects this Device's own changes for `pending`. Loads the document
+    /// only if there is something to do: `dirty`, new chunks or chunks the
+    /// storage lost. `store` writes merged bytes and tells whether it did (the
+    /// document may be gone). Returns what a merge changed. Fails with
+    /// `Unsupported`, storing nothing, if the document has a newer schema
+    /// version than this app knows.
+    #[allow(clippy::too_many_arguments)]
     fn exchange_doc(
         &self,
         storage: &dyn Storage,
@@ -361,6 +475,7 @@ impl Library {
         blobs: &[Blob],
         cursor: &mut Cursor,
         dirty: bool,
+        pending: &mut Pending,
         store: impl FnOnce(&[u8]) -> io::Result<bool>,
     ) -> io::Result<Option<Merged>> {
         let before = cursor.clone();
@@ -378,7 +493,12 @@ impl Library {
                 .unwrap_or_default()
                 .with_actor(self.device_id.clone());
             let mut merged = None;
-            if cursor.apply(&mut doc, pulled) {
+            let changed = cursor.apply(&mut doc, pulled);
+            if let Err(e) = state::check_schema(&doc, target.schema) {
+                *cursor = before;
+                return Err(e);
+            }
+            if changed {
                 let after = doc.save();
                 // Gone: the Document was Removed. What was pulled is
                 // fetched again if it comes back.
@@ -395,22 +515,16 @@ impl Library {
         };
         // The cursor is stored after the document, so it never counts
         // something as applied that was lost.
-        let sent = match outgoing {
-            Some(outgoing) => chunks::push(storage, target.dir, cursor, outgoing),
-            None => Ok(()),
-        };
         if *cursor != before {
-            match write_atomically(
-                &self.staging(),
-                &target.cursor_path,
-                cursor.encode().as_bytes(),
-            ) {
-                // The folder is gone: the Document was Removed.
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                result => result?,
-            }
+            self.store_cursor(&target.cursor_path, cursor)?;
         }
-        sent.map(|()| merged)
+        pending.sends.extend(outgoing.map(|outgoing| Outbound {
+            dir: target.dir,
+            key: target.key.clone(),
+            cursor_path: target.cursor_path.clone(),
+            outgoing,
+        }));
+        Ok(merged)
     }
 
     /// The listed Documents whose stored File isn't among `remote`, with its path.
@@ -522,6 +636,7 @@ mod tests {
     use super::*;
     use crate::markup::{Highlight, PageRects, Rgb};
     use crate::storage::DirStorage;
+    use automerge::transaction::Transactable;
     use std::thread::sleep;
     use std::time::Duration;
 
@@ -1420,5 +1535,106 @@ mod tests {
         let document = b.import("again.pdf", b"shared document");
 
         assert_eq!(fs::read(&document.path).unwrap(), b"shared document");
+    }
+
+    /// Everything in the cloud, by path.
+    fn cloud_contents(cloud: &Cloud) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut found = std::collections::BTreeMap::new();
+        let mut todo = vec![cloud.dir.join("cloud")];
+        while let Some(dir) = todo.pop() {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    todo.push(path);
+                } else {
+                    found.insert(path.clone(), fs::read(path).unwrap());
+                }
+            }
+        }
+        found
+    }
+
+    /// Makes another Device store a chunk `name` in `dir` of a document with
+    /// schema version `version`, which this app doesn't know.
+    fn plant_schema_version(cloud: &Cloud, dir: &str, name: &str, version: u64) {
+        let mut doc = AutoCommit::new().with_actor(ActorId::random());
+        doc.put(automerge::ROOT, "version", version).unwrap();
+        let bytes: Vec<u8> = doc
+            .get_changes(&[])
+            .iter()
+            .flat_map(|change| change.raw_bytes().to_vec())
+            .collect();
+        cloud
+            .storage()
+            .put(&format!("{dir}/{name}"), &mut bytes.as_slice())
+            .unwrap();
+    }
+
+    #[test]
+    fn a_newer_schema_version_in_any_synced_document_pauses_sync_with_nothing_written() {
+        for case in ["library", "preferences", "state"] {
+            let mut cloud = Cloud::new();
+            let (a, b, id) = two_devices_with_a_document(&mut cloud);
+            let import = a.library.import_ids(&id)[0].clone();
+            let (dir, name) = match case {
+                "library" => ("v1/library".to_owned(), "f".repeat(32) + "-1"),
+                "preferences" => ("v1/preferences".to_owned(), "f".repeat(32) + "-1"),
+                _ => (
+                    "v1/state".to_owned(),
+                    format!("{import}.{}-1", "f".repeat(32)),
+                ),
+            };
+            plant_schema_version(&cloud, &dir, &name, 99);
+            let before = cloud_contents(&cloud);
+
+            // Local changes in every kind of document, ready to be sent.
+            a.import("new.pdf", b"imported after");
+            a.library.save_progress(&id, &progress(4, 100)).unwrap();
+            a.library
+                .set_default_highlight_color(
+                    &a.library
+                        .add_custom_color(Rgb { r: 1, g: 2, b: 3 }, 1)
+                        .unwrap()
+                        .id,
+                )
+                .unwrap();
+            let error = a.library.sync(&a.storage).unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported, "{case}");
+            assert_eq!(cloud_contents(&cloud), before, "{case}: nothing written");
+            assert_eq!(a.ids().len(), 2, "{case}: local state is untouched");
+            assert_eq!(b.document(&id).progress, None);
+
+            // Once the newer state is gone, nothing was lost.
+            fs::remove_file(cloud.dir.join("cloud").join(&dir).join(&name)).unwrap();
+            a.sync();
+            b.sync();
+            assert_eq!(b.ids().len(), 2, "{case}");
+            assert_eq!(b.document(&id).progress, Some(progress(4, 100)), "{case}");
+            assert_eq!(b.library.highlight_colors().len(), 7, "{case}");
+        }
+    }
+
+    #[test]
+    fn local_state_of_a_newer_schema_version_is_never_stamped_lower_and_pauses_sync() {
+        let mut cloud = Cloud::new();
+        let (a, _b, id) = two_devices_with_a_document(&mut cloud);
+        a.library.save_progress(&id, &progress(1, 1)).unwrap();
+        let import = a.library.import_ids(&id)[0].clone();
+        let path = a.home.join("library").join(&id).join(state_name(&import));
+        let mut newer = AutoCommit::load(&fs::read(&path).unwrap()).unwrap();
+        newer.put(automerge::ROOT, "version", 99_u64).unwrap();
+        fs::write(&path, newer.save()).unwrap();
+
+        a.library
+            .add_highlight(&id, vec![], "q", Rgb { r: 1, g: 2, b: 3 }, 1)
+            .unwrap();
+
+        let stored = AutoCommit::load(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(state::version(&stored), 99);
+        let before = cloud_contents(&cloud);
+        let error = a.library.sync(&a.storage).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(cloud_contents(&cloud), before);
     }
 }

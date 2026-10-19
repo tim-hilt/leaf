@@ -252,6 +252,64 @@ extension LibraryModelTests {
         #expect(SyncState.synced(now.addingTimeInterval(-300)).line(now: now) != "Synced just now")
     }
 
+    @Test func theStatusLineNamesBothBlockedStates() {
+        #expect(SyncState.wrongPassword.line() == "Wrong password")
+        #expect(SyncState.updateNeeded.line() == "Update LeafPDF to keep syncing")
+        #expect(SyncState.wrongPassword.isBlocked)
+        #expect(SyncState.updateNeeded.isBlocked)
+        #expect(!SyncState.offline.isBlocked)
+        #expect(!SyncState.syncing.isBlocked)
+        #expect(!SyncState.synced(.now).isBlocked)
+    }
+
+    @Test func theWarningShowsOnlyWhileSyncIsBlockedNotWhileOffline() async throws {
+        // Offline: the server is down.
+        let account = WebDAVAccount(url: "https://127.0.0.1:1", username: "reader", password: "secret")
+        #expect(credentials.save(account))
+        let offline = try openLibrary(syncIntervals: Self.fast)
+        #expect(try await eventually { offline.syncState == .offline })
+        #expect(!offline.showsSyncWarning)
+        await offline.disconnect()
+
+        // Not Connected.
+        let library = try openLibrary(syncIntervals: Self.fast)
+        #expect(!library.showsSyncWarning)
+
+        // Blocked: the cloud refuses access, as a server does with a wrong password.
+        try await library.connect(directory: cloud)
+        #expect(try await eventually { if case .synced = library.syncState { true } else { false } })
+        #expect(!library.showsSyncWarning)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: cloud.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cloud.path) }
+        #expect(try await eventually { library.syncState == .wrongPassword })
+        #expect(library.showsSyncWarning)
+        #expect(library.connection != nil)
+
+        await library.disconnect()
+        #expect(!library.showsSyncWarning)
+    }
+
+    @Test func aNewPasswordThatTheServerCantCheckLeavesTheConnectionAndTheSavedPasswordAlone() async throws {
+        let account = WebDAVAccount(url: "https://127.0.0.1:1", username: "reader", password: "old")
+        #expect(credentials.save(account))
+        let library = try openLibrary(syncIntervals: Self.fast)
+
+        await #expect(throws: ConnectError.Unreachable) { try await library.updatePassword("new") }
+
+        #expect(library.connection == CloudConnection(server: account.url))
+        #expect(credentials.load() == account)
+    }
+
+    @Test func updatingThePasswordWithoutAWebDAVConnectionDoesNothing() async throws {
+        let library = try openLibrary(syncIntervals: Self.fast)
+        try await library.connect(directory: cloud)
+
+        try await library.updatePassword("new")
+
+        #expect(library.connection == CloudConnection(server: cloud.path))
+        #expect(credentials.load() == nil)
+    }
+
     /// Two connected Devices that both hold one Document, imported on the first.
     private func twoDevicesWithADocument() async throws -> (LibraryModel, LibraryModel, String) {
         let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())

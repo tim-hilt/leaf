@@ -9,7 +9,8 @@ import UniformTypeIdentifiers
 /// PDF and open it, replacing any open Document. A cell's context menu
 /// (long-press, right-click) or VoiceOver action offers "Remove", after
 /// confirmation. A thin bar at the bottom shows "Syncing N of M Documents"
-/// while Files transfer. A window reading a Document that gets Removed (here or in
+/// while Files transfer, and a warning in the toolbar opens Settings while Sync is
+/// blocked (wrong password, update needed), but not while offline. A window reading a Document that gets Removed (here or in
 /// another window or Device) returns to the grid, without a message.
 ///
 /// With a keyboard (Mac, iPad), arrow keys move a highlight through the grid,
@@ -93,6 +94,7 @@ struct FileGalleryView: View {
             .navigationTitle("LeafPDF")
             .navigationDestination(for: LibraryDocument.self) { ReaderView(document: $0) }
             .toolbar {
+                if library.showsSyncWarning { SyncWarning(isShowingSettings: $isShowingSettings) }
                 SortMenu(sort: Bindable(library).sort)
                 Button("Import…", systemImage: "plus") { isImporting = true }
                 #if os(iOS)
@@ -261,6 +263,22 @@ private struct ImportAlert {
     init(failed url: URL, message: String) {
         title = "Couldn't import “\(url.lastPathComponent)”"
         self.message = message
+    }
+}
+
+/// The toolbar's warning, shown only while Sync is blocked, that opens Settings.
+private struct SyncWarning: View {
+    @Environment(LibraryModel.self) private var library
+    @Binding var isShowingSettings: Bool
+
+    var body: some View {
+        #if os(iOS)
+            Button("Sync Blocked", systemImage: "exclamationmark.triangle") { isShowingSettings = true }
+                .help(library.syncState.line())
+        #else
+            SettingsLink { Label("Sync Blocked", systemImage: "exclamationmark.triangle") }
+                .help(library.syncState.line())
+        #endif
     }
 }
 

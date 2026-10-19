@@ -8,6 +8,11 @@
 //! - every `Intervals::poll` while in the foreground,
 //! - once more at `background`, to flush; then the loop idles.
 //!
+//! A step that is blocked (`Status::is_blocked`) pauses the loop for good: it
+//! sends no request until `SyncLoop::use_storage` brings new credentials, and
+//! none at all after a newer schema version, which only an update of the app
+//! resolves.
+//!
 //! There is no async runtime: the thread sleeps on a condition variable until
 //! the next step is due. Dropping the `SyncLoop` is Disconnecting: running
 //! transfers are cancelled and the thread is joined.
@@ -29,6 +34,19 @@ pub enum Status {
     Synced { at: u64 },
     /// The last step failed. The next one retries.
     Offline,
+    /// The storage rejected the credentials. Blocked, until `use_storage`.
+    WrongPassword,
+    /// Another Device stored a newer schema version than this app knows.
+    /// Blocked: nothing is written until the app is updated.
+    UpdateNeeded,
+}
+
+impl Status {
+    /// Whether the user has to act for Sync to go on. Being offline is not
+    /// blocked.
+    pub fn is_blocked(self) -> bool {
+        matches!(self, Self::WrongPassword | Self::UpdateNeeded)
+    }
 }
 
 /// Told what happens in the loop, from its thread: never while a lock of the
@@ -79,6 +97,12 @@ struct Shared {
 
 /// What the loop is waiting for.
 struct State {
+    /// The storage steps use, which `use_storage` replaces.
+    storage: Arc<Cancellable>,
+    /// How often the storage was replaced.
+    storage_changes: u32,
+    /// The last step was blocked: no more steps until the storage is replaced.
+    blocked: bool,
     foreground: bool,
     /// A step is wanted at once: at start, `foreground` and `background`.
     immediate: bool,
@@ -91,6 +115,9 @@ struct State {
 impl State {
     /// When the next step is due; `None` for never.
     fn due(&self, now: Instant, intervals: &Intervals) -> Option<Instant> {
+        if self.blocked {
+            return None;
+        }
         if self.immediate {
             return Some(now);
         }
@@ -116,21 +143,23 @@ impl SyncLoop {
         let cancelled = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
+                storage: Arc::new(Cancellable {
+                    inner: storage,
+                    cancelled: cancelled.clone(),
+                }),
+                storage_changes: 0,
+                blocked: false,
                 foreground: true,
                 immediate: true,
                 changed: None,
                 poll: None,
             }),
             wake: Condvar::new(),
-            cancelled: cancelled.clone(),
-        });
-        let storage = Cancellable {
-            inner: storage,
             cancelled,
-        };
+        });
         let thread = {
             let shared = shared.clone();
-            thread::spawn(move || shared.run(&library, &storage, &*observer, &intervals))
+            thread::spawn(move || shared.run(&library, &*observer, &intervals))
         };
         Self {
             shared,
@@ -143,6 +172,21 @@ impl SyncLoop {
     /// out as one.
     pub fn local_change(&self) {
         self.update(|state| state.changed = Some(Instant::now()));
+    }
+
+    /// Syncs with `storage` from now on: new credentials, after Sync was
+    /// blocked by a rejected password. A step runs at once.
+    pub fn use_storage(&self, storage: Arc<dyn Storage>) {
+        let cancelled = self.shared.cancelled.clone();
+        self.update(|state| {
+            state.storage = Arc::new(Cancellable {
+                inner: storage,
+                cancelled,
+            });
+            state.storage_changes += 1;
+            state.blocked = false;
+            state.immediate = true;
+        });
     }
 
     /// The app is in the foreground: a step runs at once, and then every poll
@@ -193,13 +237,7 @@ impl Shared {
         self.cancelled.load(Relaxed)
     }
 
-    fn run(
-        &self,
-        library: &Library,
-        storage: &dyn Storage,
-        observer: &dyn Observer,
-        intervals: &Intervals,
-    ) {
+    fn run(&self, library: &Library, observer: &dyn Observer, intervals: &Intervals) {
         let mut state = self.lock();
         while !self.is_cancelled() {
             let now = Instant::now();
@@ -220,16 +258,26 @@ impl Shared {
                 Some(_) => {
                     state.immediate = false;
                     state.changed = None;
+                    let (storage, storage_changes) = (state.storage.clone(), state.storage_changes);
                     drop(state);
-                    self.step(library, storage, observer);
+                    let status = self.step(library, &*storage, observer);
                     state = self.lock();
+                    // New credentials since the step began aren't blocked yet.
+                    state.blocked = status.is_some_and(Status::is_blocked)
+                        && state.storage_changes == storage_changes;
                     state.poll = state.foreground.then(|| Instant::now() + intervals.poll);
                 }
             }
         }
     }
 
-    fn step(&self, library: &Library, storage: &dyn Storage, observer: &dyn Observer) {
+    /// Runs a step and tells how it ended; `None` if it was cancelled.
+    fn step(
+        &self,
+        library: &Library,
+        storage: &dyn Storage,
+        observer: &dyn Observer,
+    ) -> Option<Status> {
         observer.status(Status::Syncing);
         let changes = library.sync_changes();
         let result = library.sync_reporting(storage, &|done, total| {
@@ -238,7 +286,7 @@ impl Shared {
             }
         });
         if self.is_cancelled() {
-            return;
+            return None;
         }
         if library.sync_changes() != changes {
             observer.library_changed();
@@ -246,10 +294,16 @@ impl Shared {
         for id in library.take_markup_changes() {
             observer.markup_changed(&id);
         }
-        observer.status(match result {
+        let status = match result {
             Ok(()) => Status::Synced { at: now() },
-            Err(_) => Status::Offline,
-        });
+            Err(e) => match e.kind() {
+                io::ErrorKind::PermissionDenied => Status::WrongPassword,
+                io::ErrorKind::Unsupported => Status::UpdateNeeded,
+                _ => Status::Offline,
+            },
+        };
+        observer.status(status);
+        Some(status)
     }
 }
 
@@ -722,5 +776,108 @@ mod tests {
         // The cancelled upload left no File behind.
         let uploaded = home.cloud().list("v1/files").unwrap();
         assert!(uploaded.iter().all(|blob| blob.name != id));
+    }
+
+    /// A storage that counts its requests and fails each with `error`.
+    struct Failing {
+        error: io::ErrorKind,
+        requests: AtomicUsize,
+    }
+
+    impl Failing {
+        fn new(error: io::ErrorKind) -> Arc<Self> {
+            Arc::new(Self {
+                error,
+                requests: AtomicUsize::new(0),
+            })
+        }
+
+        fn fail<T>(&self) -> io::Result<T> {
+            self.requests.fetch_add(1, Relaxed);
+            Err(io::Error::from(self.error))
+        }
+    }
+
+    impl Storage for Failing {
+        fn put(&self, _: &str, _: &mut dyn Read) -> io::Result<()> {
+            self.fail()
+        }
+        fn get(&self, _: &str) -> io::Result<Option<Box<dyn Read + Send>>> {
+            self.fail()
+        }
+        fn list(&self, _: &str) -> io::Result<Vec<Blob>> {
+            self.fail()
+        }
+        fn delete(&self, _: &str) -> io::Result<()> {
+            self.fail()
+        }
+    }
+
+    #[test]
+    fn a_rejected_password_blocks_the_loop_until_new_credentials_come() {
+        let home = Home::new();
+        let (a, b) = (home.device("a"), home.device("b"));
+        let id = home.import(&a, b"on a");
+        let rejecting = Failing::new(io::ErrorKind::PermissionDenied);
+        let (sync_loop, events) = start(&a, rejecting.clone(), intervals(MS, MS));
+        eventually("being blocked", || {
+            events.last() == Some(Status::WrongPassword)
+        });
+        assert!(Status::WrongPassword.is_blocked());
+
+        // Neither polling, a local change nor the app's lifecycle sends more.
+        let requests = rejecting.requests.load(Relaxed);
+        sync_loop.local_change();
+        sync_loop.foreground();
+        sync_loop.background();
+        sleep(100 * MS);
+        assert_eq!(rejecting.requests.load(Relaxed), requests);
+        assert_eq!(events.last(), Some(Status::WrongPassword));
+
+        sync_loop.use_storage(home.cloud());
+
+        eventually("being synced", || {
+            matches!(events.last(), Some(Status::Synced { .. }))
+        });
+        b.sync(&*home.cloud()).unwrap();
+        assert_eq!(ids(&b), [id]);
+    }
+
+    #[test]
+    fn new_credentials_that_are_rejected_block_the_loop_again() {
+        let home = Home::new();
+        let a = home.device("a");
+        let (sync_loop, events) = start(
+            &a,
+            Failing::new(io::ErrorKind::PermissionDenied),
+            intervals(HOUR, 5 * MS),
+        );
+        eventually("being blocked", || events.steps() == 1);
+
+        let still_wrong = Failing::new(io::ErrorKind::PermissionDenied);
+        sync_loop.use_storage(still_wrong.clone());
+
+        eventually("the new storage to be tried", || events.steps() == 2);
+        sleep(50 * MS);
+        assert_eq!(still_wrong.requests.load(Relaxed), 1);
+        assert_eq!(events.last(), Some(Status::WrongPassword));
+    }
+
+    #[test]
+    fn a_newer_schema_version_blocks_the_loop_with_update_needed() {
+        let home = Home::new();
+        let a = home.device("a");
+        let newer = Failing::new(io::ErrorKind::Unsupported);
+        let (sync_loop, events) = start(&a, newer.clone(), intervals(MS, MS));
+        eventually("being blocked", || {
+            events.last() == Some(Status::UpdateNeeded)
+        });
+        assert!(Status::UpdateNeeded.is_blocked());
+        assert!(!Status::Offline.is_blocked());
+
+        let requests = newer.requests.load(Relaxed);
+        sync_loop.foreground();
+        sleep(100 * MS);
+        assert_eq!(newer.requests.load(Relaxed), requests);
     }
 }

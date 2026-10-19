@@ -2,7 +2,8 @@ import LeafCore
 import SwiftUI
 
 /// Settings' Cloud Backing: pick a Cloud Provider, Connect with Server URL,
-/// username and password, see how Sync stands, Disconnect.
+/// username and password, see how Sync stands, enter a new password when the
+/// server rejects the old one, Disconnect.
 struct CloudBackingSection: View {
     @Environment(LibraryModel.self) private var library
 
@@ -15,6 +16,7 @@ struct CloudBackingSection: View {
     @State private var password = ""
     @State private var error: String?
     @State private var isConnecting = false
+    @State private var newPassword = ""
 
     var body: some View {
         Section("Cloud Backing") {
@@ -25,6 +27,7 @@ struct CloudBackingSection: View {
             if let connection = library.connection {
                 LabeledContent("Server", value: connection.server)
                 LabeledContent("Status", value: library.syncState.line())
+                if library.syncState == .wrongPassword { passwordForm }
                 Button("Disconnect", role: .destructive) { Task { await library.disconnect() } }
             } else if isChoosingWebDAV {
                 form
@@ -60,6 +63,30 @@ struct CloudBackingSection: View {
         }
         Button("Connect") { Task { await connect() } }
             .disabled(isConnecting || url.isEmpty || username.isEmpty || password.isEmpty)
+    }
+
+    /// Connected, but the server rejected the password: a new one resumes Sync.
+    @ViewBuilder private var passwordForm: some View {
+        SecureField("New Password", text: $newPassword)
+        if let error {
+            Text(error).foregroundStyle(.red)
+        }
+        Button("Update Password") { Task { await updatePassword() } }
+            .disabled(isConnecting || newPassword.isEmpty)
+    }
+
+    private func updatePassword() async {
+        isConnecting = true
+        defer { isConnecting = false }
+        do {
+            try await library.updatePassword(newPassword)
+            error = nil
+            newPassword = ""
+        } catch let failure as ConnectError {
+            error = failure.message
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 
     private func connect() async {

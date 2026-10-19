@@ -16,7 +16,7 @@ use crate::markup::Rgb;
 use crate::state;
 use automerge::{ActorId, AutoCommit, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 
-const SCHEMA_VERSION: u64 = 1;
+pub(crate) const SCHEMA_VERSION: u64 = 1;
 
 /// One of the Highlight Colors that always exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

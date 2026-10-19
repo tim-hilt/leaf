@@ -91,12 +91,23 @@ enum SyncState: Equatable {
     case synced(Date)
     /// The last Sync step failed; the next one retries.
     case offline
+    /// Blocked: the server rejected the password. Still Connected; Sync resumes
+    /// once Settings gets the new one.
+    case wrongPassword
+    /// Blocked: another Device synced a newer version than this app knows, so
+    /// nothing is written until the app is updated.
+    case updateNeeded
+
+    /// Whether the user has to act for Sync to go on. Being offline isn't blocked.
+    var isBlocked: Bool { self == .wrongPassword || self == .updateNeeded }
 
     /// What Settings says.
     func line(now: Date = .now) -> String {
         switch self {
         case .syncing: "Syncing…"
         case .offline: "Offline"
+        case .wrongPassword: "Wrong password"
+        case .updateNeeded: "Update LeafPDF to keep syncing"
         case .synced(let date):
             now.timeIntervalSince(date) < 60 ? "Synced just now" : "Synced \(date.formatted(.relative(presentation: .named)))"
         }
@@ -163,6 +174,8 @@ private final class SyncRelay: SyncObserver {
             case .syncing: .syncing
             case .synced(let at): .synced(Date(timeIntervalSince1970: Double(at) / 1000))
             case .offline: .offline
+            case .wrongPassword: .wrongPassword
+            case .updateNeeded: .updateNeeded
             }
         Task { @MainActor [onStatus] in onStatus(state) }
     }
@@ -212,6 +225,9 @@ final class LibraryModel {
     private(set) var connection: CloudConnection?
     /// Where Sync stands. Only meaningful while `connection` isn't nil.
     private(set) var syncState = SyncState.syncing
+    /// Sync is blocked until the user acts: the Gallery shows a warning that
+    /// opens Settings. Being offline is no reason for one.
+    var showsSyncWarning: Bool { connection != nil && syncState.isBlocked }
     /// The File transfers of the running Sync; nil while none runs. Reading
     /// Progress, Markup and Highlight Colors Sync without it.
     private(set) var transfer: FileTransfer?
@@ -298,6 +314,21 @@ final class LibraryModel {
         }
         connection = CloudConnection(server: url)
         credentials.save(WebDAVAccount(url: url, username: username, password: password))
+    }
+
+    /// Gives the Connection a new password, after the server's has changed, without
+    /// Disconnecting: Sync resumes at once. Checks it first and throws a
+    /// `ConnectError` if it is wrong; the Connection and the saved password then
+    /// stay as they were. Does nothing unless Connected to a WebDAV server.
+    func updatePassword(_ password: String) async throws {
+        guard let account = credentials.load(), let id = connectionID else { return }
+        let core = core
+        try await Task.detached {
+            try core.updateWebdavCredentials(url: account.url, username: account.username, password: password)
+        }.value
+        // Disconnected meanwhile: nothing to keep.
+        guard connectionID == id else { return }
+        credentials.save(WebDAVAccount(url: account.url, username: account.username, password: password))
     }
 
     /// Connects to the directory `directory` as if it were a cloud, for tests.

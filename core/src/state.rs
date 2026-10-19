@@ -12,8 +12,9 @@ use automerge::{
     ActorId, AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value,
     transaction::Transactable,
 };
+use std::io;
 
-const SCHEMA_VERSION: u64 = 2;
+pub(crate) const SCHEMA_VERSION: u64 = 2;
 
 /// The Automerge document `existing` with `change` made as `actor`, stamped
 /// with the current schema version (never lowering a newer one) and compacted. A missing or unreadable
@@ -40,12 +41,37 @@ pub(crate) fn update_versioned(
         .with_actor(actor.clone());
     change(&mut doc);
     // Never lowers the version, and adds no change if it is stamped already.
-    let stored = scalar(&doc, &ROOT, "version").and_then(|v| v.as_u64());
-    if stored.is_none_or(|stored| stored < version) {
+    if self::version(&doc) < version {
         doc.put(ROOT, "version", version)
             .expect("a root map accepts new keys");
     }
     doc.save()
+}
+
+/// The schema version stamped in `doc`: the highest one if Devices stamped it
+/// concurrently, 0 if none.
+pub(crate) fn version(doc: &AutoCommit) -> u64 {
+    doc.get_all(ROOT, "version")
+        .map(|values| {
+            values
+                .into_iter()
+                .filter_map(|(value, _)| value.as_u64())
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+}
+
+/// Fails with `Unsupported` if `doc` has a newer schema version than `known`:
+/// this app doesn't understand it and must neither merge nor write it.
+pub(crate) fn check_schema(doc: &AutoCommit, known: u64) -> io::Result<()> {
+    if version(doc) > known {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a synced document has a newer schema version",
+        ));
+    }
+    Ok(())
 }
 
 /// Every map at the root key `key` of `doc`, the one Automerge picks as winner
@@ -110,6 +136,28 @@ mod tests {
         let older = update(Some(&newer), &actor(), |_| {});
         let doc = AutoCommit::load(&older).unwrap();
         assert_eq!(scalar(&doc, &ROOT, "version"), Some(ScalarValue::Uint(9)));
+    }
+
+    #[test]
+    fn the_version_of_concurrent_stamps_is_the_highest_whichever_wins() {
+        let old = update_versioned(None, &ActorId::from([1; 16]), 1, |_| {});
+        let new = update_versioned(None, &ActorId::from([2; 16]), 3, |_| {});
+        for (mut first, mut second) in [(old.clone(), new.clone()), (new, old)] {
+            let mut doc = AutoCommit::load(&std::mem::take(&mut first)).unwrap();
+            doc.merge(&mut AutoCommit::load(&std::mem::take(&mut second)).unwrap())
+                .unwrap();
+            assert_eq!(version(&doc), 3);
+        }
+    }
+
+    #[test]
+    fn a_document_with_a_newer_version_than_known_fails_the_schema_check() {
+        let doc = AutoCommit::load(&update_versioned(None, &actor(), 3, |_| {})).unwrap();
+        assert!(check_schema(&doc, 3).is_ok());
+        assert_eq!(
+            check_schema(&doc, 2).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
     }
 
     #[test]
