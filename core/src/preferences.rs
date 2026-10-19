@@ -12,11 +12,45 @@
 //! first add a Custom Color concurrently each create their own `custom_colors`
 //! map; reading lists the colors of all of them, writing goes to the winner.
 
-use crate::markup::{self, BUILT_IN_COLORS, BuiltInColor, Rgb};
+use crate::markup::Rgb;
 use crate::state;
-use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 
 const SCHEMA_VERSION: u64 = 1;
+
+/// One of the Highlight Colors that always exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltInColor {
+    pub name: &'static str,
+    pub rgb: Rgb,
+}
+
+const fn built_in(name: &'static str, r: u8, g: u8, b: u8) -> BuiltInColor {
+    BuiltInColor {
+        name,
+        rgb: Rgb { r, g, b },
+    }
+}
+
+/// The built-in Highlight Colors, yellow (the default) first.
+pub const BUILT_IN_COLORS: [BuiltInColor; 6] = [
+    built_in("Yellow", 255, 235, 60),
+    built_in("Green", 126, 217, 87),
+    built_in("Blue", 102, 178, 255),
+    built_in("Pink", 255, 128, 191),
+    built_in("Purple", 178, 140, 255),
+    built_in("Red", 255, 99, 99),
+];
+
+impl BuiltInColor {
+    /// The built-in color called `name`, if there is one.
+    pub fn named(name: &str) -> Option<Self> {
+        BUILT_IN_COLORS.into_iter().find(|c| c.name == name)
+    }
+
+    /// Yellow, the Default Highlight Color until the user picks another.
+    pub const YELLOW: Self = BUILT_IN_COLORS[0];
+}
 
 /// A color to highlight in: a built-in one, or a Custom Color of the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,11 +143,8 @@ pub(crate) fn add_custom_color(
     let bytes = state::update_versioned(existing, SCHEMA_VERSION, |doc| {
         let after = custom_colors(doc).last().and_then(|c| added_at(&c.id));
         let time = after.map_or(now, |last| now.max(last + 1));
-        let id = format!("{time:013x}-{}", markup::new_id());
-        let map = state::maps(doc, "custom_colors").pop().unwrap_or_else(|| {
-            doc.put_object(ROOT, "custom_colors", ObjType::Map)
-                .expect("a root map accepts new keys")
-        });
+        let id = format!("{time:013x}-{}", state::new_id());
+        let map = state::map_to_write(doc, "custom_colors");
         doc.put(&map, id.as_str(), ScalarValue::Uint(rgb.packed()))
             .expect("a map accepts new keys");
         added = Some(HighlightColor {
@@ -184,6 +215,15 @@ mod tests {
         a.merge(&mut b).unwrap();
         b2.merge(&mut a2).unwrap();
         [a.save(), b2.save()]
+    }
+
+    #[test]
+    fn the_built_in_colors_start_with_yellow_and_are_distinct() {
+        assert_eq!(BUILT_IN_COLORS.len(), 6);
+        assert_eq!(BUILT_IN_COLORS[0].name, "Yellow");
+        for (i, a) in BUILT_IN_COLORS.iter().enumerate() {
+            assert!(BUILT_IN_COLORS[i + 1..].iter().all(|b| a.rgb != b.rgb));
+        }
     }
 
     #[test]

@@ -77,7 +77,8 @@ final class ReaderPDFView: PDFView {
         didSet { if pageNotes != oldValue { noteIcons.refresh() } }
     }
 
-    /// The color of page Notes' icons: the built-in yellow.
+    /// The color of page Notes' icons. The owner sets it to the core's built-in yellow;
+    /// this is only a stand-in until then.
     var pageNoteColor = RGB(1, 0.92, 0.24) {
         didSet { if pageNoteColor != oldValue { noteIcons.refresh() } }
     }
@@ -319,8 +320,9 @@ final class ReaderPDFView: PDFView {
         pageNotes.last { noteIconRect(of: $0)?.contains(point) == true }
     }
 
-    /// Every Note icon to draw, in the view's coordinates, in its color.
-    var visibleNoteIcons: [(rect: CGRect, color: RGB)] {
+    /// Every Note icon, in the view's coordinates, in its color; also those
+    /// scrolled out of view.
+    var noteIconsToDraw: [(rect: CGRect, color: RGB)] {
         highlights.compactMap { h in noteIconRect(of: h).map { ($0, h.color) } }
             + pageNotes.compactMap { n in noteIconRect(of: n).map { ($0, pageNoteColor) } }
     }
@@ -508,16 +510,19 @@ final class ReaderPDFView: PDFView {
             addGestureRecognizer(doubleTap)
             // A double-tap zooms, so a single tap only counts once it can no
             // longer become one.
-            let singleTap = UITapGestureRecognizer(target: self, action: #selector(didSingleTap))
-            singleTap.require(toFail: doubleTap)
             // PDFKit's own tap handling (links, selection) must keep working.
             let filter = SingleTapFilter(view: self)
             singleTapFilter = filter
-            singleTap.delegate = filter
-            addGestureRecognizer(singleTap)
             let longPress = UILongPressGestureRecognizer(target: self, action: #selector(didLongPress))
             longPress.delegate = filter
             addGestureRecognizer(longPress)
+            let singleTap = UITapGestureRecognizer(target: self, action: #selector(didSingleTap))
+            singleTap.require(toFail: doubleTap)
+            // A long press selects (or offers "Add Note"); lifting the finger
+            // must not also open a popover or toggle Immersive Mode.
+            singleTap.require(toFail: longPress)
+            singleTap.delegate = filter
+            addGestureRecognizer(singleTap)
             addInteraction(addNoteMenu)
             NotificationCenter.default.addObserver(
                 self, selector: #selector(selectionDidChange), name: .PDFViewSelectionChanged, object: self)

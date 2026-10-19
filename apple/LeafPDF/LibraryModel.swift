@@ -248,7 +248,7 @@ final class LibraryModel {
         guard let index = documents.firstIndex(where: { $0.id == document.id }) else { return }
         let progress = ReadingProgress(
             pageIndex: UInt32(place.pageIndex), x: place.point.x, y: place.point.y,
-            lastRead: UInt64(max(0, lastRead.timeIntervalSince1970 * 1000).rounded()))
+            lastRead: lastRead.millisecondsSince1970)
         documents[index].progress = progress
 
         let core = core, id = document.id
@@ -277,8 +277,7 @@ final class LibraryModel {
                 pageIndex: UInt32(page.pageIndex),
                 rects: page.rects.map { Rect(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height) })
         }
-        let rgb = Rgb(defaultHighlightColor.color)
-        let milliseconds = UInt64(max(0, created.timeIntervalSince1970 * 1000).rounded())
+        let rgb = Rgb(defaultHighlightColor.color), milliseconds = created.millisecondsSince1970
         let stored = await inStateOrder {
             try? core.addHighlight(
                 id: id, anchor: pages, quotedText: anchor.quotedText, color: rgb, created: milliseconds)
@@ -330,8 +329,7 @@ final class LibraryModel {
     /// text (`setText`). Nil for a Document that was Removed, or if the write failed.
     func addPageNote(at place: Place, to document: LibraryDocument, at created: Date = .now) async -> PageNote? {
         guard documents.contains(where: { $0.id == document.id }) else { return nil }
-        let core = core, id = document.id
-        let milliseconds = UInt64(max(0, created.timeIntervalSince1970 * 1000).rounded())
+        let core = core, id = document.id, milliseconds = created.millisecondsSince1970
         let stored = await inStateOrder {
             try? core.addPageNote(
                 id: id, pageIndex: UInt32(place.pageIndex), x: place.point.x, y: place.point.y, created: milliseconds)
@@ -373,8 +371,7 @@ final class LibraryModel {
     /// stored it. Nil if that failed.
     @discardableResult
     func addCustomColor(_ color: RGB, at added: Date = .now) async -> HighlightColor? {
-        let core = core, rgb = Rgb(color)
-        let milliseconds = UInt64(max(0, added.timeIntervalSince1970 * 1000).rounded())
+        let core = core, rgb = Rgb(color), milliseconds = added.millisecondsSince1970
         guard let stored = await inStateOrder({ try? core.addCustomColor(rgb: rgb, added: milliseconds) })
         else { return nil }
         let custom = HighlightColor(stored)
@@ -489,6 +486,11 @@ extension Rgb {
     fileprivate init(_ color: RGB) {
         self.init(r: color.r.byte, g: color.g.byte, b: color.b.byte)
     }
+}
+
+extension Date {
+    /// This time as the core takes it: whole milliseconds since the Unix epoch, none before.
+    fileprivate var millisecondsSince1970: UInt64 { UInt64(max(0, timeIntervalSince1970 * 1000).rounded()) }
 }
 
 extension Double {

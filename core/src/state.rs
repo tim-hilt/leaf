@@ -2,12 +2,14 @@
 //! its File, shared by Reading Progress (`progress`) and Markup (`markup`).
 //!
 //! Schema, version 2: the root holds `version`, a `progress` map (see
-//! `progress`) and a `highlights` map (see `markup`). Version 1 had no
-//! `highlights`; it reads as a document without Markup, and its first write
-//! makes it version 2.
+//! `progress`), and `highlights` and `page_notes` maps (see `markup`). Version
+//! 1 had no Markup; its first write makes it version 2.
+//!
+//! Also the Automerge helpers shared with Preferences (`preferences`).
 
 use automerge::{
-    AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
+    ActorId, AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value,
+    transaction::Transactable,
 };
 
 const SCHEMA_VERSION: u64 = 2;
@@ -50,6 +52,20 @@ pub(crate) fn maps(doc: &AutoCommit, key: &str) -> Vec<ObjId> {
         .unwrap_or_default()
 }
 
+/// The map at the root key `key` of `doc` to add entries to: Automerge's winner
+/// if devices created several, a new one if there is none.
+pub(crate) fn map_to_write(doc: &mut AutoCommit, key: &str) -> ObjId {
+    maps(doc, key).pop().unwrap_or_else(|| {
+        doc.put_object(ROOT, key, ObjType::Map)
+            .expect("a root map accepts new keys")
+    })
+}
+
+/// A new ID for a map entry, unique across devices.
+pub(crate) fn new_id() -> String {
+    ActorId::random().to_hex_string()
+}
+
 /// The scalar at `prop` of `obj`, if there is one.
 pub(crate) fn scalar(doc: &AutoCommit, obj: &ObjId, prop: impl Into<Prop>) -> Option<ScalarValue> {
     match doc.get(obj, prop).ok()?? {
@@ -66,6 +82,11 @@ mod tests {
     fn an_update_stamps_the_schema_version() {
         let doc = AutoCommit::load(&update(None, |_| {})).unwrap();
         assert_eq!(scalar(&doc, &ROOT, "version"), Some(ScalarValue::Uint(2)));
+    }
+
+    #[test]
+    fn new_ids_differ() {
+        assert_ne!(new_id(), new_id());
     }
 
     #[test]

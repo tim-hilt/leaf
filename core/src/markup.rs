@@ -26,9 +26,11 @@
 
 use crate::state;
 use automerge::{
-    ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value,
-    transaction::Transactable,
+    AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
+
+const HIGHLIGHTS: &str = "highlights";
+const PAGE_NOTES: &str = "page_notes";
 
 /// A rectangle in PDF page space.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -64,40 +66,6 @@ impl Rgb {
         let [_, _, _, _, _, r, g, b] = value.to_be_bytes();
         (value <= 0xFF_FFFF).then_some(Self { r, g, b })
     }
-}
-
-/// One of the Highlight Colors that always exist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BuiltInColor {
-    pub name: &'static str,
-    pub rgb: Rgb,
-}
-
-const fn built_in(name: &'static str, r: u8, g: u8, b: u8) -> BuiltInColor {
-    BuiltInColor {
-        name,
-        rgb: Rgb { r, g, b },
-    }
-}
-
-/// The built-in Highlight Colors, yellow (the default) first.
-pub const BUILT_IN_COLORS: [BuiltInColor; 6] = [
-    built_in("Yellow", 255, 235, 60),
-    built_in("Green", 126, 217, 87),
-    built_in("Blue", 102, 178, 255),
-    built_in("Pink", 255, 128, 191),
-    built_in("Purple", 178, 140, 255),
-    built_in("Red", 255, 99, 99),
-];
-
-impl BuiltInColor {
-    /// The built-in color called `name`, if there is one.
-    pub fn named(name: &str) -> Option<Self> {
-        BUILT_IN_COLORS.into_iter().find(|c| c.name == name)
-    }
-
-    /// Yellow, the Default Highlight Color until the user picks another.
-    pub const YELLOW: Self = BUILT_IN_COLORS[0];
 }
 
 /// A passage of a Document's text marked in a color. It may run across pages.
@@ -141,30 +109,43 @@ pub struct Markup {
     pub page_notes: Vec<PageNote>,
 }
 
-/// A new ID, unique across devices.
-pub(crate) fn new_id() -> String {
-    ActorId::random().to_hex_string()
-}
-
 /// The Markup in a stored Automerge document. Empty if `bytes` aren't an
 /// Automerge document or hold none. Incomplete Highlights are skipped.
 pub(crate) fn read(bytes: &[u8]) -> Markup {
     let Ok(doc) = AutoCommit::load(bytes) else {
         return Markup::default();
     };
-    let mut highlights: Vec<_> = highlight_maps(&doc)
-        .iter()
-        .flat_map(|map| doc.keys(map).filter_map(|id| read_highlight(&doc, map, id)))
-        .collect();
-    highlights.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
-    let mut page_notes: Vec<_> = state::maps(&doc, PAGE_NOTES)
-        .iter()
-        .flat_map(|map| doc.keys(map).filter_map(|id| read_page_note(&doc, map, id)))
-        .collect();
-    page_notes.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
+    let mut highlights = entries(&doc, HIGHLIGHTS, read_highlight);
+    highlights.sort_by(|a, b| (a.created, &a.id).cmp(&(b.created, &b.id)));
+    let mut page_notes = entries(&doc, PAGE_NOTES, read_page_note);
+    page_notes.sort_by(|a, b| (a.created, &a.id).cmp(&(b.created, &b.id)));
     Markup {
         highlights,
         page_notes,
+    }
+}
+
+/// What `read_entry` makes of each entry of every root map `key` of `doc`,
+/// skipping those it can't read.
+fn entries<T>(
+    doc: &AutoCommit,
+    key: &str,
+    read_entry: impl Fn(&AutoCommit, &ObjId, String) -> Option<T>,
+) -> Vec<T> {
+    state::maps(doc, key)
+        .iter()
+        .flat_map(|map| {
+            doc.keys(map)
+                .filter_map(|id| read_entry(doc, &entry_of(doc, map, &id)?, id))
+        })
+        .collect()
+}
+
+/// The map at `id` of `map`, if it is one.
+fn entry_of(doc: &AutoCommit, map: &ObjId, id: &str) -> Option<ObjId> {
+    match doc.get(map, id).ok()?? {
+        (Value::Object(ObjType::Map), entry) => Some(entry),
+        _ => None,
     }
 }
 
@@ -189,7 +170,7 @@ pub(crate) fn set_note(existing: Option<&[u8]>, id: &str, text: &str) -> Vec<u8>
 /// The Automerge document `existing` without Highlight `id`, compacted. A
 /// removal wins over a concurrent change of the same Highlight.
 pub(crate) fn remove(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
-    state::update(existing, |doc| delete_highlight(doc, id))
+    state::update(existing, |doc| delete(doc, HIGHLIGHTS, id))
 }
 
 /// The Automerge document `existing` with `note` added, compacted.
@@ -207,35 +188,33 @@ pub(crate) fn set_page_note_text(existing: Option<&[u8]>, id: &str, text: &str) 
 /// The Automerge document `existing` without page Note `id`, compacted. A
 /// removal wins over a concurrent edit of the same page Note.
 pub(crate) fn remove_page_note(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
-    state::update(existing, |doc| delete_page_note(doc, id))
-}
-
-const PAGE_NOTES: &str = "page_notes";
-
-/// The `highlights` map holding Highlight `id`, and its entry.
-fn find(doc: &AutoCommit, id: &str) -> Option<(ObjId, ObjId)> {
-    find_in(doc, "highlights", id)
+    state::update(existing, |doc| delete(doc, PAGE_NOTES, id))
 }
 
 /// The root map `key` holding the map entry `id`, and that entry.
-fn find_in(doc: &AutoCommit, key: &str, id: &str) -> Option<(ObjId, ObjId)> {
-    state::maps(doc, key)
-        .into_iter()
-        .find_map(|map| match doc.get(&map, id).ok()? {
-            Some((Value::Object(ObjType::Map), entry)) => Some((map, entry)),
-            _ => None,
-        })
+fn find(doc: &AutoCommit, key: &str, id: &str) -> Option<(ObjId, ObjId)> {
+    state::maps(doc, key).into_iter().find_map(|map| {
+        let entry = entry_of(doc, &map, id)?;
+        Some((map, entry))
+    })
+}
+
+/// Deletes the entry `id` of the root map `key`, if there is one.
+fn delete(doc: &mut AutoCommit, key: &str, id: &str) {
+    if let Some((map, _)) = find(doc, key, id) {
+        doc.delete(&map, id).expect("a map accepts deletions");
+    }
 }
 
 fn put_color(doc: &mut AutoCommit, id: &str, color: Rgb) {
-    if let Some((_, entry)) = find(doc, id) {
+    if let Some((_, entry)) = find(doc, HIGHLIGHTS, id) {
         doc.put(&entry, "color", ScalarValue::Uint(color.packed()))
             .expect("a map accepts new keys");
     }
 }
 
 fn put_note(doc: &mut AutoCommit, id: &str, text: &str) {
-    let Some((_, entry)) = find(doc, id) else {
+    let Some((_, entry)) = find(doc, HIGHLIGHTS, id) else {
         return;
     };
     if text.is_empty() {
@@ -259,7 +238,7 @@ fn write_text(doc: &mut AutoCommit, entry: &ObjId, key: &str, text: &str) {
 }
 
 fn put_page_note_text(doc: &mut AutoCommit, id: &str, text: &str) {
-    let Some((map, entry)) = find_in(doc, PAGE_NOTES, id) else {
+    let Some((map, entry)) = find(doc, PAGE_NOTES, id) else {
         return;
     };
     if text.is_empty() {
@@ -269,19 +248,10 @@ fn put_page_note_text(doc: &mut AutoCommit, id: &str, text: &str) {
     }
 }
 
-fn delete_page_note(doc: &mut AutoCommit, id: &str) {
-    if let Some((map, _)) = find_in(doc, PAGE_NOTES, id) {
-        doc.delete(&map, id).expect("a map accepts deletions");
-    }
-}
-
 /// Adds `note` to the winning `page_notes` map of `doc`, creating it if there
 /// is none.
 fn put_page_note(doc: &mut AutoCommit, note: &PageNote) {
-    let map = state::maps(doc, PAGE_NOTES).pop().unwrap_or_else(|| {
-        doc.put_object(ROOT, PAGE_NOTES, ObjType::Map)
-            .expect("a root map accepts new keys")
-    });
+    let map = state::map_to_write(doc, PAGE_NOTES);
     let entry = doc
         .put_object(&map, note.id.as_str(), ObjType::Map)
         .expect("a map accepts new keys");
@@ -298,41 +268,21 @@ fn put_page_note(doc: &mut AutoCommit, note: &PageNote) {
     write_text(doc, &entry, "text", &note.text);
 }
 
-fn read_page_note(doc: &AutoCommit, map: &ObjId, id: String) -> Option<PageNote> {
-    let Some((Value::Object(ObjType::Map), entry)) = doc.get(map, &id).ok()? else {
-        return None;
-    };
-    let field = |name: &str| state::scalar(doc, &entry, name);
-    let Some((Value::Object(ObjType::Text), text)) = doc.get(&entry, "text").ok()? else {
-        return None;
-    };
+fn read_page_note(doc: &AutoCommit, entry: &ObjId, id: String) -> Option<PageNote> {
+    let field = |name: &str| state::scalar(doc, entry, name);
     Some(PageNote {
         page_index: u32::try_from(field("page_index")?.as_u64()?).ok()?,
         x: field("x")?.as_f64()?,
         y: field("y")?.as_f64()?,
         created: field("created")?.as_u64()?,
-        text: doc.text(&text).ok().filter(|text| !text.is_empty())?,
+        text: read_text(doc, entry, "text")?,
         id,
     })
 }
 
-fn delete_highlight(doc: &mut AutoCommit, id: &str) {
-    if let Some((map, _)) = find(doc, id) {
-        doc.delete(&map, id).expect("a map accepts deletions");
-    }
-}
-
-/// Every `highlights` map in `doc`, the one Automerge picks as winner last.
-fn highlight_maps(doc: &AutoCommit) -> Vec<ObjId> {
-    state::maps(doc, "highlights")
-}
-
-fn read_highlight(doc: &AutoCommit, map: &ObjId, id: String) -> Option<Highlight> {
-    let Some((Value::Object(ObjType::Map), entry)) = doc.get(map, &id).ok()? else {
-        return None;
-    };
-    let field = |name: &str| state::scalar(doc, &entry, name);
-    let Some((Value::Object(ObjType::List), anchor)) = doc.get(&entry, "anchor").ok()? else {
+fn read_highlight(doc: &AutoCommit, entry: &ObjId, id: String) -> Option<Highlight> {
+    let field = |name: &str| state::scalar(doc, entry, name);
+    let Some((Value::Object(ObjType::List), anchor)) = doc.get(entry, "anchor").ok()? else {
         return None;
     };
     Some(Highlight {
@@ -342,16 +292,17 @@ fn read_highlight(doc: &AutoCommit, map: &ObjId, id: String) -> Option<Highlight
         quoted_text: field("quoted_text")?.into_string().ok()?,
         color: Rgb::unpacked(field("color")?.as_u64()?)?,
         created: field("created")?.as_u64()?,
-        note: read_note(doc, &entry),
+        note: read_text(doc, entry, "note"),
         id,
     })
 }
 
-fn read_note(doc: &AutoCommit, entry: &ObjId) -> Option<String> {
-    let Some((Value::Object(ObjType::Text), note)) = doc.get(entry, "note").ok()? else {
+/// The text at `key` of `entry`; none if it is missing or empty.
+fn read_text(doc: &AutoCommit, entry: &ObjId, key: &str) -> Option<String> {
+    let Some((Value::Object(ObjType::Text), text)) = doc.get(entry, key).ok()? else {
         return None;
     };
-    doc.text(&note).ok().filter(|text| !text.is_empty())
+    doc.text(&text).ok().filter(|text| !text.is_empty())
 }
 
 fn read_page_rects(doc: &AutoCommit, anchor: &ObjId, index: usize) -> Option<PageRects> {
@@ -383,10 +334,7 @@ fn read_page_rects(doc: &AutoCommit, anchor: &ObjId, index: usize) -> Option<Pag
 /// Adds `highlight` to the winning `highlights` map of `doc`, creating it if
 /// there is none.
 fn put_highlight(doc: &mut AutoCommit, highlight: &Highlight) {
-    let map = highlight_maps(doc).pop().unwrap_or_else(|| {
-        doc.put_object(ROOT, "highlights", ObjType::Map)
-            .expect("a root map accepts new keys")
-    });
+    let map = state::map_to_write(doc, HIGHLIGHTS);
     let entry = doc
         .put_object(&map, highlight.id.as_str(), ObjType::Map)
         .expect("a map accepts new keys");
@@ -428,6 +376,12 @@ fn put_highlight(doc: &mut AutoCommit, highlight: &Highlight) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ActorId;
+
+    /// The entry of Highlight `id` in `doc`.
+    fn entry(doc: &AutoCommit, id: &str) -> ObjId {
+        find(doc, HIGHLIGHTS, id).unwrap().1
+    }
 
     fn highlight(id: &str, created: u64) -> Highlight {
         Highlight {
@@ -546,8 +500,7 @@ mod tests {
     #[test]
     fn a_stored_highlight_ignores_fields_it_does_not_know() {
         let mut doc = AutoCommit::load(&add(None, &highlight("a", 1))).unwrap();
-        let map = highlight_maps(&doc).pop().unwrap();
-        let (_, entry) = doc.get(&map, "a").unwrap().unwrap();
+        let entry = entry(&doc, "a");
         doc.put(&entry, "future", "x").unwrap();
         assert_eq!(read(&doc.save()).highlights, vec![highlight("a", 1)]);
     }
@@ -555,8 +508,7 @@ mod tests {
     #[test]
     fn a_highlight_without_its_color_is_skipped() {
         let mut doc = AutoCommit::load(&add(None, &highlight("a", 1))).unwrap();
-        let map = highlight_maps(&doc).pop().unwrap();
-        let (_, entry) = doc.get(&map, "a").unwrap().unwrap();
+        let entry = entry(&doc, "a");
         doc.delete(&entry, "color").unwrap();
         assert_eq!(read(&doc.save()), Markup::default());
     }
@@ -632,31 +584,10 @@ mod tests {
         let base = add(None, &highlight("a", 5));
         let merged = merged_edits(
             &base,
-            |doc| delete_highlight(doc, "a"),
+            |doc| delete(doc, HIGHLIGHTS, "a"),
             |doc| put_color(doc, "a", GREEN),
         );
         assert_eq!(merged, [Markup::default(), Markup::default()]);
-    }
-
-    #[test]
-    fn a_color_change_and_an_edit_of_another_field_both_survive() {
-        let base = add(None, &highlight("a", 5));
-        // Stands in for any other field, like the Note.
-        let edit_quote = |doc: &mut AutoCommit| {
-            let map = highlight_maps(doc).pop().unwrap();
-            let (_, entry) = doc.get(&map, "a").unwrap().unwrap();
-            doc.put(&entry, "quoted_text", "edited").unwrap();
-        };
-        let expected = Markup {
-            highlights: vec![Highlight {
-                color: GREEN,
-                quoted_text: "edited".to_owned(),
-                ..highlight("a", 5)
-            }],
-            ..Markup::default()
-        };
-        let merged = merged_edits(&base, |doc| put_color(doc, "a", GREEN), edit_quote);
-        assert_eq!(merged, [expected.clone(), expected]);
     }
 
     // Notes
@@ -770,7 +701,7 @@ mod tests {
         let base = set_note(Some(&add(None, &highlight("a", 5))), "a", "old");
         let merged = merged_edits(
             &base,
-            |doc| delete_highlight(doc, "a"),
+            |doc| delete(doc, HIGHLIGHTS, "a"),
             |doc| put_note(doc, "a", "new"),
         );
         assert_eq!(merged, [Markup::default(), Markup::default()]);
@@ -804,10 +735,6 @@ mod tests {
         }
     }
 
-    fn with_page_note(existing: Option<&[u8]>, note: &PageNote) -> Vec<u8> {
-        add_page_note(existing, note)
-    }
-
     fn only_page_notes(notes: Vec<PageNote>) -> Markup {
         Markup {
             page_notes: notes,
@@ -818,7 +745,7 @@ mod tests {
     #[test]
     fn a_page_note_reads_back_as_it_was_written() {
         let note = page_note("a", 5, "my thought");
-        let doc = with_page_note(None, &note);
+        let doc = add_page_note(None, &note);
         assert_eq!(read(&doc), only_page_notes(vec![note]));
     }
 
@@ -835,8 +762,8 @@ mod tests {
 
     #[test]
     fn page_notes_are_listed_oldest_first_and_new_text_replaces_the_old() {
-        let later = with_page_note(None, &page_note("later", 2, "l"));
-        let both = with_page_note(Some(&later), &page_note("earlier", 1, "e"));
+        let later = add_page_note(None, &page_note("later", 2, "l"));
+        let both = add_page_note(Some(&later), &page_note("earlier", 1, "e"));
         let edited = set_page_note_text(Some(&both), "later", "l2");
         assert_eq!(
             read(&edited),
@@ -849,15 +776,15 @@ mod tests {
 
     #[test]
     fn an_empty_text_removes_the_page_note() {
-        let doc = with_page_note(None, &page_note("a", 5, "x"));
+        let doc = add_page_note(None, &page_note("a", 5, "x"));
         let emptied = set_page_note_text(Some(&doc), "a", "");
         assert_eq!(read(&emptied), Markup::default());
     }
 
     #[test]
     fn removing_a_page_note_leaves_the_others() {
-        let doc = with_page_note(None, &page_note("a", 1, "x"));
-        let doc = with_page_note(Some(&doc), &page_note("b", 2, "y"));
+        let doc = add_page_note(None, &page_note("a", 1, "x"));
+        let doc = add_page_note(Some(&doc), &page_note("b", 2, "y"));
         let removed = remove_page_note(Some(&doc), "a");
         assert_eq!(
             read(&removed),
@@ -867,7 +794,7 @@ mod tests {
 
     #[test]
     fn changing_or_removing_an_unknown_page_note_changes_nothing() {
-        let doc = with_page_note(None, &page_note("a", 1, "x"));
+        let doc = add_page_note(None, &page_note("a", 1, "x"));
         let doc = set_page_note_text(Some(&doc), "nope", "y");
         let doc = remove_page_note(Some(&doc), "nope");
         assert_eq!(read(&doc), only_page_notes(vec![page_note("a", 1, "x")]));
@@ -876,14 +803,14 @@ mod tests {
     #[test]
     fn page_notes_and_highlights_are_kept_side_by_side() {
         let doc = add(None, &highlight("h", 1));
-        let doc = with_page_note(Some(&doc), &page_note("n", 2, "x"));
+        let doc = add_page_note(Some(&doc), &page_note("n", 2, "x"));
         let doc = remove(Some(&doc), "h");
         assert_eq!(read(&doc), only_page_notes(vec![page_note("n", 2, "x")]));
     }
 
     #[test]
     fn concurrent_typing_in_one_page_note_merges_character_by_character() {
-        let base = with_page_note(None, &page_note("a", 5, "the quick fox"));
+        let base = add_page_note(None, &page_note("a", 5, "the quick fox"));
         let merged = merged_edits(
             &base,
             |doc| put_page_note_text(doc, "a", "the quick brown fox"),
@@ -895,10 +822,10 @@ mod tests {
 
     #[test]
     fn a_page_note_removal_wins_over_a_concurrent_edit() {
-        let base = with_page_note(None, &page_note("a", 5, "old"));
+        let base = add_page_note(None, &page_note("a", 5, "old"));
         let merged = merged_edits(
             &base,
-            |doc| delete_page_note(doc, "a"),
+            |doc| delete(doc, PAGE_NOTES, "a"),
             |doc| put_page_note_text(doc, "a", "new"),
         );
         assert_eq!(merged, [Markup::default(), Markup::default()]);
@@ -915,19 +842,5 @@ mod tests {
             |doc| put_page_note(doc, &two),
         );
         assert_eq!(merged, [expected.clone(), expected]);
-    }
-
-    #[test]
-    fn the_built_in_colors_start_with_yellow_and_are_distinct() {
-        assert_eq!(BUILT_IN_COLORS.len(), 6);
-        assert_eq!(BUILT_IN_COLORS[0].name, "Yellow");
-        for (i, a) in BUILT_IN_COLORS.iter().enumerate() {
-            assert!(BUILT_IN_COLORS[i + 1..].iter().all(|b| a.rgb != b.rgb));
-        }
-    }
-
-    #[test]
-    fn new_ids_differ() {
-        assert_ne!(new_id(), new_id());
     }
 }

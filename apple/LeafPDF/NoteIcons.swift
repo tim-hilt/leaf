@@ -42,7 +42,7 @@ final class NoteIconsView: PlatformView {
 
     private func paint(in context: CGContext, dirty: CGRect) {
         guard let reader else { return }
-        for (rect, color) in reader.visibleNoteIcons where rect.intersects(dirty) {
+        for (rect, color) in reader.noteIconsToDraw where rect.intersects(dirty) {
             let shape = CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil)
             context.setFillColor(CGColor(srgbRed: color.r, green: color.g, blue: color.b, alpha: 1))
             context.addPath(shape)

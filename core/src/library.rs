@@ -14,6 +14,7 @@
 use crate::markup::{self, Highlight, Markup, PageNote, PageRects, Rgb};
 use crate::preferences::{self, HighlightColor};
 use crate::progress::{self, ReadingProgress};
+use crate::state;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -171,7 +172,7 @@ impl Library {
         created: u64,
     ) -> io::Result<Highlight> {
         let highlight = Highlight {
-            id: markup::new_id(),
+            id: state::new_id(),
             anchor,
             quoted_text: quoted_text.to_owned(),
             color,
@@ -218,7 +219,7 @@ impl Library {
         created: u64,
     ) -> io::Result<PageNote> {
         let note = PageNote {
-            id: markup::new_id(),
+            id: state::new_id(),
             page_index,
             x,
             y,
