@@ -14,6 +14,10 @@ final class ReaderHandle {
 /// and a single tap, unless it is on a link, calls `onSingleTap`. It reports when it has opened and
 /// whenever it scrolls, so the Reader can save Reading Progress.
 ///
+/// Highlights are drawn into the pages (`StyledDocument`). The selection can be
+/// highlighted (`highlightSelection()`, also from the selection menu), which
+/// reports its anchor, and never changes the File.
+///
 /// A Jump goes to a Place and remembers where the viewport was, so that Back
 /// can return there. Only the latest Jump is remembered, and only for as long
 /// as the view lives. Following a link to a place in the Document is a Jump;
@@ -47,6 +51,16 @@ final class ReaderPDFView: PDFView {
         }
     }
 
+    /// The Highlights drawn into the pages. Changing them redraws the pages,
+    /// keeping the viewport. Set it after the Document, which must be a `StyledDocument`.
+    var highlights: [Highlight] = [] {
+        didSet {
+            guard highlights != oldValue, let styled = document as? StyledDocument else { return }
+            styled.highlights = highlights
+            layoutDocumentView()
+        }
+    }
+
     /// Called on a single tap on the page (iOS only; macOS clicks never fire it).
     var onSingleTap: () -> Void = {}
     /// Called once, after the Document is first laid out at fit-to-width and
@@ -54,6 +68,8 @@ final class ReaderPDFView: PDFView {
     var onOpen: () -> Void = {}
     /// Called whenever the viewport scrolls, however it was moved: often, so keep it cheap.
     var onScroll: () -> Void = {}
+    /// Called with the anchor of the selection when the reader highlights it.
+    var onHighlight: (HighlightAnchor) -> Void = { _ in }
     /// Called when the Back place appears, changes or goes, with its printed
     /// page number; nil when there is none.
     var onBackChange: (String?) -> Void = { _ in }
@@ -167,6 +183,37 @@ final class ReaderPDFView: PDFView {
         let y = rect.maxY + viewportRect.height / 3 / scaleFactor
         if let searchStart { backPlace = searchStart }
         go(to: Place(pageIndex: document.index(for: page), point: CGPoint(x: x, y: y)))
+    }
+
+    // MARK: Highlights
+
+    /// The selection as an anchor: its line rectangles per page in page space,
+    /// and its text. Nil without a selection, or one without text.
+    var selectionAnchor: HighlightAnchor? {
+        guard let document, let selection = currentSelection, let text = selection.string, !text.isEmpty
+        else { return nil }
+        var pages: [HighlightAnchor.Page] = []
+        for line in selection.selectionsByLine() {
+            for page in line.pages {
+                let index = document.index(for: page)
+                let rect = line.bounds(for: page)
+                guard index != NSNotFound, !rect.isEmpty else { continue }
+                if let last = pages.last, last.pageIndex == index {
+                    pages[pages.count - 1] = .init(pageIndex: index, rects: last.rects + [rect])
+                } else {
+                    pages.append(.init(pageIndex: index, rects: [rect]))
+                }
+            }
+        }
+        return pages.isEmpty ? nil : HighlightAnchor(pages: pages, quotedText: text)
+    }
+
+    /// Highlights the selection: reports its anchor to `onHighlight` and clears
+    /// the selection. Does nothing without one.
+    func highlightSelection() {
+        guard let anchor = selectionAnchor else { return }
+        clearSelection()
+        onHighlight(anchor)
     }
 
     // MARK: Links
@@ -286,6 +333,21 @@ final class ReaderPDFView: PDFView {
         // The find bar is presented from the first responder.
         override var canBecomeFirstResponder: Bool { true }
 
+        /// Adds "Highlight" to the edit menu of a selection.
+        override func buildMenu(with builder: any UIMenuBuilder) {
+            super.buildMenu(with: builder)
+            guard builder.system == .context, selectionAnchor != nil else { return }
+            let highlight = UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { [weak self] _ in
+                self?.highlightSelection()
+            }
+            builder.insertChild(UIMenu(options: .displayInline, children: [highlight]), atStartOfMenu: .standardEdit)
+        }
+
+        /// The edit menu is built from the selection as it is when the menu is rebuilt.
+        @objc private func selectionDidChange(_ notification: Notification) {
+            UIMenuSystem.context.setNeedsRebuild()
+        }
+
         override init(frame: CGRect) {
             super.init(frame: frame)
             let doubleTap = UITapGestureRecognizer(target: self, action: #selector(didDoubleTap))
@@ -300,6 +362,8 @@ final class ReaderPDFView: PDFView {
             singleTapFilter = filter
             singleTap.delegate = filter
             addGestureRecognizer(singleTap)
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(selectionDidChange), name: .PDFViewSelectionChanged, object: self)
         }
 
         @available(*, unavailable)
@@ -357,6 +421,21 @@ final class ReaderPDFView: PDFView {
         }
 
         @objc private func didScroll(_ notification: Notification) { onScroll() }
+
+        /// Adds "Highlight" to the context menu of a selection.
+        override func menu(for event: NSEvent) -> NSMenu? {
+            let menu = super.menu(for: event)
+            guard let menu, selectionAnchor != nil,
+                !menu.items.contains(where: { $0.action == #selector(highlightFromMenu) })
+            else { return menu }
+            let item = NSMenuItem(title: "Highlight", action: #selector(highlightFromMenu), keyEquivalent: "")
+            item.target = self
+            menu.insertItem(item, at: 0)
+            menu.insertItem(.separator(), at: 1)
+            return menu
+        }
+
+        @objc private func highlightFromMenu(_ sender: Any?) { highlightSelection() }
 
         override func setFrameSize(_ newSize: NSSize) {
             sizeWillChange(to: newSize, from: frame.size)

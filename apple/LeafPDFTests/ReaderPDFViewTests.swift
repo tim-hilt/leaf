@@ -276,6 +276,76 @@ import Testing
         }
     #endif
 
+    // MARK: Highlights
+
+    /// Page 1 reads "Alpha beta gamma", page 2 "Delta epsilon zeta".
+    func readerWithText() throws -> ReaderPDFView {
+        try makeReader(size: portrait, pageTexts: ["Alpha beta gamma", "Delta epsilon zeta"])
+    }
+
+    /// The selection from character `first` on page 1 to character `last` on page `lastPage`, indexed from 0.
+    func select(_ reader: ReaderPDFView, from first: Int, to last: Int, onPage lastPage: Int = 0) throws {
+        let document = try #require(reader.document)
+        reader.currentSelection = document.selection(
+            from: try #require(document.page(at: 0)), atCharacterIndex: first,
+            to: try #require(document.page(at: lastPage)), atCharacterIndex: last)
+    }
+
+    @Test func aSelectionIsAnAnchorWithLineRectsInPageSpaceAndTheQuotedText() throws {
+        let reader = try readerWithText()
+        try select(reader, from: 6, to: 9)  // "beta"
+
+        let anchor = try #require(reader.selectionAnchor)
+
+        #expect(anchor.quotedText == "beta")
+        #expect(anchor.pages.map(\.pageIndex) == [0])
+        let rect = try #require(anchor.pages.first?.rects.first)
+        // The first line of text, at the top of the page inside a one-inch margin, to the right of "Alpha ".
+        #expect(rect.minX > 72 + 20 && rect.maxX < 72 + 100)
+        #expect(rect.minY > 690 && rect.maxY < 725)
+        #expect(anchor.pages.first?.rects.count == 1)
+    }
+
+    @Test func aSelectionAcrossAPageBreakIsOneAnchorWithRectsOnBothPages() throws {
+        let reader = try readerWithText()
+        try select(reader, from: 11, to: 4, onPage: 1)  // "gamma" … "Delta"
+
+        let anchor = try #require(reader.selectionAnchor)
+
+        #expect(anchor.pages.map(\.pageIndex) == [0, 1])
+        #expect(anchor.pages.allSatisfy { !$0.rects.isEmpty })
+        #expect(anchor.quotedText.hasPrefix("gamma"))
+        #expect(anchor.quotedText.hasSuffix("Delta"))
+    }
+
+    @Test func withoutASelectionThereIsNoAnchor() throws {
+        let reader = try readerWithText()
+        #expect(reader.selectionAnchor == nil)
+    }
+
+    @Test func highlightingTheSelectionReportsItsAnchorAndClearsTheSelection() throws {
+        let reader = try readerWithText()
+        var reported: [HighlightAnchor] = []
+        reader.onHighlight = { reported.append($0) }
+        try select(reader, from: 6, to: 9)
+        let anchor = try #require(reader.selectionAnchor)
+
+        reader.highlightSelection()
+
+        #expect(reported == [anchor])
+        #expect(reader.currentSelection == nil)
+    }
+
+    @Test func highlightingWithoutASelectionDoesNothing() throws {
+        let reader = try readerWithText()
+        var reported = 0
+        reader.onHighlight = { _ in reported += 1 }
+
+        reader.highlightSelection()
+
+        #expect(reported == 0)
+    }
+
     // MARK: Links
 
     /// A link on page 6 to `target`, and one to a web page just below it.

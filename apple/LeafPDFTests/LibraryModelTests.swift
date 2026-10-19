@@ -283,7 +283,8 @@ import Testing
 
         // US Letter, rendered 300 pt wide.
         #expect(abs(Double(cover.height) / Double(cover.width) - 792.0 / 612.0) < 0.01)
-        #expect(cover.width >= 300)
+        // PDFKit fits the page inside 300 × 388 px at scale 1, so rounding can cost a pixel.
+        #expect(cover.width >= 299)
     }
 
     @Test func aCoverShownOnDarkPagesHasPaperInThePageColorWhileTheSavedCoverStaysOriginal() async throws {
@@ -547,6 +548,85 @@ import Testing
 
         #expect(library.documents.isEmpty)
         #expect(try openLibrary().documents.isEmpty)
+    }
+
+    // MARK: Markup
+
+    let anchor = HighlightAnchor(
+        pages: [
+            .init(pageIndex: 2, rects: [CGRect(x: 72, y: 700.5, width: 200, height: 12)]),
+            .init(pageIndex: 3, rects: [CGRect(x: 72, y: 720, width: 100, height: 12), CGRect(x: 72, y: 706, width: 40, height: 12)]),
+        ],
+        quotedText: "the passage")
+
+    @Test func aNeverHighlightedDocumentHasNoHighlights() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+
+        #expect(await library.highlights(of: document) == [])
+    }
+
+    @Test func anAddedHighlightIsReturnedAndInTheDocumentsHighlights() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        let color = RGB(1, 0, 128 / 255)
+
+        let added = try #require(await library.addHighlight(anchor, color: color, to: document))
+
+        #expect(added.anchor == anchor)
+        #expect(added.color == color)
+        #expect(await library.highlights(of: document) == [added])
+    }
+
+    @Test func highlightsSurviveReopeningTheLibrary() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        let added = try #require(await library.addHighlight(anchor, color: Highlight.defaultColor, to: document))
+
+        let reopened = try openLibrary()
+
+        #expect(await reopened.highlights(of: document) == [added])
+    }
+
+    @Test func highlightsKeepTheOrderTheyWereAddedIn() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        let first = try #require(await library.addHighlight(anchor, color: Highlight.defaultColor, to: document, at: Date(timeIntervalSince1970: 1)))
+        let second = try #require(await library.addHighlight(anchor, color: Highlight.defaultColor, to: document, at: Date(timeIntervalSince1970: 2)))
+
+        #expect(first.id != second.id)
+        #expect(await library.highlights(of: document) == [first, second])
+    }
+
+    @Test func highlightingARemovedDocumentDoesNothing() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        library.remove(document)
+
+        #expect(await library.addHighlight(anchor, color: Highlight.defaultColor, to: document) == nil)
+        #expect(await library.highlights(of: document) == [])
+    }
+
+    @Test func removingADocumentTakesItsHighlightsAlong() async throws {
+        let library = try openLibrary()
+        let source = try writePDF(named: "a.pdf")
+        guard case .opened(let document) = await library.import(source) else { throw ImportFailed() }
+        _ = await library.addHighlight(anchor, color: Highlight.defaultColor, to: document)
+
+        library.remove(document)
+        _ = await library.import(source)
+
+        #expect(await library.highlights(of: document) == [])
+    }
+
+    @Test func highlightsDoNotDisturbReadingProgress() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        await library.saveProgress(place, of: document, at: lastRead)
+
+        _ = await library.addHighlight(anchor, color: Highlight.defaultColor, to: document)
+
+        #expect(try openLibrary().documents.first?.place == place)
     }
 
     // MARK: Recently Read sort

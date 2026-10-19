@@ -67,6 +67,127 @@ impl From<ReadingProgress> for leafpdf_core::progress::ReadingProgress {
     }
 }
 
+/// A rectangle in PDF page space, see `leafpdf_core::markup::Rect`.
+#[derive(uniffi::Record)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// The rectangles of a Highlight on one page, see `leafpdf_core::markup::PageRects`.
+#[derive(uniffi::Record)]
+pub struct PageRects {
+    pub page_index: u32,
+    pub rects: Vec<Rect>,
+}
+
+/// An sRGB color, 8 bits per channel.
+#[derive(uniffi::Record)]
+pub struct Rgb {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+/// See `leafpdf_core::markup::Highlight`. `created` is milliseconds since the
+/// Unix epoch.
+#[derive(uniffi::Record)]
+pub struct Highlight {
+    pub id: String,
+    pub anchor: Vec<PageRects>,
+    pub quoted_text: String,
+    pub color: Rgb,
+    pub created: u64,
+}
+
+/// See `leafpdf_core::markup::Markup`.
+#[derive(uniffi::Record)]
+pub struct Markup {
+    pub highlights: Vec<Highlight>,
+}
+
+impl From<leafpdf_core::markup::Rect> for Rect {
+    fn from(r: leafpdf_core::markup::Rect) -> Self {
+        Self {
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        }
+    }
+}
+
+impl From<Rect> for leafpdf_core::markup::Rect {
+    fn from(r: Rect) -> Self {
+        Self {
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        }
+    }
+}
+
+impl From<leafpdf_core::markup::PageRects> for PageRects {
+    fn from(p: leafpdf_core::markup::PageRects) -> Self {
+        Self {
+            page_index: p.page_index,
+            rects: p.rects.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<PageRects> for leafpdf_core::markup::PageRects {
+    fn from(p: PageRects) -> Self {
+        Self {
+            page_index: p.page_index,
+            rects: p.rects.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<leafpdf_core::markup::Rgb> for Rgb {
+    fn from(c: leafpdf_core::markup::Rgb) -> Self {
+        Self {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+        }
+    }
+}
+
+impl From<Rgb> for leafpdf_core::markup::Rgb {
+    fn from(c: Rgb) -> Self {
+        Self {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+        }
+    }
+}
+
+impl From<leafpdf_core::markup::Highlight> for Highlight {
+    fn from(h: leafpdf_core::markup::Highlight) -> Self {
+        Self {
+            id: h.id,
+            anchor: h.anchor.into_iter().map(Into::into).collect(),
+            quoted_text: h.quoted_text,
+            color: h.color.into(),
+            created: h.created,
+        }
+    }
+}
+
+impl From<leafpdf_core::markup::Markup> for Markup {
+    fn from(m: leafpdf_core::markup::Markup) -> Self {
+        Self {
+            highlights: m.highlights.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 /// A Document in the Library: its ID, the path of its stored File and its
 /// Reading Progress, if it was ever opened.
 #[derive(uniffi::Record)]
@@ -139,6 +260,25 @@ impl Library {
 
     pub fn save_progress(&self, id: String, progress: ReadingProgress) -> Result<(), LibraryError> {
         Ok(self.0.save_progress(&id, &progress.into())?)
+    }
+
+    pub fn markup(&self, id: String) -> Result<Markup, LibraryError> {
+        Ok(self.0.markup(&id)?.into())
+    }
+
+    pub fn add_highlight(
+        &self,
+        id: String,
+        anchor: Vec<PageRects>,
+        quoted_text: String,
+        color: Rgb,
+        created: u64,
+    ) -> Result<Highlight, LibraryError> {
+        let anchor = anchor.into_iter().map(Into::into).collect();
+        let highlight = self
+            .0
+            .add_highlight(&id, anchor, &quoted_text, color.into(), created)?;
+        Ok(highlight.into())
     }
 
     pub fn documents(&self) -> Result<Vec<Document>, LibraryError> {

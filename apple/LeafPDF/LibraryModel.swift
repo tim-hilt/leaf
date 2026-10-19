@@ -109,8 +109,8 @@ final class LibraryModel {
     @ObservationIgnored private let saved: DetailsStore
     @ObservationIgnored private let covers: CoverStore
     @ObservationIgnored private let defaults: UserDefaults
-    /// The latest write of Reading Progress to the core; the next one waits for it.
-    @ObservationIgnored private var lastProgressWrite: Task<Void, Never>?
+    /// The latest access to a Document's state in the core; the next one waits for it.
+    @ObservationIgnored private var lastStateAccess: Task<Void, Never>?
 
     /// Opens the Library folder at `root`, creating it if needed, with Titles
     /// and Authors saved in `detailsFile`, Covers in `coversFolder` and the sort
@@ -243,13 +243,53 @@ final class LibraryModel {
             lastRead: UInt64(max(0, lastRead.timeIntervalSince1970 * 1000).rounded()))
         documents[index].progress = progress
 
-        let core = core, id = document.id, previous = lastProgressWrite
-        let write = Task.detached {
-            await previous?.value
-            try? core.saveProgress(id: id, progress: progress)
+        let core = core, id = document.id
+        await inStateOrder { try? core.saveProgress(id: id, progress: progress) }
+    }
+
+    /// The Highlights of `document`, oldest first. Empty if there are none or
+    /// the Document was Removed.
+    func highlights(of document: LibraryDocument) async -> [Highlight] {
+        let core = core, id = document.id
+        let markup = await inStateOrder { try? core.markup(id: id) }
+        return markup?.highlights.map(Highlight.init) ?? []
+    }
+
+    /// Adds a Highlight over `anchor` in `color` to `document`, `created` now.
+    /// The core writes off the main thread, in order, and this returns the
+    /// stored Highlight when it has. Nil for a Document that was Removed, or
+    /// if the write failed.
+    func addHighlight(
+        _ anchor: HighlightAnchor, color: RGB, to document: LibraryDocument, at created: Date = .now
+    ) async -> Highlight? {
+        guard documents.contains(where: { $0.id == document.id }) else { return nil }
+        let core = core, id = document.id
+        let pages = anchor.pages.map { page in
+            PageRects(
+                pageIndex: UInt32(page.pageIndex),
+                rects: page.rects.map { Rect(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height) })
         }
-        lastProgressWrite = write
-        await write.value
+        let rgb = Rgb(r: color.r.byte, g: color.g.byte, b: color.b.byte)
+        let milliseconds = UInt64(max(0, created.timeIntervalSince1970 * 1000).rounded())
+        let stored = await inStateOrder {
+            try? core.addHighlight(
+                id: id, anchor: pages, quotedText: anchor.quotedText, color: rgb, created: milliseconds)
+        }
+        // Removed meanwhile: the core stored nothing.
+        guard documents.contains(where: { $0.id == id }) else { return nil }
+        return stored.map(Highlight.init)
+    }
+
+    /// Runs `access` off the main thread, after every earlier access to the
+    /// core's Document state has finished, so reads and writes never overlap.
+    private func inStateOrder<T: Sendable>(_ access: @escaping @Sendable () -> T) async -> T {
+        let previous = lastStateAccess
+        let running = Task.detached {
+            await previous?.value
+            return access()
+        }
+        lastStateAccess = Task { _ = await running.value }
+        return await running.value
     }
 
     /// What Import reads from the PDF it opened to check the File.
@@ -305,4 +345,24 @@ final class LibraryModel {
         saved[id] = details
         documents[index].details = details
     }
+}
+
+extension Highlight {
+    fileprivate init(_ stored: LeafCore.Highlight) {
+        self.init(
+            id: stored.id,
+            anchor: HighlightAnchor(
+                pages: stored.anchor.map { page in
+                    .init(
+                        pageIndex: Int(page.pageIndex),
+                        rects: page.rects.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) })
+                },
+                quotedText: stored.quotedText),
+            color: RGB(Double(stored.color.r) / 255, Double(stored.color.g) / 255, Double(stored.color.b) / 255))
+    }
+}
+
+extension Double {
+    /// A color component from 0 to 1 as a byte.
+    fileprivate var byte: UInt8 { UInt8((min(max(self, 0), 1) * 255).rounded()) }
 }

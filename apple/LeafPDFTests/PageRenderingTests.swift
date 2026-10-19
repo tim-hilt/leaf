@@ -83,6 +83,53 @@ import Testing
         #expect(image.pixel(x: 316, y: 406).isClose(to: PageColors.default.paper))
     }
 
+    // MARK: Highlights
+
+    /// The Document of `document(in:)` with a yellow Highlight over the left half of the black square and a
+    /// bit of paper above it, on the page's first line: x 10…20, y 20…40.
+    func highlightedDocument(in appearance: PageAppearance) throws -> StyledDocument {
+        let document = try document(in: appearance)
+        let anchor = HighlightAnchor(
+            pages: [.init(pageIndex: 0, rects: [CGRect(x: 10, y: 20, width: 10, height: 20)])], quotedText: "x")
+        document.highlights = [Highlight(id: "a", anchor: anchor, color: Highlight.defaultColor)]
+        return document
+    }
+
+    /// The pixels of the Highlight's rectangle: over the black square (lower half) and over paper (upper half).
+    func samplesOfHighlight(_ appearance: PageAppearance) throws -> (ink: RGB, paper: RGB, outside: RGB) {
+        let document = try highlightedDocument(in: appearance)
+        let image = try #require(document.page(at: 0)?.image(pixelWidth: 612))
+        func pixel(_ x: Int, _ y: Int) -> RGB { image.pixel(x: x, y: 792 - y) }
+        return (pixel(15, 25), pixel(15, 35), pixel(25, 25))
+    }
+
+    @Test func lightPagesMultiplyHighlightsIntoThePage() throws {
+        let (ink, paper, outside) = try samplesOfHighlight(.light)
+        #expect(paper.isClose(to: Highlight.defaultColor))  // paper is white: multiplying gives the color
+        #expect(ink.isClose(to: RGB(0, 0, 0)))  // black ink stays readable
+        #expect(outside.isClose(to: RGB(0, 0, 0)))
+    }
+
+    @Test func darkPagesReverseHighlightsWithThePage() throws {
+        let colors = PageColors.default
+        let (ink, paper, outside) = try samplesOfHighlight(.dark(colors))
+        #expect(ink.isClose(to: colors.ink))  // the text on a Highlight stays as readable as other text
+        #expect(outside.isClose(to: colors.ink))
+        // Not the plain paper, and not the Highlight's own color: reversed with the page, hue kept.
+        #expect(!paper.isClose(to: colors.paper, tolerance: 0.1))
+        #expect(!paper.isClose(to: Highlight.defaultColor, tolerance: 0.1))
+        #expect(paper.r > paper.b + 0.1 && paper.g > paper.b + 0.1)
+    }
+
+    @Test func aHighlightOnAnotherPageDoesNotShowHere() throws {
+        let document = try document(in: .light)
+        let anchor = HighlightAnchor(
+            pages: [.init(pageIndex: 1, rects: [CGRect(x: 10, y: 20, width: 10, height: 20)])], quotedText: "x")
+        document.highlights = [Highlight(id: "a", anchor: anchor, color: Highlight.defaultColor)]
+        let image = try #require(document.page(at: 0)?.image(pixelWidth: 612))
+        #expect(image.pixel(x: 15, y: 792 - 35).isClose(to: RGB(1, 1, 1)))
+    }
+
     @Test func defaultPageColorsAreDarkGreyPaperAndLightGreyInk() {
         #expect(PageColors.default.paper.isClose(to: RGB(0x1E / 255, 0x1E / 255, 0x1E / 255)))
         #expect(PageColors.default.ink.isClose(to: RGB(0xD6 / 255, 0xD6 / 255, 0xD6 / 255)))

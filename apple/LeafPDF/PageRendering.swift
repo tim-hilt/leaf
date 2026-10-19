@@ -37,13 +37,42 @@ enum PageAppearance: Equatable, Sendable {
     case dark(PageColors)
 }
 
-/// A `PDFDocument` whose pages can be drawn as Dark Pages. Only what is drawn
-/// changes, never the File, and overlays PDFKit draws on top of the page
-/// (search highlights, the selection) keep their colors. Changing
-/// `appearance` affects pages drawn from then on; a `PDFView` showing the
-/// Document redraws with `layoutDocumentView()` (ADR-0013).
+/// A `PDFDocument` whose pages can be drawn as Dark Pages, with Highlights
+/// drawn into them. Only what is drawn changes, never the File, and overlays
+/// PDFKit draws on top of the page (search highlights, the selection) keep
+/// their colors. Changing `appearance` or `highlights` affects pages drawn
+/// from then on; a `PDFView` showing the Document redraws with
+/// `layoutDocumentView()` (ADR-0013).
 final class StyledDocument: PDFDocument, PDFDocumentDelegate {
+    /// A Highlight's rectangle on a page, in PDF page space.
+    fileprivate struct Mark: Sendable {
+        let rect: CGRect
+        let color: RGB
+    }
+
     private let current = Mutex(PageAppearance.light)
+    private let marks = Mutex([Int: [Mark]]())
+
+    /// The Highlights drawn into the pages, each over its rectangles. Safe to
+    /// read and set from any thread: PDFKit draws pages on background threads.
+    var highlights: [Highlight] = [] {
+        didSet {
+            var byPage: [Int: [Mark]] = [:]
+            for highlight in highlights {
+                for page in highlight.anchor.pages {
+                    byPage[page.pageIndex, default: []] += page.rects.map { Mark(rect: $0, color: highlight.color) }
+                }
+            }
+            marks.withLock { $0 = byPage }
+        }
+    }
+
+    /// The Highlights' rectangles on `page`. Pages without any cost no lookup of their index.
+    fileprivate func marks(on page: PDFPage) -> [Mark] {
+        guard !marks.withLock({ $0.isEmpty }) else { return [] }
+        let index = index(for: page)
+        return marks.withLock { $0[index] ?? [] }
+    }
 
     /// Safe to read from any thread: PDFKit draws pages on background threads.
     var appearance: PageAppearance {
@@ -63,8 +92,11 @@ final class StyledDocument: PDFDocument, PDFDocumentDelegate {
 /// own: PDFKit creates it without running Swift initializers.
 private final class StyledPage: PDFPage {
     override func draw(with box: PDFDisplayBox, to context: CGContext) {
-        guard case .dark(let colors) = (document as? StyledDocument)?.appearance else {
-            return super.draw(with: box, to: context)
+        let styled = document as? StyledDocument
+        let marks = styled?.marks(on: self) ?? []
+        guard case .dark(let colors) = styled?.appearance else {
+            super.draw(with: box, to: context)
+            return paint(marks, in: context, box: box)
         }
         // The part of the page being drawn, in the context's space. Like
         // `super`, never paint outside the page (rotated and cropped).
@@ -76,15 +108,34 @@ private final class StyledPage: PDFPage {
             let bitmap = CGContext(
                 data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8,
                 bytesPerRow: 0, space: .sRGB, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return super.draw(with: box, to: context) }
+        else {
+            super.draw(with: box, to: context)
+            return paint(marks, in: context, box: box)
+        }
 
         bitmap.scaleBy(x: size.width / area.width, y: size.height / area.height)
         bitmap.translateBy(x: -area.minX, y: -area.minY)
         bitmap.setFillColor(gray: 1, alpha: 1)
         bitmap.fill(area)
         super.draw(with: box, to: bitmap)
+        // Highlights are part of the page, so they are reversed with it.
+        paint(marks, in: bitmap, box: box)
         guard let original = bitmap.makeImage(), let reversed = original.reversed(in: colors) else { return }
         context.draw(reversed, in: area)
+    }
+
+    /// Multiplies the Highlights' colors into what is drawn, so text on them
+    /// stays as dark as it was.
+    fileprivate func paint(_ marks: [StyledDocument.Mark], in context: CGContext, box: PDFDisplayBox) {
+        guard !marks.isEmpty else { return }
+        let transform = transform(for: box)
+        context.saveGState()
+        context.setBlendMode(.multiply)
+        for mark in marks {
+            context.setFillColor(CGColor(srgbRed: mark.color.r, green: mark.color.g, blue: mark.color.b, alpha: 1))
+            context.fill(mark.rect.applying(transform))
+        }
+        context.restoreGState()
     }
 }
 

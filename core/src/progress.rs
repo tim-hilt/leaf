@@ -1,17 +1,15 @@
 //! Reading Progress and how it is kept in a Document's Automerge document
 //! (ADR-0008).
 //!
-//! Schema, version 1: the root holds `version` and a `progress` map with
-//! `page_index`, `x`, `y` and `last_read`. The whole map is written as one
-//! value on every save, so a Place and its Last Read never mix between
-//! devices. When devices wrote concurrently, reading picks the newest Last
-//! Read.
+//! The root's `progress` map holds `page_index`, `x`, `y` and `last_read`
+//! (see `state` for the schema). The whole map is written as one value on
+//! every save, so a Place and its Last Read never mix between devices. When
+//! devices wrote concurrently, reading picks the newest Last Read.
 
+use crate::state;
 use automerge::{
     AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
-
-const SCHEMA_VERSION: u64 = 1;
 
 /// Where in a Document the user last left off, and when.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -49,10 +47,7 @@ pub(crate) fn read(bytes: &[u8]) -> Option<ReadingProgress> {
 
 /// The Reading Progress held by the map `map`, if it is complete.
 fn read_map(doc: &AutoCommit, map: &ObjId) -> Option<ReadingProgress> {
-    let field = |name: &str| match doc.get(map, name).ok()?? {
-        (Value::Scalar(value), _) => Some(value.into_owned()),
-        _ => None,
-    };
+    let field = |name: &str| state::scalar(doc, map, name);
     Some(ReadingProgress {
         page_index: u32::try_from(field("page_index")?.as_u64()?).ok()?,
         x: field("x")?.as_f64()?,
@@ -64,11 +59,7 @@ fn read_map(doc: &AutoCommit, map: &ObjId) -> Option<ReadingProgress> {
 /// The Automerge document `existing` with `progress` written into it,
 /// compacted. A missing or unreadable `existing` starts a new document.
 pub(crate) fn write(existing: Option<&[u8]>, progress: &ReadingProgress) -> Vec<u8> {
-    let mut doc = existing
-        .and_then(|bytes| AutoCommit::load(bytes).ok())
-        .unwrap_or_default();
-    put_progress(&mut doc, progress);
-    doc.save()
+    state::update(existing, |doc| put_progress(doc, progress))
 }
 
 /// Writes `progress` into `doc` as one new `progress` map, replacing every
@@ -87,8 +78,6 @@ fn put_progress(doc: &mut AutoCommit, progress: &ReadingProgress) {
         doc.put(&map, key, value)
             .expect("a new map accepts new keys");
     }
-    doc.put(ROOT, "version", SCHEMA_VERSION)
-        .expect("a root map accepts new keys");
 }
 
 #[cfg(test)]

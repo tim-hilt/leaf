@@ -12,7 +12,7 @@
         @Entry var switchPageStyle: (() -> Void)?
     }
 
-    /// View menu zoom and Page Style commands, Edit > Find and the Go menu, acting on the focused window's Reader.
+    /// View menu zoom and Page Style commands, Edit > Highlight and Find and the Go menu, acting on the focused window's Reader.
     struct ReaderCommands: Commands {
         @FocusedValue(\.reader) private var reader
         @FocusedValue(\.showTableOfContents) private var showTableOfContents
@@ -40,6 +40,9 @@
                     .disabled(switchPageStyle == nil)
             }
             CommandGroup(after: .textEditing) {
+                Button("Highlight") { reader?.view?.highlightSelection() }
+                    .keyboardShortcut("h", modifiers: [.control, .command])
+                    .disabled(reader == nil)
                 Menu("Find") {
                     Button("Find…") { reader?.view?.presentFind() }
                         .keyboardShortcut("f", modifiers: .command)

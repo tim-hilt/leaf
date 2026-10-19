@@ -13,6 +13,10 @@ import SwiftUI
 /// ⇧⌘D switches to the opposite of what is showing; on macOS the View menu also
 /// has the three Page Styles.
 ///
+/// Selecting text and choosing "Highlight" in the selection menu (⌃⌘H on macOS)
+/// adds a Highlight in the default color, stored in the Library, never in the
+/// File. Highlights are drawn into the pages, so Dark Pages reverse them.
+///
 /// Opens at the Document's Reading Progress at fit-to-width, or at page 1, and
 /// saves it (see `ReadingProgressSaver`) when opened, after scrolling stops,
 /// when it disappears and when the scene goes to the background.
@@ -47,6 +51,7 @@ struct ReaderView: View {
     @State private var isShowingContents = false
     @State private var isShowingPageStyle = false
     @State private var results = SearchResults()
+    @State private var highlights: [Highlight] = []
     @State private var isShowingResults = false
     /// Printed page number of the Back place; nil when there is none.
     @State private var backPageNumber: String?
@@ -70,6 +75,7 @@ struct ReaderView: View {
             guard pdf == nil else { return }
             saver = ReadingProgressSaver(library: library, document: document, handle: handle)
             let opened = StyledDocument(url: document.file)
+            highlights = await library.highlights(of: document)
             contents = opened.map(TableOfContents.init)
             pdf = opened
         }
@@ -137,9 +143,9 @@ struct ReaderView: View {
         Group {
             if let pdf {
                 PDFKitView(
-                    document: pdf, appearance: settings.pageAppearance(systemScheme: colorScheme), handle: handle, results: results,
-                    place: document.place,
-                    onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
+                    document: pdf, appearance: settings.pageAppearance(systemScheme: colorScheme), highlights: highlights,
+                    handle: handle, results: results, place: document.place,
+                    onHighlight: highlight, onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
                     onBackChange: { backPageNumber = $0 }, onShowResults: { isShowingResults = true })
             } else {
                 Color.clear
@@ -179,6 +185,15 @@ struct ReaderView: View {
     /// built when it opens, so this is read then.
     private func position(in contents: TableOfContents) -> TableOfContents.Position? {
         handle.view?.topOfViewport.flatMap(contents.position(at:))
+    }
+
+    /// Adds a Highlight over `anchor`; it shows once the Library has stored it.
+    private func highlight(_ anchor: HighlightAnchor) {
+        Task {
+            guard let added = await library.addHighlight(anchor, color: Highlight.defaultColor, to: document)
+            else { return }
+            highlights.append(added)
+        }
     }
 
     private func toggleImmersive() {
@@ -224,9 +239,11 @@ private struct BackCapsule: View {
 private struct PDFKitView {
     let document: StyledDocument
     let appearance: PageAppearance
+    let highlights: [Highlight]
     let handle: ReaderHandle
     let results: SearchResults
     let place: Place?
+    let onHighlight: (HighlightAnchor) -> Void
     let onSingleTap: () -> Void
     let onOpen: () -> Void
     let onScroll: () -> Void
@@ -243,6 +260,8 @@ private struct PDFKitView {
         if let place { view.open(at: place) }
         view.document = document
         view.pageAppearance = appearance
+        view.highlights = highlights
+        view.onHighlight = onHighlight
         view.onSingleTap = onSingleTap
         view.onOpen = onOpen
         view.onScroll = onScroll
@@ -254,14 +273,23 @@ private struct PDFKitView {
     }
 }
 
+extension PDFKitView {
+    @MainActor
+    fileprivate func update(_ view: PDFView) {
+        guard let reader = view as? ReaderPDFView else { return }
+        reader.pageAppearance = appearance
+        reader.highlights = highlights
+    }
+}
+
 #if os(iOS)
     extension PDFKitView: UIViewRepresentable {
         func makeUIView(context: Context) -> PDFView { makePDFView() }
-        func updateUIView(_ view: PDFView, context: Context) { (view as? ReaderPDFView)?.pageAppearance = appearance }
+        func updateUIView(_ view: PDFView, context: Context) { update(view) }
     }
 #else
     extension PDFKitView: NSViewRepresentable {
         func makeNSView(context: Context) -> PDFView { makePDFView() }
-        func updateNSView(_ view: PDFView, context: Context) { (view as? ReaderPDFView)?.pageAppearance = appearance }
+        func updateNSView(_ view: PDFView, context: Context) { update(view) }
     }
 #endif

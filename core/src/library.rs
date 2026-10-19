@@ -7,10 +7,11 @@
 //! first, then deleted.
 //!
 //! Next to its File, a Document's folder holds the Document's Automerge
-//! document as a hidden file (`STATE`), see `progress`. The File is the
+//! document as a hidden file (`STATE`), see `state`. The File is the
 //! folder's only non-hidden entry. The state is stored like an Import: written
 //! to staging, then renamed into place.
 
+use crate::markup::{self, Highlight, Markup, PageRects, Rgb};
 use crate::progress::{self, ReadingProgress};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -143,12 +144,56 @@ impl Library {
     /// imported, or Removed, even just now) does nothing. An `id` that isn't a
     /// Document ID is `InvalidInput`. A corrupt state is replaced.
     pub fn save_progress(&self, id: &str, progress: &ReadingProgress) -> io::Result<()> {
+        self.update_state(id, |existing| progress::write(existing, progress))
+    }
+
+    /// The Markup of Document `id`: empty if it has none, or the Document isn't
+    /// in the Library, or its state is unreadable. An `id` that isn't a
+    /// Document ID is `InvalidInput`.
+    pub fn markup(&self, id: &str) -> io::Result<Markup> {
+        let state = self.folder(id)?.join(STATE);
+        Ok(fs::read(state).map_or_else(|_| Markup::default(), |bytes| markup::read(&bytes)))
+    }
+
+    /// Adds a Highlight of `quoted_text` at `anchor` in `color`, `created` in
+    /// milliseconds since the Unix epoch, to Document `id`, and returns it. It
+    /// is independent of any Highlight already there, also on the same text.
+    /// Like `save_progress`, it does nothing for a Document that isn't in the
+    /// Library, and a corrupt state is replaced.
+    pub fn add_highlight(
+        &self,
+        id: &str,
+        anchor: Vec<PageRects>,
+        quoted_text: &str,
+        color: Rgb,
+        created: u64,
+    ) -> io::Result<Highlight> {
+        let highlight = Highlight {
+            id: markup::new_id(),
+            anchor,
+            quoted_text: quoted_text.to_owned(),
+            color,
+            created,
+        };
+        self.update_state(id, |existing| markup::add(existing, &highlight))?;
+        Ok(highlight)
+    }
+
+    /// Replaces the state of Document `id` with what `write` makes of the
+    /// stored one (none if missing). Nothing happens if the Document isn't in
+    /// the Library. The state is staged and renamed into place, so it is never
+    /// half written.
+    fn update_state(
+        &self,
+        id: &str,
+        write: impl FnOnce(Option<&[u8]>) -> Vec<u8>,
+    ) -> io::Result<()> {
         let folder = self.folder(id)?;
         let state = folder.join(STATE);
         let existing = fs::read(&state).ok();
         let staged = self.staging().join(unique_name());
         let mut file = File::create_new(&staged)?;
-        file.write_all(&progress::write(existing.as_deref(), progress))?;
+        file.write_all(&write(existing.as_deref()))?;
         file.sync_all()?;
         match fs::rename(&staged, state) {
             // The folder is gone: the Document was never there or was Removed.
@@ -266,6 +311,7 @@ fn document_in(dir: &Path) -> io::Result<Option<Document>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::markup::Rect;
     use std::fs;
     use std::thread::sleep;
     use std::time::Duration;
@@ -602,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn the_state_is_a_hidden_automerge_document_with_schema_version_1() {
+    fn the_state_is_a_hidden_automerge_document_with_schema_version_2() {
         use automerge::{ROOT, ReadDoc};
         let scratch = Scratch::new();
         let library = scratch.library();
@@ -627,7 +673,7 @@ mod tests {
         );
         let state = automerge::AutoCommit::load(&fs::read(&hidden[0]).unwrap()).unwrap();
         let (version, _) = state.get(ROOT, "version").unwrap().unwrap();
-        assert_eq!(version.as_u64(), Some(1));
+        assert_eq!(version.as_u64(), Some(2));
     }
 
     #[test]
@@ -732,6 +778,193 @@ mod tests {
         fs::write(document.path.parent().unwrap().join(STATE), empty).unwrap();
 
         assert_eq!(listed_progress(&library, &document.id), None);
+    }
+
+    fn anchor() -> Vec<PageRects> {
+        vec![
+            PageRects {
+                page_index: 2,
+                rects: vec![Rect {
+                    x: 72.0,
+                    y: 700.5,
+                    width: 200.0,
+                    height: 12.0,
+                }],
+            },
+            PageRects {
+                page_index: 3,
+                rects: vec![
+                    Rect {
+                        x: 72.0,
+                        y: 720.0,
+                        width: 100.0,
+                        height: 12.0,
+                    },
+                    Rect {
+                        x: 72.0,
+                        y: 706.0,
+                        width: 40.0,
+                        height: 12.0,
+                    },
+                ],
+            },
+        ]
+    }
+
+    const YELLOW: Rgb = Rgb {
+        r: 255,
+        g: 235,
+        b: 60,
+    };
+
+    fn highlight(library: &Library, id: &str, quoted_text: &str, created: u64) -> Highlight {
+        library
+            .add_highlight(id, anchor(), quoted_text, YELLOW, created)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_document_without_markup_has_no_highlights() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        assert_eq!(library.markup(&document.id).unwrap(), Markup::default());
+    }
+
+    #[test]
+    fn an_added_highlight_is_in_the_markup_and_survives_reopening_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        let added = highlight(&library, &document.id, "the passage", 1_000);
+
+        assert_eq!(added.anchor, anchor());
+        assert_eq!(added.quoted_text, "the passage");
+        assert_eq!(added.color, YELLOW);
+        assert_eq!(added.created, 1_000);
+        let expected = Markup {
+            highlights: vec![added],
+        };
+        assert_eq!(library.markup(&document.id).unwrap(), expected);
+        drop(library);
+        assert_eq!(scratch.library().markup(&document.id).unwrap(), expected);
+    }
+
+    #[test]
+    fn every_highlight_gets_its_own_id_and_the_markup_lists_them_oldest_first() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        let later = highlight(&library, &document.id, "later", 2_000);
+        let earlier = highlight(&library, &document.id, "earlier", 1_000);
+
+        assert_ne!(earlier.id, later.id);
+        assert_eq!(
+            library.markup(&document.id).unwrap().highlights,
+            vec![earlier, later]
+        );
+    }
+
+    #[test]
+    fn markup_and_reading_progress_are_kept_side_by_side() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        library
+            .save_progress(&document.id, &progress(7, 1_000))
+            .unwrap();
+        highlight(&library, &document.id, "the passage", 1_000);
+        library
+            .save_progress(&document.id, &progress(8, 2_000))
+            .unwrap();
+
+        assert_eq!(
+            listed_progress(&library, &document.id),
+            Some(progress(8, 2_000))
+        );
+        assert_eq!(library.markup(&document.id).unwrap().highlights.len(), 1);
+    }
+
+    #[test]
+    fn a_state_of_schema_version_1_keeps_its_progress_and_is_upgraded_by_a_highlight() {
+        use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let state = document.path.parent().unwrap().join(STATE);
+        let mut v1 = AutoCommit::load(&progress::write(None, &progress(7, 1_000))).unwrap();
+        v1.put(ROOT, "version", 1_u64).unwrap();
+        fs::write(&state, v1.save()).unwrap();
+
+        assert_eq!(library.markup(&document.id).unwrap(), Markup::default());
+        highlight(&library, &document.id, "the passage", 1_000);
+
+        assert_eq!(
+            listed_progress(&library, &document.id),
+            Some(progress(7, 1_000))
+        );
+        let upgraded = AutoCommit::load(&fs::read(&state).unwrap()).unwrap();
+        let (version, _) = upgraded.get(ROOT, "version").unwrap().unwrap();
+        assert_eq!(version.as_u64(), Some(2));
+    }
+
+    #[test]
+    fn remove_takes_the_markup_along() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let source = scratch.file("a.pdf", b"abc");
+        let document = import_new(&library, &source);
+        highlight(&library, &document.id, "the passage", 1_000);
+
+        library.remove(&document.id).unwrap();
+        import_new(&library, &source);
+
+        assert_eq!(library.markup(&document.id).unwrap(), Markup::default());
+    }
+
+    #[test]
+    fn highlighting_in_a_document_that_is_not_there_does_nothing() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        library
+            .add_highlight("0123", anchor(), "x", YELLOW, 1)
+            .unwrap();
+        assert_eq!(library.markup("0123").unwrap(), Markup::default());
+        assert!(!scratch.0.join("library/0123").exists());
+    }
+
+    #[test]
+    fn markup_refuses_an_id_that_points_outside_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        for id in ["../x", "/tmp", "", ".staging"] {
+            let err = library.markup(id).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{id:?}");
+            let err = library
+                .add_highlight(id, anchor(), "x", YELLOW, 1)
+                .unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn a_corrupt_state_has_no_markup_and_is_replaced_by_the_next_highlight() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let state = document.path.parent().unwrap().join(STATE);
+        fs::write(&state, b"garbage").unwrap();
+        assert_eq!(library.markup(&document.id).unwrap(), Markup::default());
+
+        let added = highlight(&library, &document.id, "the passage", 1_000);
+
+        assert_eq!(
+            library.markup(&document.id).unwrap().highlights,
+            vec![added]
+        );
     }
 
     /// Imports `count` distinct Documents and saves Reading Progress for each.
