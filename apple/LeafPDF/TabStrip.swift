@@ -35,7 +35,11 @@ struct TabStrip: View {
                 if let id { withAnimation { proxy.scrollTo(id) } }
             }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        .onGeometryChange(for: CGFloat.self) {
+            $0.size.width
+        } action: {
+            width = $0
+        }
         .frame(height: 36)
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }

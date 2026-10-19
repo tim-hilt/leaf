@@ -62,7 +62,8 @@ struct Ink {
 func writePDF(
     named fileName: String, metadataTitle: String? = nil, author: String? = nil, pageCount: Int = 1,
     outline: [OutlineEntry] = [], links: [LinkEntry] = [], pageLabels: [String] = [],
-    pageTexts: [String] = [], inks: [Ink] = [], paddedTo size: Int = 0, userPassword: String? = nil, ownerPassword: String? = nil
+    pageTexts: [String] = [], inks: [Ink] = [], paddedTo size: Int = 0, userPassword: String? = nil,
+    ownerPassword: String? = nil
 ) throws -> URL {
     let directory = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -132,7 +133,8 @@ private func draw(_ text: String, in context: CGContext, pageBox: CGRect) {
     let font = CTFontCreateWithName("Helvetica" as CFString, 14, nil)
     let string = NSAttributedString(string: text, attributes: [.font: font])
     let frame = CTFramesetterCreateFrame(
-        CTFramesetterCreateWithAttributedString(string), CFRange(), CGPath(rect: pageBox.insetBy(dx: 72, dy: 72), transform: nil), nil)
+        CTFramesetterCreateWithAttributedString(string), CFRange(),
+        CGPath(rect: pageBox.insetBy(dx: 72, dy: 72), transform: nil), nil)
     CTFrameDraw(frame, context)
 }
 

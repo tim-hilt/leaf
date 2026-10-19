@@ -43,7 +43,8 @@ final class SearchResults {
         if let last = groups.last, last.sectionID == sectionID {
             groups[groups.count - 1].matches = last.matches.lowerBound..<number + 1
         } else {
-            groups.append(Group(id: number, title: match.section?.title, matches: number..<number + 1, sectionID: sectionID))
+            groups.append(
+                Group(id: number, title: match.section?.title, matches: number..<number + 1, sectionID: sectionID))
         }
     }
 

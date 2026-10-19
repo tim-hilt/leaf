@@ -12,7 +12,9 @@ import Testing
             named: "colors.pdf",
             inks: [
                 Ink(rect: CGRect(x: 10, y: 10, width: 20, height: 20), color: CGColor(gray: 0, alpha: 1)),
-                Ink(rect: CGRect(x: 60, y: 10, width: 20, height: 20), color: CGColor(red: 1, green: 0, blue: 0, alpha: 1)),
+                Ink(
+                    rect: CGRect(x: 60, y: 10, width: 20, height: 20),
+                    color: CGColor(red: 1, green: 0, blue: 0, alpha: 1)),
             ])
         let document = try #require(StyledDocument(url: url))
         document.appearance = appearance
@@ -49,7 +51,8 @@ import Testing
     }
 
     @Test func darkPagesHonorCustomPageColors() throws {
-        let sepia = PageColors(paper: RGB(0x2B / 255, 0x21 / 255, 0x16 / 255), ink: RGB(0xE0 / 255, 0xC8 / 255, 0xA0 / 255))
+        let sepia = PageColors(
+            paper: RGB(0x2B / 255, 0x21 / 255, 0x16 / 255), ink: RGB(0xE0 / 255, 0xC8 / 255, 0xA0 / 255))
         let (black, _, paper) = try samples(.dark(sepia))
         #expect(paper.isClose(to: sepia.paper))
         #expect(black.isClose(to: sepia.ink))

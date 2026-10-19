@@ -4,18 +4,24 @@ import UniformTypeIdentifiers
 /// Files dropped onto the Gallery, as temporary copies the Import can read after
 /// the drop ended. The user's originals are never touched.
 struct DroppedFiles {
-    private let folder = URL.temporaryDirectory.appending(path: "Drop-\(UUID().uuidString)", directoryHint: .isDirectory)
+    private let folder = URL.temporaryDirectory.appending(
+        path: "Drop-\(UUID().uuidString)", directoryHint: .isDirectory)
 
     /// Whether `providers` hold at least one File of an Importable type.
     static func accepts(_ providers: [NSItemProvider]) -> Bool {
-        providers.contains { provider in ImportableTypes.all.contains { provider.hasItemConformingToTypeIdentifier($0.identifier) } }
+        providers.contains { provider in
+            ImportableTypes.all.contains { provider.hasItemConformingToTypeIdentifier($0.identifier) }
+        }
     }
 
     /// Copies of the Importable Files in `providers`, in drop order. Others are left out.
     @MainActor func receive(_ providers: [NSItemProvider]) async -> [URL] {
         var urls: [URL] = []
         for provider in providers {
-            guard let type = ImportableTypes.all.first(where: { provider.hasItemConformingToTypeIdentifier($0.identifier) }),
+            guard
+                let type = ImportableTypes.all.first(where: {
+                    provider.hasItemConformingToTypeIdentifier($0.identifier)
+                }),
                 let url = await copy(of: provider, type: type, index: urls.count)
             else { continue }
             urls.append(url)

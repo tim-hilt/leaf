@@ -54,22 +54,32 @@ struct FileGalleryView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: Layout.spacing) {
                         LazyVGrid(
-                            columns: Array(repeating: GridItem(.flexible(), spacing: Layout.spacing, alignment: .top), count: columnCount),
+                            columns: Array(
+                                repeating: GridItem(.flexible(), spacing: Layout.spacing, alignment: .top),
+                                count: columnCount),
                             spacing: Layout.spacing
                         ) {
-                            Button { open(.importCell) } label: { ImportCell() }
-                                .galleryHighlight(highlighted == .importCell)
-                                .id(GalleryItem.importCell)
-                                .accessibilityLabel("Import…")
+                            Button {
+                                open(.importCell)
+                            } label: {
+                                ImportCell()
+                            }
+                            .galleryHighlight(highlighted == .importCell)
+                            .id(GalleryItem.importCell)
+                            .accessibilityLabel("Import…")
                             ForEach(visibleDocuments) { document in
-                                Button { open(.document(document.id)) } label: { DocumentCell(document: document) }
-                                    .galleryHighlight(highlighted == .document(document.id))
-                                    .id(GalleryItem.document(document.id))
-                                    .contextMenu {
-                                        Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
-                                    }
-                                    .accessibilityLabel(document.accessibilityLabel)
-                                    .accessibilityAction(named: "Remove") { removal = document }
+                                Button {
+                                    open(.document(document.id))
+                                } label: {
+                                    DocumentCell(document: document)
+                                }
+                                .galleryHighlight(highlighted == .document(document.id))
+                                .id(GalleryItem.document(document.id))
+                                .contextMenu {
+                                    Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
+                                }
+                                .accessibilityLabel(document.accessibilityLabel)
+                                .accessibilityAction(named: "Remove") { removal = document }
                             }
                         }
                         .buttonStyle(.plain)
@@ -86,7 +96,11 @@ struct FileGalleryView: View {
                 .overlay {
                     if isDropTargeted { Rectangle().strokeBorder(.tint, lineWidth: 4).allowsHitTesting(false) }
                 }
-                .onGeometryChange(for: Int.self) { Layout.columnCount(forWidth: $0.size.width) } action: { columnCount = $0 }
+                .onGeometryChange(for: Int.self) {
+                    Layout.columnCount(forWidth: $0.size.width)
+                } action: {
+                    columnCount = $0
+                }
                 .focusable()
                 .focused($isGridFocused)
                 .focusEffectDisabled()
@@ -168,7 +182,8 @@ struct FileGalleryView: View {
             Text(alert.message)
         }
         .confirmationDialog(
-            "Remove “\(removal?.title ?? "")”?", isPresented: Binding(get: { removal != nil }, set: { _ in removal = nil }),
+            "Remove “\(removal?.title ?? "")”?",
+            isPresented: Binding(get: { removal != nil }, set: { _ in removal = nil }),
             titleVisibility: .visible, presenting: removal
         ) { document in
             Button("Remove", role: .destructive) { library.remove(document) }

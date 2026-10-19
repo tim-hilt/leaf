@@ -228,7 +228,9 @@ import Testing
             #expect(session.resultCount == 3)
 
             // The first match is current, and all are marked on the pages.
-            for _ in 0..<40 where reader.highlightedSelections?.count != 3 { try await Task.sleep(for: .milliseconds(50)) }
+            for _ in 0..<40 where reader.highlightedSelections?.count != 3 {
+                try await Task.sleep(for: .milliseconds(50))
+            }
             #expect(session.highlightedResultIndex == 0)
             #expect(reader.highlightedSelections?.count == 3)
 
@@ -408,8 +410,12 @@ import Testing
         let newer = CGRect(x: 150, y: 690, width: 80, height: 20)
         reader.highlights = [marked("older", older), marked("newer", newer)]
 
-        #expect(reader.highlight(at: centre(ofRect: CGRect(x: 165, y: 700, width: 0, height: 0), onPage: 0, in: reader))?.id == "newer")
-        #expect(reader.highlight(at: centre(ofRect: CGRect(x: 110, y: 700, width: 0, height: 0), onPage: 0, in: reader))?.id == "older")
+        #expect(
+            reader.highlight(at: centre(ofRect: CGRect(x: 165, y: 700, width: 0, height: 0), onPage: 0, in: reader))?.id
+                == "newer")
+        #expect(
+            reader.highlight(at: centre(ofRect: CGRect(x: 110, y: 700, width: 0, height: 0), onPage: 0, in: reader))?.id
+                == "older")
     }
 
     // MARK: Note icons
@@ -606,7 +612,9 @@ import Testing
     let webRect = CGRect(x: 50, y: 400, width: 200, height: 50)
     var links: [LinkEntry] {
         [
-            LinkEntry(pageIndex: place.pageIndex, rect: linkRect, target: .place(pageIndex: target.pageIndex, point: target.point)),
+            LinkEntry(
+                pageIndex: place.pageIndex, rect: linkRect,
+                target: .place(pageIndex: target.pageIndex, point: target.point)),
             LinkEntry(pageIndex: place.pageIndex, rect: webRect, target: .web(URL(string: "https://example.com")!)),
         ]
     }
@@ -687,7 +695,8 @@ private func viewPoint(of rect: CGRect, in reader: ReaderPDFView) -> CGPoint {
 /// `inScene` puts the window in the app's scene, as the find bar needs.
 @MainActor
 private func makeReader(
-    size: CGSize, openingAt place: Place? = nil, restoring state: ReaderViewState? = nil, links: [LinkEntry] = [], pageTexts: [String] = [],
+    size: CGSize, openingAt place: Place? = nil, restoring state: ReaderViewState? = nil, links: [LinkEntry] = [],
+    pageTexts: [String] = [],
     inScene: Bool = false
 ) throws -> ReaderPDFView {
     let reader = ReaderPDFView(handle: ReaderHandle())

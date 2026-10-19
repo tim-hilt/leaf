@@ -71,9 +71,9 @@ struct CoverStore: Sendable {
     private func url(_ id: String) -> URL { folder.appending(path: "\(id).jpg") }
 }
 
-private extension PDFDocument {
+extension PDFDocument {
     /// Page 1 as an image `pixelWidth` wide, or nil if there is no first page.
-    func cover(pixelWidth: CGFloat) -> CGImage? {
+    fileprivate func cover(pixelWidth: CGFloat) -> CGImage? {
         guard let page = page(at: 0) else { return nil }
         let bounds = page.bounds(for: .cropBox)
         guard bounds.width > 0 else { return nil }

@@ -45,7 +45,8 @@ final class ReadingProgressSaver {
         settling?.cancel()
         guard let place = handle.view?.topOfViewport, !(unlessUnmoved && place == saved) else { return }
         saved = place
-        let library = library, document = document
+        let library = library
+        let document = document
         Task { await library.saveProgress(place, of: document) }
     }
 }

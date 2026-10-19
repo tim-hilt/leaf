@@ -354,7 +354,8 @@
             let options =
                 pasteboard.data(forType: .textFinderOptions)
                 .flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] } ?? [:]
-            let caseInsensitive = options[NSPasteboard.PasteboardType.TextFinderOptionKey.textFinderCaseInsensitiveKey.rawValue]
+            let caseInsensitive = options[
+                NSPasteboard.PasteboardType.TextFinderOptionKey.textFinderCaseInsensitiveKey.rawValue]
             let matching = options[NSPasteboard.PasteboardType.TextFinderOptionKey.textFinderMatchingTypeKey.rawValue]
             let wordMatch: DocumentSearch.WordMatch =
                 switch (matching as? Int).flatMap(NSTextFinder.MatchingType.init(rawValue:)) {

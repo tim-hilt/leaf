@@ -20,7 +20,10 @@ struct GalleryCell<Page: View>: View {
                 .aspectRatio(Self.pageAspect, contentMode: .fit)
                 .frame(maxWidth: .infinity)
                 .overlay(alignment: .bottom) {
-                    if let percentRead { ReadingProgressIndicator(percent: percentRead).environment(\.colorScheme, pageIsDark ? .dark : .light) }
+                    if let percentRead {
+                        ReadingProgressIndicator(percent: percentRead).environment(
+                            \.colorScheme, pageIsDark ? .dark : .light)
+                    }
                 }
             Text(caption)
                 .font(.caption)

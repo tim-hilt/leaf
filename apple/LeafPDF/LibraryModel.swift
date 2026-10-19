@@ -147,7 +147,8 @@ enum SyncState: Equatable {
         case .wrongPassword: "Wrong password"
         case .updateNeeded: "Update LeafPDF to keep syncing"
         case .synced(let date):
-            now.timeIntervalSince(date) < 60 ? "Synced just now" : "Synced \(date.formatted(.relative(presentation: .named)))"
+            now.timeIntervalSince(date) < 60
+                ? "Synced just now" : "Synced \(date.formatted(.relative(presentation: .named)))"
         }
     }
 }
@@ -357,7 +358,10 @@ final class LibraryModel {
     /// and throws a `ConnectError` if they are wrong. Keeps them, the password
     /// in the Keychain, until `disconnect`. Replaces any earlier Connection.
     func connect(url: String, username: String, password: String) async throws {
-        let core = core, id = newConnection(), observer = relay(for: id), intervals = syncIntervals
+        let core = core
+        let id = newConnection()
+        let observer = relay(for: id)
+        let intervals = syncIntervals
         do {
             try await Task.detached {
                 try core.connectWebdav(
@@ -389,7 +393,10 @@ final class LibraryModel {
     /// Connects to the directory `directory` as if it were a cloud, for tests.
     /// Not remembered.
     func connect(directory: URL) async throws {
-        let core = core, id = newConnection(), observer = relay(for: id), intervals = syncIntervals
+        let core = core
+        let id = newConnection()
+        let observer = relay(for: id)
+        let intervals = syncIntervals
         try await Task.detached {
             try core.connectDirectory(path: directory.path, observer: observer, intervals: intervals)
         }.value
@@ -454,7 +461,8 @@ final class LibraryModel {
     private func reloadHighlightColors() async {
         let core = core
         let (colors, chosen) = await inStateOrder { (core.highlightColors(), core.defaultHighlightColor()) }
-        let all = colors.map(HighlightColor.init), defaultColor = HighlightColor(chosen)
+        let all = colors.map(HighlightColor.init)
+        let defaultColor = HighlightColor(chosen)
         if highlightColors != all { highlightColors = all }
         if defaultHighlightColor != defaultColor { defaultHighlightColor = defaultColor }
     }
@@ -475,7 +483,8 @@ final class LibraryModel {
     /// The saved Cover of `document`, loaded and decoded off the main thread,
     /// or nil if there is none. Cheap, so safe to call while scrolling; never renders.
     func savedCover(for document: LibraryDocument) async -> CGImage? {
-        let covers = covers, id = document.id
+        let covers = covers
+        let id = document.id
         return await Task.detached { covers.saved(id) }.value
     }
 
@@ -485,9 +494,15 @@ final class LibraryModel {
     /// hasn't started yet, so cells that scrolled away don't hold up the others.
     func cover(for document: LibraryDocument) async -> CGImage? {
         guard !Task.isCancelled else { return nil }
-        let covers = covers, id = document.id, file = document.file
+        let covers = covers
+        let id = document.id
+        let file = document.file
         let loading = Task.detached(priority: .utility) { Task.isCancelled ? nil : covers.cover(id: id, file: file) }
-        return await withTaskCancellationHandler { await loading.value } onCancel: { loading.cancel() }
+        return await withTaskCancellationHandler {
+            await loading.value
+        } onCancel: {
+            loading.cancel()
+        }
     }
 
     /// Copies the File at `url` into the Library without blocking the main
@@ -510,7 +525,8 @@ final class LibraryModel {
         }
         if let read { runningImport?.title = read.details.title }
 
-        let core = core, path = url.path
+        let core = core
+        let path = url.path
         // Reports arriving after the Import finished find no runningImport and do nothing.
         let relay = ProgressRelay { [weak self] fraction in
             guard let running = self?.runningImport else { return }
@@ -605,14 +621,16 @@ final class LibraryModel {
             lastRead: lastRead.millisecondsSince1970)
         documents[index].progress = progress
 
-        let core = core, id = document.id
+        let core = core
+        let id = document.id
         await writing { try? core.saveProgress(id: id, progress: progress) }
     }
 
     /// The Highlights of `document`, oldest first. Empty if there are none or
     /// the Document was Removed.
     func highlights(of document: LibraryDocument) async -> [Highlight] {
-        let core = core, id = document.id
+        let core = core
+        let id = document.id
         let markup = await inStateOrder { try? core.markup(id: id) }
         return markup?.highlights.map(Highlight.init) ?? []
     }
@@ -625,13 +643,15 @@ final class LibraryModel {
         _ anchor: HighlightAnchor, to document: LibraryDocument, at created: Date = .now
     ) async -> Highlight? {
         guard documents.contains(where: { $0.id == document.id }) else { return nil }
-        let core = core, id = document.id
+        let core = core
+        let id = document.id
         let pages = anchor.pages.map { page in
             PageRects(
                 pageIndex: UInt32(page.pageIndex),
                 rects: page.rects.map { Rect(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height) })
         }
-        let rgb = Rgb(defaultHighlightColor.color), milliseconds = created.millisecondsSince1970
+        let rgb = Rgb(defaultHighlightColor.color)
+        let milliseconds = created.millisecondsSince1970
         let stored = await writing {
             try? core.addHighlight(
                 id: id, anchor: pages, quotedText: anchor.quotedText, color: rgb, created: milliseconds)
@@ -646,7 +666,9 @@ final class LibraryModel {
     /// Document that was Removed.
     func setHighlightColor(_ color: RGB, of highlight: Highlight, in document: LibraryDocument) async {
         guard documents.contains(where: { $0.id == document.id }) else { return }
-        let core = core, id = document.id, highlightID = highlight.id
+        let core = core
+        let id = document.id
+        let highlightID = highlight.id
         let rgb = Rgb(color)
         await writing { try? core.setHighlightColor(id: id, highlight: highlightID, color: rgb) }
     }
@@ -656,7 +678,9 @@ final class LibraryModel {
     /// Does nothing for a Document that was Removed.
     func setNote(_ note: String, of highlight: Highlight, in document: LibraryDocument) async {
         guard documents.contains(where: { $0.id == document.id }) else { return }
-        let core = core, id = document.id, highlightID = highlight.id
+        let core = core
+        let id = document.id
+        let highlightID = highlight.id
         await writing { try? core.setHighlightNote(id: id, highlight: highlightID, note: note) }
     }
 
@@ -665,14 +689,17 @@ final class LibraryModel {
     /// Document that was Removed.
     func removeHighlight(_ highlight: Highlight, from document: LibraryDocument) async {
         guard documents.contains(where: { $0.id == document.id }) else { return }
-        let core = core, id = document.id, highlightID = highlight.id
+        let core = core
+        let id = document.id
+        let highlightID = highlight.id
         await writing { try? core.removeHighlight(id: id, highlight: highlightID) }
     }
 
     /// The page Notes of `document`, oldest first. Empty if there are none or
     /// the Document was Removed.
     func pageNotes(of document: LibraryDocument) async -> [PageNote] {
-        let core = core, id = document.id
+        let core = core
+        let id = document.id
         let markup = await inStateOrder { try? core.markup(id: id) }
         return markup?.pageNotes.map(PageNote.init) ?? []
     }
@@ -683,7 +710,9 @@ final class LibraryModel {
     /// text (`setText`). Nil for a Document that was Removed, or if the write failed.
     func addPageNote(at place: Place, to document: LibraryDocument, at created: Date = .now) async -> PageNote? {
         guard documents.contains(where: { $0.id == document.id }) else { return nil }
-        let core = core, id = document.id, milliseconds = created.millisecondsSince1970
+        let core = core
+        let id = document.id
+        let milliseconds = created.millisecondsSince1970
         let stored = await writing {
             try? core.addPageNote(
                 id: id, pageIndex: UInt32(place.pageIndex), x: place.point.x, y: place.point.y, created: milliseconds)
@@ -698,7 +727,9 @@ final class LibraryModel {
     /// it has. Does nothing for a Document that was Removed.
     func setText(_ text: String, of note: PageNote, in document: LibraryDocument) async {
         guard documents.contains(where: { $0.id == document.id }) else { return }
-        let core = core, id = document.id, noteID = note.id
+        let core = core
+        let id = document.id
+        let noteID = note.id
         await writing { try? core.setPageNoteText(id: id, note: noteID, text: text) }
     }
 
@@ -707,7 +738,9 @@ final class LibraryModel {
     /// Document that was Removed.
     func removePageNote(_ note: PageNote, from document: LibraryDocument) async {
         guard documents.contains(where: { $0.id == document.id }) else { return }
-        let core = core, id = document.id, noteID = note.id
+        let core = core
+        let id = document.id
+        let noteID = note.id
         await writing { try? core.removePageNote(id: id, note: noteID) }
     }
 
@@ -716,7 +749,8 @@ final class LibraryModel {
     /// returns when it has.
     func setDefaultHighlightColor(_ color: HighlightColor) async {
         defaultHighlightColor = color
-        let core = core, id = color.id
+        let core = core
+        let id = color.id
         await writing { try? core.setDefaultHighlightColor(id: id) }
     }
 
@@ -725,7 +759,9 @@ final class LibraryModel {
     /// stored it. Nil if that failed.
     @discardableResult
     func addCustomColor(_ color: RGB, at added: Date = .now) async -> HighlightColor? {
-        let core = core, rgb = Rgb(color), milliseconds = added.millisecondsSince1970
+        let core = core
+        let rgb = Rgb(color)
+        let milliseconds = added.millisecondsSince1970
         guard let stored = await writing({ try? core.addCustomColor(rgb: rgb, added: milliseconds) })
         else { return nil }
         let custom = HighlightColor(stored)
@@ -741,7 +777,8 @@ final class LibraryModel {
         guard color.isCustom else { return }
         highlightColors.removeAll { $0 == color }
         if defaultHighlightColor == color { defaultHighlightColor = highlightColors[0] }
-        let core = core, id = color.id
+        let core = core
+        let id = color.id
         await writing { try? core.removeCustomColor(id: id) }
     }
 
@@ -807,7 +844,9 @@ final class LibraryModel {
     /// publishing each as it arrives. A PDF that can't be read is skipped and
     /// tried again at the next launch.
     private func readMissingDetails() {
-        let missing = documents.filter { $0.pageCount == nil && !readingDetails.contains($0.id) }.map { ($0.id, $0.file) }
+        let missing = documents.filter { $0.pageCount == nil && !readingDetails.contains($0.id) }.map {
+            ($0.id, $0.file)
+        }
         guard !missing.isEmpty else { return }
         readingDetails.formUnion(missing.map(\.0))
         Task(priority: .background) { [weak self] in
@@ -823,7 +862,9 @@ final class LibraryModel {
     /// Saves `details` for Document `id` unless it was Removed or already has
     /// a page count, which means complete details.
     private func publish(_ details: DocumentDetails?, for id: String) {
-        guard let details, saved[id]?.pageCount == nil, let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        guard let details, saved[id]?.pageCount == nil, let index = documents.firstIndex(where: { $0.id == id }) else {
+            return
+        }
         saved[id] = details
         documents[index].details = details
     }

@@ -17,7 +17,9 @@ import UniformTypeIdentifiers
     var defaults: UserDefaults { UserDefaults(suiteName: root.lastPathComponent)! }
 
     /// This device's Cloud Backing credentials: the Keychain item is per test too.
-    var credentials: CloudCredentials { CloudCredentials(defaults: defaults, service: "leafpdf-test-\(root.lastPathComponent)") }
+    var credentials: CloudCredentials {
+        CloudCredentials(defaults: defaults, service: "leafpdf-test-\(root.lastPathComponent)")
+    }
 
     /// Opens the Library at `root`, keeping its saved Titles and Authors in
     /// `detailsFile`, its Covers in `coversFolder`, its sort choice in `defaults`
@@ -281,7 +283,8 @@ import UniformTypeIdentifiers
         let inbox = root.appending(path: "Inbox", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
         let library = try openLibrary(inbox: inbox)
-        let good = inbox.appending(path: "a.pdf"), garbage = inbox.appending(path: "notes.pdf")
+        let good = inbox.appending(path: "a.pdf")
+        let garbage = inbox.appending(path: "notes.pdf")
         try FileManager.default.copyItem(at: try writePDF(named: "a.pdf"), to: good)
         try Data("just some text".utf8).write(to: garbage)
 
@@ -439,7 +442,8 @@ import UniformTypeIdentifiers
     }
 
     @Test func titlesAndAuthorsSurviveReopeningTheLibrary() async throws {
-        _ = await (try openLibrary()).import(try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
+        _ = await (try openLibrary()).import(
+            try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
 
         let document = try #require(try openLibrary().documents.first)
 
@@ -448,7 +452,8 @@ import UniformTypeIdentifiers
     }
 
     @Test func missingSavedTitlesShowFileNamesFirstAndTitlesAfterTheBackgroundPass() async throws {
-        _ = await (try openLibrary()).import(try writePDF(named: "scan0042.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
+        _ = await (try openLibrary()).import(
+            try writePDF(named: "scan0042.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
         try FileManager.default.removeItem(at: detailsFile)
 
         let library = try openLibrary()
@@ -780,7 +785,9 @@ import UniformTypeIdentifiers
     let anchor = HighlightAnchor(
         pages: [
             .init(pageIndex: 2, rects: [CGRect(x: 72, y: 700.5, width: 200, height: 12)]),
-            .init(pageIndex: 3, rects: [CGRect(x: 72, y: 720, width: 100, height: 12), CGRect(x: 72, y: 706, width: 40, height: 12)]),
+            .init(
+                pageIndex: 3,
+                rects: [CGRect(x: 72, y: 720, width: 100, height: 12), CGRect(x: 72, y: 706, width: 40, height: 12)]),
         ],
         quotedText: "the passage")
 
@@ -1135,8 +1142,9 @@ import UniformTypeIdentifiers
 
     @Test func theBackgroundPassReadsAMissingPageCountAndKeepsTheTitle() async throws {
         let original = try openLibrary()
-        guard case .opened(let document) = await original.import(
-            try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville", pageCount: 3))
+        guard
+            case .opened(let document) = await original.import(
+                try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville", pageCount: 3))
         else { throw ImportFailed() }
         // Details saved before page counts existed.
         let old = #"{"\#(document.id)":{"title":"Moby-Dick","author":"Melville"}}"#

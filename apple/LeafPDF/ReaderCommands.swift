@@ -33,7 +33,9 @@
                     .disabled(reader == nil)
                 Divider()
                 ForEach(PageStyle.allCases) { style in
-                    Toggle(style.title, isOn: Binding(get: { settings.pageStyle == style }, set: { _ in settings.pageStyle = style }))
+                    Toggle(
+                        style.title,
+                        isOn: Binding(get: { settings.pageStyle == style }, set: { _ in settings.pageStyle = style }))
                 }
                 Button("Switch Light and Dark Pages") { switchPageStyle?() }
                     .keyboardShortcut("d", modifiers: [.shift, .command])

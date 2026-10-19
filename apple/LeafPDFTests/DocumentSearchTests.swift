@@ -1,11 +1,11 @@
 import PDFKit
 import Testing
 
+@testable import LeafPDF
+
 #if os(macOS)
     import AppKit
 #endif
-
-@testable import LeafPDF
 
 @MainActor @Suite struct DocumentSearchTests {
     @Test func findsMatchesInReadingOrderAcrossPages() async throws {
@@ -99,7 +99,10 @@ import Testing
         let matches = await search.run(.init("cat"))
 
         #expect(matches.map(\.excerpt.text) == ["cat sat on a cat", "cat sat on a cat"])
-        #expect(matches.map { $0.excerpt.text.distance(from: $0.excerpt.text.startIndex, to: $0.excerpt.matchRange.lowerBound) } == [0, 13])
+        #expect(
+            matches.map {
+                $0.excerpt.text.distance(from: $0.excerpt.text.startIndex, to: $0.excerpt.matchRange.lowerBound)
+            } == [0, 13])
     }
 
     // MARK: Printed page number

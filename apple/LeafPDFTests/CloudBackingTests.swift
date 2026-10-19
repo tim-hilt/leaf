@@ -21,7 +21,8 @@ extension LibraryModelTests {
             root: parent.appending(path: name, directoryHint: .isDirectory),
             detailsFile: parent.appending(path: "\(name)-details.json"),
             coversFolder: parent.appending(path: "\(name)-covers"), defaults: defaults,
-            credentials: CloudCredentials(defaults: defaults, service: "leafpdf-test-\(name)"), syncIntervals: Self.fast)
+            credentials: CloudCredentials(defaults: defaults, service: "leafpdf-test-\(name)"), syncIntervals: Self.fast
+        )
     }
 
     private func ids(_ library: LibraryModel) -> [String] { library.documents.map(\.id) }
@@ -42,7 +43,8 @@ extension LibraryModelTests {
     }
 
     private func importedID(_ library: LibraryModel, titled title: String) async throws -> String {
-        guard case .opened(let document) = await library.import(try writePDF(named: "\(title).pdf", metadataTitle: title))
+        guard
+            case .opened(let document) = await library.import(try writePDF(named: "\(title).pdf", metadataTitle: title))
         else { throw ImportFailure() }
         return document.id
     }
@@ -229,7 +231,8 @@ extension LibraryModelTests {
 
     @Test func syncsOfStateOnlyShowNoTransferBar() async throws {
         let (a, b, _) = try await twoDevicesWithADocument()
-        let onA = try #require(a.documents.first), onB = try #require(b.documents.first)
+        let onA = try #require(a.documents.first)
+        let onB = try #require(b.documents.first)
         let before = b.markupRevision(of: onB)
 
         _ = try #require(await a.addHighlight(anchor, to: onA))
@@ -337,7 +340,8 @@ extension LibraryModelTests {
 
     @Test func aNoteAndAPageNoteAddedOnOneDeviceAppearOnTheOther() async throws {
         let (a, b, _) = try await twoDevicesWithADocument()
-        let onA = try #require(a.documents.first), onB = try #require(b.documents.first)
+        let onA = try #require(a.documents.first)
+        let onB = try #require(b.documents.first)
         let highlight = try #require(await a.addHighlight(anchor, to: onA))
         await a.setNote("worth a note", of: highlight, in: onA)
         let pageNote = try #require(await a.addPageNote(at: place, to: onA))

@@ -66,7 +66,9 @@ final class DocumentSearch {
     /// `onMatch` for each match, in reading order, as it is found, then
     /// `onFinish` once nothing more will come. A cancelled search calls
     /// neither again. An empty query has no matches.
-    func search(_ query: Query, onMatch: @escaping @MainActor (Match) -> Void, onFinish: @escaping @MainActor () -> Void) {
+    func search(
+        _ query: Query, onMatch: @escaping @MainActor (Match) -> Void, onFinish: @escaping @MainActor () -> Void
+    ) {
         cancel()
         guard !query.text.isEmpty else { return onFinish() }
         let running = Running(document: document, contents: contents, query: query)

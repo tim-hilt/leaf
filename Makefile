@@ -7,8 +7,10 @@ PROFILE_DIR := $(if $(filter dev,$(PROFILE)),debug,$(PROFILE))
 APPLE_TARGETS := aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin
 FFI_LIB := libleafpdf_ffi.a
 APPLE_GEN := apple/LeafCore/Generated
+SWIFT_SRC := apple/LeafPDF apple/LeafPDFTests
+XCODEBUILD := cd apple && xcodebuild -quiet -scheme LeafPDF
 
-.PHONY: test lint apple apple-core apple-project apple-test clean
+.PHONY: test lint fmt apple apple-core apple-project apple-build apple-test clean
 
 ## Rust core
 
@@ -18,6 +20,11 @@ test:
 lint:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
+	swift format lint --strict -r $(SWIFT_SRC)
+
+fmt:
+	cargo fmt --all
+	swift format -i -r $(SWIFT_SRC)
 
 ## Apple clients (iOS, iPadOS, macOS)
 
@@ -42,9 +49,15 @@ apple-core:
 apple-project:
 	cd apple && xcodegen generate
 
-apple-test: apple-core apple-project
+# Builds the app for macOS and the iOS Simulator. Regenerates the project
+# first, so new Swift files are picked up.
+apple-build: apple-project
+	$(XCODEBUILD) build -destination 'platform=macOS'
+	$(XCODEBUILD) build -destination 'generic/platform=iOS Simulator'
+
+apple-test: apple-core apple-build
 	swift test --package-path apple/LeafCore
-	cd apple && xcodebuild test -scheme LeafPDF -destination 'platform=macOS' -only-testing:LeafPDFTests
+	$(XCODEBUILD) test -destination 'platform=macOS' -only-testing:LeafPDFTests
 
 clean:
 	cargo clean

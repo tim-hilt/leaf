@@ -13,11 +13,15 @@ struct HighlightColorGrid<Trailing: View>: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 36), spacing: 12)], spacing: 12) {
             ForEach(colors) { entry in
                 let isSelected = entry.color == selected
-                Button { onSelect(entry) } label: {
+                Button {
+                    onSelect(entry)
+                } label: {
                     Circle()
                         .fill(Color(entry.color))
                         .frame(width: 32, height: 32)
-                        .overlay { if isSelected { Image(systemName: "checkmark").foregroundStyle(.black.opacity(0.7)) } }
+                        .overlay {
+                            if isSelected { Image(systemName: "checkmark").foregroundStyle(.black.opacity(0.7)) }
+                        }
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(entry.name)
@@ -51,10 +55,13 @@ struct AddCustomColorButton: View {
             .frame(width: 32, height: 32)
             .overlay { Image(systemName: "plus").foregroundStyle(.secondary) }
             .overlay {
-                ColorPicker("Add Custom Color", selection: Binding(get: { picked ?? .gray }, set: { picked = $0 }), supportsOpacity: false)
-                    .labelsHidden()
-                    .frame(width: 32, height: 32)
-                    .opacity(0.02)
+                ColorPicker(
+                    "Add Custom Color", selection: Binding(get: { picked ?? .gray }, set: { picked = $0 }),
+                    supportsOpacity: false
+                )
+                .labelsHidden()
+                .frame(width: 32, height: 32)
+                .opacity(0.02)
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Add Custom Color")

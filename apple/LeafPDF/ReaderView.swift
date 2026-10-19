@@ -119,7 +119,7 @@ struct ReaderView: View {
                             TableOfContentsView(contents: contents, position: position(in: contents)) {
                                 handle.view?.jump(to: $0)
                             }
-                                .presentationCompactAdaptation(.sheet)
+                            .presentationCompactAdaptation(.sheet)
                         }
                 }
             }
@@ -182,12 +182,15 @@ struct ReaderView: View {
         Group {
             if let pdf {
                 PDFKitView(
-                    document: pdf, appearance: settings.pageAppearance(systemScheme: colorScheme), highlights: highlights,
+                    document: pdf, appearance: settings.pageAppearance(systemScheme: colorScheme),
+                    highlights: highlights,
                     pageNotes: pageNotes, pageNoteColor: library.highlightColors[0].color,
                     handle: handle, results: results,
                     state: tabs.viewState(of: document.id) ?? document.place.map { ReaderViewState(place: $0) },
-                    onHighlight: highlight, onHighlightTap: { openMarkup = OpenMarkup(target: .highlight($0.id), point: $1) },
-                    onAddNote: addPageNote, onPageNoteTap: { openMarkup = OpenMarkup(target: .pageNote($0.id), point: $1) },
+                    onHighlight: highlight,
+                    onHighlightTap: { openMarkup = OpenMarkup(target: .highlight($0.id), point: $1) },
+                    onAddNote: addPageNote,
+                    onPageNoteTap: { openMarkup = OpenMarkup(target: .pageNote($0.id), point: $1) },
                     onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
                     onBackChange: { backPageNumber = $0 }, onShowResults: { isShowingResults = true })
             } else {
@@ -202,7 +205,11 @@ struct ReaderView: View {
             }
         }
         .animation(.default, value: backPageNumber)
-        .popover(item: $openMarkup, attachmentAnchor: .rect(.rect(CGRect(origin: openMarkup?.point ?? .zero, size: CGSize(width: 1, height: 1))))) { open in
+        .popover(
+            item: $openMarkup,
+            attachmentAnchor: .rect(
+                .rect(CGRect(origin: openMarkup?.point ?? .zero, size: CGSize(width: 1, height: 1))))
+        ) { open in
             popover(for: open)
         }
     }
@@ -215,15 +222,17 @@ struct ReaderView: View {
                 HighlightPopover(
                     colors: library.highlightColors, color: highlight.color, note: highlight.note,
                     onColor: { recolor(highlight, to: $0) }, onNote: { setNote($0, of: highlight) },
-                    onRemove: { remove(highlight) })
-                    .presentationCompactAdaptation(.sheet)
+                    onRemove: { remove(highlight) }
+                )
+                .presentationCompactAdaptation(.sheet)
             }
         case .pageNote(let id):
             if let note = pageNotes.first(where: { $0.id == id }) {
                 PageNotePopover(
                     text: note.text, startsEditing: open.startsEditing, onText: { setText($0, of: note) },
-                    onRemove: { remove(note) })
-                    .presentationCompactAdaptation(.sheet)
+                    onRemove: { remove(note) }
+                )
+                .presentationCompactAdaptation(.sheet)
             }
         }
     }

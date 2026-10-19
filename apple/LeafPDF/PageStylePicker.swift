@@ -9,7 +9,9 @@ struct PageStylePicker: View {
     var body: some View {
         HStack(spacing: 20) {
             ForEach(PageStyle.allCases) { style in
-                Button { selection = style } label: {
+                Button {
+                    selection = style
+                } label: {
                     swatch(style)
                         .overlay(Circle().strokeBorder(.secondary.opacity(0.6), lineWidth: 1))
                         .frame(width: 36, height: 36)

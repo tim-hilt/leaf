@@ -14,9 +14,11 @@ import Testing
     }
 
     @Test func receivesCopiesOfThePDFsInDropOrderAndLeavesTheOriginals() async throws {
-        let first = try writePDF(named: "first.pdf"), second = try writePDF(named: "second.pdf")
+        let first = try writePDF(named: "first.pdf")
+        let second = try writePDF(named: "second.pdf")
         let dropped = DroppedFiles()
-        let firstItem = NSItemProvider(contentsOf: first)!, secondItem = NSItemProvider(contentsOf: second)!
+        let firstItem = NSItemProvider(contentsOf: first)!
+        let secondItem = NSItemProvider(contentsOf: second)!
         firstItem.suggestedName = "first"
         // Some sources suggest the name with its extension.
         secondItem.suggestedName = "second.pdf"

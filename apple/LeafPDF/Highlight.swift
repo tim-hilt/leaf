@@ -45,7 +45,8 @@ extension [HighlightColor] {
     /// These colors, and a last one in `color` unless one is already: a Highlight
     /// keeps its color when its Custom Color is removed, so it still shows.
     func including(_ color: RGB) -> [HighlightColor] {
-        contains { $0.color == color } ? self : self + [HighlightColor(id: "Removed Color", color: color, isCustom: true)]
+        contains { $0.color == color }
+            ? self : self + [HighlightColor(id: "Removed Color", color: color, isCustom: true)]
     }
 }
 

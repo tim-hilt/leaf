@@ -67,7 +67,9 @@ final class ReaderPDFView: PDFView {
             guard highlights != oldValue else { return }
             noteIcons.refresh()
             // Notes aren't drawn into the pages.
-            guard highlights.map(\.look) != oldValue.map(\.look), let styled = document as? StyledDocument else { return }
+            guard highlights.map(\.look) != oldValue.map(\.look), let styled = document as? StyledDocument else {
+                return
+            }
             styled.highlights = highlights
             layoutDocumentView()
         }
