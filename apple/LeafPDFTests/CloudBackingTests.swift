@@ -194,6 +194,54 @@ extension LibraryModelTests {
         #expect(credentials.load() == nil)
     }
 
+    @Test func theTransferBarSaysHowManyDocumentsAreDoneAndIsGoneAtTheEnd() {
+        #expect(FileTransfer(done: 0, total: 120)?.text == "Syncing 0 of 120 Documents")
+        #expect(FileTransfer(done: 12, total: 120)?.text == "Syncing 12 of 120 Documents")
+        #expect(FileTransfer(done: 120, total: 120) == nil)
+    }
+
+    @Test func theTransferBarCountsUpDuringAMultiFileSyncAndIsGoneAfterwards() async throws {
+        let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())
+        let count = 8
+        for number in 0..<count { _ = try await importedID(a, titled: "Doc \(number)") }
+        try await a.connect(directory: cloud)
+        // All Files are in the cloud, so B downloads them in one Sync.
+        #expect(
+            try await eventually {
+                if case .synced = a.syncState { true } else { false }
+            })
+
+        try await b.connect(directory: cloud)
+        var seen: [Int] = []
+        for _ in 0..<5000 {
+            if let done = b.transfer?.done, seen.last != done { seen.append(done) }
+            if b.documents.count == count && b.transfer == nil { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+
+        #expect(!seen.isEmpty)
+        #expect(seen == seen.sorted())
+        #expect(b.documents.count == count)
+        #expect(b.transfer == nil)
+    }
+
+    @Test func syncsOfStateOnlyShowNoTransferBar() async throws {
+        let (a, b, _) = try await twoDevicesWithADocument()
+        let onA = try #require(a.documents.first), onB = try #require(b.documents.first)
+        let before = b.markupRevision(of: onB)
+
+        _ = try #require(await a.addHighlight(anchor, to: onA))
+        await a.saveProgress(place, of: onA, at: lastRead)
+        var bars: [FileTransfer] = []
+        for _ in 0..<500 where b.markupRevision(of: onB) == before || b.documents.first?.place == nil {
+            bars += [a.transfer, b.transfer].compactMap { $0 }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(b.markupRevision(of: onB) > before)
+        #expect(bars.isEmpty)
+    }
+
     @Test func theStatusLineSaysHowSyncStands() {
         let now = Date(timeIntervalSince1970: 1_000_000)
 

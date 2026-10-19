@@ -26,6 +26,35 @@ const STATE_DIR: &str = "v1/state";
 const PREFERENCES_DIR: &str = "v1/preferences";
 const FILES_DIR: &str = "v1/files";
 
+/// The File transfers of one step, counted in Documents.
+struct Transfers<'a> {
+    total: usize,
+    done: usize,
+    report: &'a dyn Fn(usize, usize),
+}
+
+impl<'a> Transfers<'a> {
+    fn new(total: usize, report: &'a dyn Fn(usize, usize)) -> Self {
+        Self {
+            total,
+            done: 0,
+            report,
+        }
+    }
+
+    /// Reports the start, if there is anything to transfer.
+    fn start(&self) {
+        if self.total > 0 {
+            (self.report)(0, self.total);
+        }
+    }
+
+    fn done(&mut self) {
+        self.done += 1;
+        (self.report)(self.done, self.total);
+    }
+}
+
 /// What this Device knows of the exchange stored in the cursor file `path`.
 fn read_cursor(path: &Path) -> Cursor {
     Cursor::decode(&fs::read_to_string(path).unwrap_or_default())
@@ -60,6 +89,18 @@ impl Library {
     /// document. A File whose bytes don't match its hash is not stored. The
     /// Library is tied to no storage: it sends everything to one that lacks it.
     pub fn sync(&self, storage: &dyn Storage) -> io::Result<()> {
+        self.sync_reporting(storage, &|_, _| {})
+    }
+
+    /// `sync`, telling `on_transfer` how many Documents' Files have been
+    /// uploaded or downloaded of how many this step transfers: `(0, total)`
+    /// first, then after each File, ending at `(total, total)`. Never called
+    /// for a step that transfers no File. A step that fails stops short.
+    pub fn sync_reporting(
+        &self,
+        storage: &dyn Storage,
+        on_transfer: &dyn Fn(usize, usize),
+    ) -> io::Result<()> {
         let mut exchanges = self
             .exchanges
             .lock()
@@ -83,8 +124,12 @@ impl Library {
             .map(|blob| blob.name)
             .collect();
         self.delete_removed_files(storage, &remote_files)?;
-        self.upload_files(storage, &remote_files)?;
-        self.download_files(storage, &remote_files)
+        let uploads = self.files_to_upload(&remote_files)?;
+        let downloads = self.files_to_download(&remote_files)?;
+        let mut transfers = Transfers::new(uploads.len() + downloads.len(), on_transfer);
+        transfers.start();
+        self.upload_files(storage, uploads, &mut transfers)?;
+        self.download_files(storage, downloads, &mut transfers)
     }
 
     fn dirty(&self) -> MutexGuard<'_, Dirty> {
@@ -368,24 +413,37 @@ impl Library {
         sent.map(|()| merged)
     }
 
-    /// Uploads the stored Files of listed Documents that aren't among `remote`.
-    fn upload_files(&self, storage: &dyn Storage, remote: &HashSet<String>) -> io::Result<()> {
+    /// The listed Documents whose stored File isn't among `remote`, with its path.
+    fn files_to_upload(&self, remote: &HashSet<String>) -> io::Result<Vec<(String, PathBuf)>> {
+        let mut found = Vec::new();
         for entry in self.entries().iter().filter(|e| !remote.contains(&e.id)) {
-            let Some(path) = self.file_path(entry)? else {
-                continue;
-            };
+            if let Some(path) = self.file_path(entry)? {
+                found.push((entry.id.clone(), path));
+            }
+        }
+        Ok(found)
+    }
+
+    fn upload_files(
+        &self,
+        storage: &dyn Storage,
+        files: Vec<(String, PathBuf)>,
+        transfers: &mut Transfers,
+    ) -> io::Result<()> {
+        for (id, path) in files {
             match File::open(path) {
                 // Removed meanwhile.
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                file => storage.put(&format!("{FILES_DIR}/{}", entry.id), &mut file?)?,
+                file => storage.put(&format!("{FILES_DIR}/{id}"), &mut file?)?,
             }
+            transfers.done();
         }
         Ok(())
     }
 
-    /// Downloads the Files of listed Documents that are among `remote` and not
-    /// stored here.
-    fn download_files(&self, storage: &dyn Storage, remote: &HashSet<String>) -> io::Result<()> {
+    /// The listed Documents that are among `remote` and not stored here, those
+    /// Read last first, then those Imported last first.
+    fn files_to_download(&self, remote: &HashSet<String>) -> io::Result<Vec<Entry>> {
         let mut missing = Vec::new();
         for entry in self.entries() {
             if remote.contains(&entry.id)
@@ -399,8 +457,18 @@ impl Library {
         missing.sort_by(|(a_read, a), (b_read, b)| {
             (b_read, b.imported, &a.id).cmp(&(a_read, a.imported, &b.id))
         });
-        for (_, entry) in missing {
+        Ok(missing.into_iter().map(|(_, entry)| entry).collect())
+    }
+
+    fn download_files(
+        &self,
+        storage: &dyn Storage,
+        entries: Vec<Entry>,
+        transfers: &mut Transfers,
+    ) -> io::Result<()> {
+        for entry in entries {
             self.download_file(storage, &entry)?;
+            transfers.done();
         }
         Ok(())
     }
@@ -540,6 +608,17 @@ mod tests {
             self.library.sync(&self.storage).unwrap();
         }
 
+        /// A step, and the File transfers it reported: Documents done of total.
+        fn sync_reporting(&self) -> Vec<(usize, usize)> {
+            let reports = Mutex::new(Vec::new());
+            self.library
+                .sync_reporting(&self.storage, &|done, total| {
+                    reports.lock().unwrap().push((done, total))
+                })
+                .unwrap();
+            reports.into_inner().unwrap()
+        }
+
         fn ids(&self) -> Vec<String> {
             self.library
                 .documents()
@@ -590,6 +669,34 @@ mod tests {
         assert_eq!(fs::read(&document.path).unwrap(), b"paper bytes");
         assert_eq!(document.path.file_name().unwrap(), "Paper.pdf");
         assert!(document.progress.is_none());
+    }
+
+    #[test]
+    fn uploads_and_downloads_report_documents_done_of_total_ending_at_total() {
+        let mut cloud = Cloud::new();
+        let (a, b) = (cloud.device(), cloud.device());
+        for name in ["1", "2", "3"] {
+            a.import(&format!("{name}.pdf"), name.as_bytes());
+        }
+        let expected = vec![(0, 3), (1, 3), (2, 3), (3, 3)];
+
+        assert_eq!(a.sync_reporting(), expected, "uploads");
+        assert_eq!(b.sync_reporting(), expected, "downloads");
+    }
+
+    #[test]
+    fn a_step_without_file_transfers_reports_none() {
+        let mut cloud = Cloud::new();
+        let (a, b) = (cloud.device(), cloud.device());
+        let imported = a.import("a.pdf", b"on a");
+        a.sync();
+        b.sync();
+        a.library
+            .add_highlight(&imported.id, vec![], "quoted", Rgb { r: 1, g: 2, b: 3 }, 1)
+            .unwrap();
+
+        assert_eq!(a.sync_reporting(), []);
+        assert_eq!(b.sync_reporting(), []);
     }
 
     #[test]

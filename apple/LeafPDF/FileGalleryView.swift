@@ -8,7 +8,8 @@ import UniformTypeIdentifiers
 /// Reader. The toolbar "+" and File > Import… (also from the Reader) Import a
 /// PDF and open it, replacing any open Document. A cell's context menu
 /// (long-press, right-click) or VoiceOver action offers "Remove", after
-/// confirmation. A window reading a Document that gets Removed (here or in
+/// confirmation. A thin bar at the bottom shows "Syncing N of M Documents"
+/// while Files transfer. A window reading a Document that gets Removed (here or in
 /// another window or Device) returns to the grid, without a message.
 ///
 /// With a keyboard (Mac, iPad), arrow keys move a highlight through the grid,
@@ -83,6 +84,10 @@ struct FileGalleryView: View {
             }
             .onScrollPhaseChange { _, phase in scroll.scrollingChanged(isScrolling: phase != .idle) }
             .environment(scroll)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if let transfer = library.transfer { TransferBar(transfer: transfer) }
+            }
+            .animation(.default, value: library.transfer != nil)
             .searchable(text: $searchText)
             .searchFocused($isSearchFocused)
             .navigationTitle("LeafPDF")
@@ -256,6 +261,24 @@ private struct ImportAlert {
     init(failed url: URL, message: String) {
         title = "Couldn't import “\(url.lastPathComponent)”"
         self.message = message
+    }
+}
+
+/// A thin bar under the grid, like the one Files shows, while Files transfer.
+/// On the Gallery only: the Reader, which is pushed on top, has none.
+private struct TransferBar: View {
+    let transfer: FileTransfer
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ProgressView(value: Double(transfer.done), total: Double(transfer.total))
+            Text(transfer.text).font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, Layout.spacing)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+        .accessibilityElement(children: .combine)
     }
 }
 

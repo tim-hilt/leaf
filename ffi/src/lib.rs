@@ -330,6 +330,9 @@ pub trait SyncObserver: Send + Sync {
     fn library_changed(&self);
     /// The Markup of Document `id` changed: read it again.
     fn markup_changed(&self, id: String);
+    /// Files are transferring: `done` Documents of `total`, from `0` to `total`.
+    /// A Sync that fails stops short; its next `status_changed` ends it.
+    fn transfer_progress(&self, done: u64, total: u64);
 }
 
 /// When Sync steps run, see `leafpdf_core::sync_loop::Intervals`.
@@ -367,6 +370,10 @@ impl sync_loop::Observer for Observer {
 
     fn markup_changed(&self, id: &str) {
         self.0.markup_changed(id.to_owned());
+    }
+
+    fn transfer(&self, done: usize, total: usize) {
+        self.0.transfer_progress(done as u64, total as u64);
     }
 }
 

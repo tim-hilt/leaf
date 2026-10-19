@@ -40,6 +40,11 @@ pub trait Observer: Send + Sync {
     fn library_changed(&self);
     /// A step changed the Markup of Document `id`: it is worth reading again.
     fn markup_changed(&self, id: &str);
+    /// A step transfers Files: `done` Documents' Files of `total` are
+    /// uploaded or downloaded. First `(0, total)`, ending at `(total, total)`;
+    /// not called for a step that transfers none. A step that fails stops
+    /// short, so the client clears it at the next `status`.
+    fn transfer(&self, done: usize, total: usize);
 }
 
 /// When steps run.
@@ -227,7 +232,11 @@ impl Shared {
     fn step(&self, library: &Library, storage: &dyn Storage, observer: &dyn Observer) {
         observer.status(Status::Syncing);
         let changes = library.sync_changes();
-        let result = library.sync(storage);
+        let result = library.sync_reporting(storage, &|done, total| {
+            if !self.is_cancelled() {
+                observer.transfer(done, total);
+            }
+        });
         if self.is_cancelled() {
             return;
         }
@@ -392,6 +401,7 @@ mod tests {
         statuses: Mutex<Vec<Status>>,
         library_changed: AtomicUsize,
         markup_changed: Mutex<Vec<String>>,
+        transfers: Mutex<Vec<(usize, usize)>>,
     }
 
     impl Events {
@@ -419,6 +429,9 @@ mod tests {
         fn markup_changed(&self, id: &str) {
             self.markup_changed.lock().unwrap().push(id.to_owned());
         }
+        fn transfer(&self, done: usize, total: usize) {
+            self.transfers.lock().unwrap().push((done, total));
+        }
     }
 
     fn start(
@@ -445,6 +458,33 @@ mod tests {
         assert!(matches!(events.last(), Some(Status::Synced { at }) if at > 0));
         // Sending what is local changes no Document.
         assert_eq!(events.library_changed.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn file_transfers_are_reported_as_documents_done_of_total_and_state_only_steps_report_none() {
+        let home = Home::new();
+        let (a, b) = (home.device("a"), home.device("b"));
+        let id = home.import(&a, b"on a");
+        home.import(&a, b"on a, too");
+        let (a_loop, a_events) = start(&a, home.cloud(), intervals(10 * MS, HOUR));
+        eventually("the upload", || a_events.steps() == 1);
+        let (_b_loop, b_events) = start(&b, home.cloud(), intervals(HOUR, HOUR));
+        eventually("the download", || b_events.steps() == 1);
+        let expected = [(0, 2), (1, 2), (2, 2)];
+        assert_eq!(*a_events.transfers.lock().unwrap(), expected);
+        assert_eq!(*b_events.transfers.lock().unwrap(), expected);
+
+        a.add_highlight(
+            &id,
+            vec![],
+            "quoted",
+            crate::markup::Rgb { r: 1, g: 2, b: 3 },
+            1,
+        )
+        .unwrap();
+        a_loop.local_change();
+        eventually("the state-only step", || a_events.steps() == 2);
+        assert_eq!(a_events.transfers.lock().unwrap().len(), 3);
     }
 
     #[test]

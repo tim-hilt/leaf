@@ -103,6 +103,23 @@ enum SyncState: Equatable {
     }
 }
 
+/// Files uploading or downloading: what the Gallery's transfer bar shows.
+struct FileTransfer: Equatable {
+    /// Documents whose File has been transferred.
+    let done: Int
+    /// Documents whose File this Sync transfers.
+    let total: Int
+
+    /// Nil once everything is transferred: there is no bar to show.
+    init?(done: Int, total: Int) {
+        guard done < total else { return nil }
+        self.done = done
+        self.total = total
+    }
+
+    var text: String { "Syncing \(done) of \(total) Documents" }
+}
+
 /// The Cloud Provider this Device is Connected to.
 struct CloudConnection: Equatable {
     /// The Server URL, or the directory of a test.
@@ -124,15 +141,18 @@ extension ConnectError {
 /// Forwards what the core's Sync loop reports, on its thread, to the main actor.
 private final class SyncRelay: SyncObserver {
     private let onStatus: @Sendable @MainActor (SyncState) -> Void
+    private let onTransfer: @Sendable @MainActor (FileTransfer?) -> Void
     private let onLibraryChanged: @Sendable @MainActor () -> Void
     private let onMarkupChanged: @Sendable @MainActor (String) -> Void
 
     init(
         status: @escaping @Sendable @MainActor (SyncState) -> Void,
+        transfer: @escaping @Sendable @MainActor (FileTransfer?) -> Void,
         libraryChanged: @escaping @Sendable @MainActor () -> Void,
         markupChanged: @escaping @Sendable @MainActor (String) -> Void
     ) {
         onStatus = status
+        onTransfer = transfer
         onLibraryChanged = libraryChanged
         onMarkupChanged = markupChanged
     }
@@ -145,6 +165,11 @@ private final class SyncRelay: SyncObserver {
             case .offline: .offline
             }
         Task { @MainActor [onStatus] in onStatus(state) }
+    }
+
+    func transferProgress(done: UInt64, total: UInt64) {
+        let transfer = FileTransfer(done: Int(done), total: Int(total))
+        Task { @MainActor [onTransfer] in onTransfer(transfer) }
     }
 
     func libraryChanged() {
@@ -187,6 +212,9 @@ final class LibraryModel {
     private(set) var connection: CloudConnection?
     /// Where Sync stands. Only meaningful while `connection` isn't nil.
     private(set) var syncState = SyncState.syncing
+    /// The File transfers of the running Sync; nil while none runs. Reading
+    /// Progress, Markup and Highlight Colors Sync without it.
+    private(set) var transfer: FileTransfer?
     /// How often Sync changed the Markup of each Document that it changed. A
     /// Reader that sees its Document's number change reads the Markup again.
     private var markupRevisions: [String: Int] = [:]
@@ -287,6 +315,7 @@ final class LibraryModel {
     func disconnect() async {
         connectionID = nil
         connection = nil
+        transfer = nil
         credentials.forget()
         let core = core
         await Task.detached { core.disconnect() }.value
@@ -302,6 +331,7 @@ final class LibraryModel {
         let id = UUID()
         connectionID = id
         syncState = .syncing
+        transfer = nil
         return id
     }
 
@@ -309,7 +339,13 @@ final class LibraryModel {
     private func relay(for id: UUID) -> SyncObserver {
         SyncRelay(
             status: { [weak self] state in
-                if self?.connectionID == id { self?.syncState = state }
+                guard let self, connectionID == id else { return }
+                syncState = state
+                // A Sync that failed midway reports no end.
+                if state != .syncing { transfer = nil }
+            },
+            transfer: { [weak self] transfer in
+                if self?.connectionID == id { self?.transfer = transfer }
             },
             libraryChanged: { [weak self] in
                 guard let self, connectionID == id else { return }
