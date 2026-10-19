@@ -5,8 +5,10 @@ import UniformTypeIdentifiers
 /// in the toolbar's sort menu, led by a "+" cell that Imports. The window's own
 /// search field (⌘F on Mac and iPad) narrows it to matching Documents; with
 /// none, "No Results" follows the "+" cell. A click or tap opens a Document in the
-/// Reader. The toolbar "+" and File > Import… (also from the Reader) Import a
-/// PDF and open it, replacing any open Document. A cell's context menu
+/// Reader. The toolbar "+" and File > Import… (also from the Reader) Import
+/// PDFs, as do Files dropped onto the Gallery or handed over by other apps
+/// (share sheet, Open With, Dock icon). One File opens in the Reader, replacing
+/// any open Document; several leave the Gallery showing. A cell's context menu
 /// (long-press, right-click) or VoiceOver action offers "Remove", after
 /// confirmation. A thin bar at the bottom shows "Syncing N of M Documents"
 /// while Files transfer, and a warning in the toolbar opens Settings while Sync is
@@ -245,7 +247,10 @@ struct FileGalleryView: View {
     }
 
     private func importFiles(_ urls: [URL], from origin: ImportOrigin) async {
-        switch await library.importFiles(urls, from: origin) {
+        let result = await library.importFiles(urls, from: origin)
+        // Files from other apps, and several Files, replace an open Reader.
+        if origin == .openWithOrShare || urls.count > 1 { path = [] }
+        switch result {
         case .openReader(let document): path = [document]
         case .alreadyInLibrary(let document): duplicate = document
         case .problems(let problems): rejection = ImportAlert(problems)

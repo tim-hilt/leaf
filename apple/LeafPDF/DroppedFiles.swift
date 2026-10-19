@@ -33,7 +33,8 @@ struct DroppedFiles {
                 guard let received else { return continuation.resume(returning: nil) }
                 let directory = folder.appending(path: String(index), directoryHint: .isDirectory)
                 // The system's copy may be named after the type; the dropped File's name is the Title's fallback.
-                let name = provider.suggestedName.map { $0 + "." + (type.preferredFilenameExtension ?? received.pathExtension) }
+                let suffix = "." + (type.preferredFilenameExtension ?? received.pathExtension)
+                let name = provider.suggestedName.map { $0.lowercased().hasSuffix(suffix) ? $0 : $0 + suffix }
                 let copy = directory.appending(path: name ?? received.lastPathComponent)
                 do {
                     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

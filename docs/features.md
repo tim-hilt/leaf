@@ -76,7 +76,7 @@ Cloud Backing is off until the user Connects a Cloud Provider in Settings; only 
 
 ## 9. File Import (external)
 
-Files can also be Imported from outside: the share sheet on iOS and iPadOS, "Open With" and the Dock icon on macOS, and dropping onto the Gallery. LeafPDF only declares that it opens PDFs (on macOS as an Alternate handler, never the default). There are no extension targets; the in-app import pipeline is reused.
+Files can also be Imported from outside: the share sheet on iOS and iPadOS, "Open With" and the Dock icon on macOS, and dropping onto the Gallery. LeafPDF only declares that it opens PDFs (on macOS as an Alternate handler, never the default). There are no extension targets; the in-app import pipeline is reused. A Share Extension would need an App Group for the Library folder, would have two processes writing the Library state, and would lack the progress modal, alerts and Reader.
 
 - One file opens the Reader on it. A file already in the Library opens its Document; a drop shows "Already in your Library", like "+".
 - Several files are Imported one after another and the Gallery stays. Duplicates are skipped and rejections are listed in one alert. "+" accepts several files too.

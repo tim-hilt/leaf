@@ -18,7 +18,8 @@ import Testing
         let dropped = DroppedFiles()
         let firstItem = NSItemProvider(contentsOf: first)!, secondItem = NSItemProvider(contentsOf: second)!
         firstItem.suggestedName = "first"
-        secondItem.suggestedName = "second"
+        // Some sources suggest the name with its extension.
+        secondItem.suggestedName = "second.pdf"
 
         let urls = await dropped.receive([firstItem, NSItemProvider(object: "x" as NSString), secondItem])
 

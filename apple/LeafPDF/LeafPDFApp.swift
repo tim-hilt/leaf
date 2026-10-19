@@ -15,6 +15,8 @@ struct LeafPDFApp: App {
                 .environment(library)
                 .environment(settings)
                 .preferredColorScheme(settings.theme.colorScheme)
+                // Incoming Files go to the frontmost open window...
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
                     case .active: library.foreground()
@@ -23,7 +25,7 @@ struct LeafPDFApp: App {
                     }
                 }
         }
-        // Incoming Files go to an existing window, a new one only if none is open.
+        // ...and to a new one only if none is open.
         .handlesExternalEvents(matching: ["*"])
         .commands {
             ImportCommands()
