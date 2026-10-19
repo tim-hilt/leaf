@@ -1,6 +1,7 @@
 import Foundation
 import LeafCore
 import Testing
+import UniformTypeIdentifiers
 
 @testable import LeafPDF
 
@@ -268,7 +269,8 @@ import Testing
         let types = Bundle(for: LibraryModel.self).infoDictionary?["CFBundleDocumentTypes"] as? [[String: Any]]
 
         #expect(types?.count == 1)
-        #expect(types?.first?["LSItemContentTypes"] as? [String] == ["com.adobe.pdf"])
+        #expect(types?.first?["LSItemContentTypes"] as? [String] == ImportableTypes.all.map(\.identifier))
+        #expect(ImportableTypes.all == [.pdf])
         #expect(types?.first?["CFBundleTypeRole"] as? String == "Viewer")
         #expect(types?.first?["LSHandlerRank"] as? String == "Alternate")
     }

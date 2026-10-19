@@ -22,6 +22,7 @@ struct FileGalleryView: View {
     @Environment(LibraryModel.self) private var library
     @State private var path: [LibraryDocument] = []
     @State private var isImporting = false
+    @State private var isDropTargeted = false
     @State private var isShowingSettings = false
     @State private var rejection: ImportAlert?
     /// Files handed over by other apps that haven't been passed on to the Library yet.
@@ -75,6 +76,11 @@ struct FileGalleryView: View {
                         }
                     }
                     .padding(Layout.spacing)
+                }
+                // Only the Gallery takes drops, not the Reader on top of it.
+                .onDrop(of: path.isEmpty ? ImportableTypes.all : [], isTargeted: $isDropTargeted, perform: drop)
+                .overlay {
+                    if isDropTargeted { Rectangle().strokeBorder(.tint, lineWidth: 4).allowsHitTesting(false) }
                 }
                 .onGeometryChange(for: Int.self) { Layout.columnCount(forWidth: $0.size.width) } action: { columnCount = $0 }
                 .focusable()
@@ -130,7 +136,7 @@ struct FileGalleryView: View {
             if let running = library.runningImport { ImportProgressModal(running: running) }
         }
         .fileImporter(
-            isPresented: $isImporting, allowedContentTypes: [.pdf], allowsMultipleSelection: true
+            isPresented: $isImporting, allowedContentTypes: ImportableTypes.all, allowsMultipleSelection: true
         ) { result in
             if case .success(let urls) = result { Task { await importFiles(urls, from: .picker) } }
         }
@@ -221,6 +227,21 @@ struct FileGalleryView: View {
         removal = nil
         duplicate = nil
         rejection = nil
+    }
+
+    /// Imports the PDFs among the dropped `providers`. False if there are none.
+    private func drop(_ providers: [NSItemProvider]) -> Bool {
+        guard DroppedFiles.accepts(providers) else { return false }
+        Task {
+            let dropped = DroppedFiles()
+            let urls = await dropped.receive(providers)
+            if !urls.isEmpty {
+                closeSheetsAndPopovers()
+                await importFiles(urls, from: .drop)
+            }
+            dropped.removeCopies()
+        }
+        return true
     }
 
     private func importFiles(_ urls: [URL], from origin: ImportOrigin) async {
