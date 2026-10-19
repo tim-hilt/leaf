@@ -183,6 +183,62 @@ import Testing
         #expect(library.documents.count == 1)
     }
 
+    @Test func severalNewFilesAreAllListedAndTheGalleryStays() async throws {
+        let library = try openLibrary()
+        let files = try (1...3).map { try writePDF(named: "\($0).pdf", metadataTitle: "Book \($0)") }
+
+        let result = await library.importFiles(files, from: .picker)
+
+        guard case .problems(let problems) = result else {
+            Issue.record("expected .problems, got \(result)")
+            return
+        }
+        #expect(problems.isEmpty)
+        #expect(Set(library.documents.map(\.title)) == ["Book 1", "Book 2", "Book 3"])
+    }
+
+    @Test func severalFilesListOnlyRejectedAndFailedOnes() async throws {
+        let library = try openLibrary()
+        let existing = try writePDF(named: "a.pdf", metadataTitle: "Existing")
+        _ = await library.importFiles([existing], from: .picker)
+        let duplicate = existing.deletingLastPathComponent().appending(path: "copy.pdf")
+        try FileManager.default.copyItem(at: existing, to: duplicate)
+        let new = try writePDF(named: "b.pdf", metadataTitle: "New")
+        let garbage = try writeFile(named: "notes.pdf", bytes: Data("just some text".utf8))
+        let missing = root.appending(path: "missing.pdf")
+
+        let result = await library.importFiles([duplicate, new, garbage, missing], from: .openWithOrShare)
+
+        guard case .problems(let problems) = result else {
+            Issue.record("expected .problems, got \(result)")
+            return
+        }
+        #expect(problems.map(\.file) == [garbage, missing])
+        #expect(Set(library.documents.map(\.title)) == ["Existing", "New"])
+    }
+
+    @Test func aCallWhileAnImportRunsWaitsForItAndBothFinish() async throws {
+        let library = try openLibrary()
+        let big = try writePDF(named: "big.pdf", metadataTitle: "Big", paddedTo: 64_000_000)
+        let small = try writePDF(named: "small.pdf", metadataTitle: "Small")
+        var finished: [String] = []
+
+        let first = Task { @MainActor in
+            _ = await library.importFiles([big], from: .openWithOrShare)
+            finished.append("big")
+        }
+        while library.runningImport == nil { try await Task.sleep(for: .milliseconds(1)) }
+        let second = Task { @MainActor in
+            _ = await library.importFiles([small], from: .openWithOrShare)
+            finished.append("small")
+        }
+        await first.value
+        await second.value
+
+        #expect(finished == ["big", "small"])
+        #expect(library.documents.map(\.title).sorted() == ["Big", "Small"])
+    }
+
     @Test func aFileInTheInboxIsDeletedAfterItsImportWhateverTheOutcome() async throws {
         let inbox = root.appending(path: "Inbox", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)

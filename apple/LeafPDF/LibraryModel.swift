@@ -279,6 +279,8 @@ final class LibraryModel {
     @ObservationIgnored private var connectionID: UUID?
     /// Document IDs whose details are being read from their PDFs.
     @ObservationIgnored private var readingDetails: Set<String> = []
+    /// The latest `importFiles` call; the next one waits for it.
+    @ObservationIgnored private var lastImportFiles: Task<Void, Never>?
     /// The latest access to a Document's state in the core; the next one waits for it.
     @ObservationIgnored private var lastStateAccess: Task<Void, Never>?
 
@@ -536,8 +538,19 @@ final class LibraryModel {
     /// what the window shows. One File opens the Reader on its Document; if the
     /// Library already had it, that happens only for Open With/Share, else the
     /// user is told. A File that isn't Imported is a problem. Temporary copies
-    /// in the Inbox are deleted afterwards, whatever the outcome.
+    /// in the Inbox are deleted afterwards, whatever the outcome. A call made
+    /// while an Import runs waits until it has finished.
     func importFiles(_ urls: [URL], from origin: ImportOrigin) async -> ImportResult {
+        let previous = lastImportFiles
+        let running = Task { @MainActor in
+            await previous?.value
+            return await importQueued(urls, from: origin)
+        }
+        lastImportFiles = Task { _ = await running.value }
+        return await running.value
+    }
+
+    private func importQueued(_ urls: [URL], from origin: ImportOrigin) async -> ImportResult {
         var single: ImportResult?
         var problems: [ImportProblem] = []
         for url in urls {

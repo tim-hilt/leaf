@@ -24,6 +24,8 @@ struct FileGalleryView: View {
     @State private var isImporting = false
     @State private var isShowingSettings = false
     @State private var rejection: ImportAlert?
+    /// Files handed over by other apps that haven't been passed on to the Library yet.
+    @State private var incoming: [URL] = []
     @State private var duplicate: LibraryDocument?
     @State private var removal: LibraryDocument?
     @State private var scroll = ScrollActivity()
@@ -128,14 +130,22 @@ struct FileGalleryView: View {
             if let running = library.runningImport { ImportProgressModal(running: running) }
         }
         .fileImporter(
-            isPresented: $isImporting, allowedContentTypes: [.pdf], allowsMultipleSelection: false
+            isPresented: $isImporting, allowedContentTypes: [.pdf], allowsMultipleSelection: true
         ) { result in
             if case .success(let urls) = result { Task { await importFiles(urls, from: .picker) } }
         }
         // Files other apps hand over: the share sheet, Open With, the Dock icon.
+        // The system calls this once per File; Files arriving together are one batch.
         .onOpenURL { url in
             closeSheetsAndPopovers()
-            Task { await importFiles([url], from: .openWithOrShare) }
+            incoming.append(url)
+            guard incoming.count == 1 else { return }
+            Task {
+                try? await Task.sleep(for: .milliseconds(100))
+                let urls = incoming
+                incoming = []
+                await importFiles(urls, from: .openWithOrShare)
+            }
         }
         .alert(
             rejection?.title ?? "", isPresented: Binding(get: { rejection != nil }, set: { _ in rejection = nil }),
@@ -257,13 +267,25 @@ private struct ImportAlert {
     let title: String
     let message: String
 
-    /// The alert for the problem of the one File Imported; nil if there is none.
+    /// The alert for the problems of Files Imported; nil if there are none.
+    /// Several are listed in one alert, each with its reason.
     init?(_ problems: [ImportProblem]) {
         guard let problem = problems.first else { return nil }
-        switch problem.failure {
-        case .rejected(let reason): self.init(rejected: problem.file, reason: reason)
-        case .failed(let message): self.init(failed: problem.file, message: message)
+        guard problems.count > 1 else {
+            switch problem.failure {
+            case .rejected(let reason): self.init(rejected: problem.file, reason: reason)
+            case .failed(let message): self.init(failed: problem.file, message: message)
+            }
+            return
         }
+        self.init(
+            title: "Couldn't import \(problems.count) files",
+            message: problems.map { "“\($0.file.lastPathComponent)”: \($0.failure.reason)" }.joined(separator: "\n"))
+    }
+
+    private init(title: String, message: String) {
+        self.title = title
+        self.message = message
     }
 
     private init(rejected url: URL, reason: ImportRejection) {
@@ -284,6 +306,18 @@ private struct ImportAlert {
     private init(failed url: URL, message: String) {
         title = "Couldn't import “\(url.lastPathComponent)”"
         self.message = message
+    }
+}
+
+extension ImportProblem.Failure {
+    /// Why the File wasn't Imported, for a list.
+    fileprivate var reason: String {
+        switch self {
+        case .rejected(.notPDF): "Not a PDF."
+        case .rejected(.unreadable): "Can't be opened. The file may be damaged."
+        case .rejected(.locked): "Password-protected PDFs aren't supported yet."
+        case .failed(let message): message
+        }
     }
 }
 
