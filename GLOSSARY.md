@@ -107,3 +107,27 @@ _Avoid_: Invert, night mode
 **Page Colors**:
 The paper and ink colors the user picks for Dark Pages.
 _Avoid_: Palette, page theme
+
+**Markup**:
+Everything the user adds on top of a Document: Highlights and Notes. Never part of the File.
+_Avoid_: Annotation, comments
+
+**Highlight**:
+A passage of a Document's text marked in a Highlight Color. It may run across pages and may have a Note.
+_Avoid_: Marker, annotation
+
+**Note**:
+Text the user writes, belonging either to a Highlight or to a spot on a page.
+_Avoid_: Popup note, comment, sticky note
+
+**Highlight Colors**:
+The colors a Highlight can have: six built-in ones, yellow first, plus the user's Custom Colors.
+_Avoid_: Palette, Page Colors
+
+**Custom Color**:
+A Highlight Color the user added. Unlike the built-in ones, it can be removed.
+_Avoid_: User color
+
+**Default Highlight Color**:
+The Highlight Color every new Highlight gets. Yellow unless the user picks another.
+_Avoid_: Last used color, current color

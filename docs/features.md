@@ -52,11 +52,16 @@ Comes before markup so overlays are designed for Light and Dark Pages from the s
 
 ## 7. Markup
 
-Markup is not saved inside the file, but as external metadata that is rendered on top of the pdf file. This saves bandwidth and keeps syncing lightweight. This is especially important for mobile clients. Additionally, this helps to keep the pdf size original
+Markup is never written into the File: it lives in the Document's synced state and is drawn over the pages, so syncing stays light and the File keeps its size.
 
-1. Highlight text in different colors
-2. Add popup note to highlight
-3. Place note freely on the page
+- Highlight: select text, then "Highlight" in the selection menu or ⌃⌘H (macOS). New Highlights get the Default Highlight Color. A Highlight may span pages; overlapping Highlights stay separate.
+- Clicking a Highlight opens a popover (sheet on iPhone): Highlight Colors, its Note, "Remove Highlight". Dragging still selects text.
+- Notes are plain text; web links open in the browser. An "Edit" button switches the Note to editing, where links are plain text. A Highlight with a Note shows a Note icon at its end. Emptying a Note removes it.
+- Page Notes: right-click or long-press an empty spot, "Add Note", or the toolbar's "Add Note" (middle of the visible page). They can't be moved; their popover has "Remove Note".
+- Note icons keep their size at any zoom and their colors on Dark Pages; Highlights are reversed with the page.
+- Settings: Highlight Colors. Yellow, green, blue, pink, purple and red are fixed; Custom Colors, any number, are added with "+" and removed via their context menu. Pick the Default Highlight Color (yellow). Both sync (ADR-0014); removing a Custom Color leaves its Highlights as they are, their popover shows the color as an extra circle.
+- Annotations already in the File show as they are, read-only. Covers show no Markup.
+- Not included: other markup styles, undo, a Markup list, export, hiding Markup.
 
 ## 8. Cloud Backing
 
