@@ -1,4 +1,5 @@
 import Foundation
+import LeafCore
 import Testing
 
 @testable import LeafPDF
@@ -14,10 +15,16 @@ import Testing
     /// suite per test, so tests don't see each other's sort choice.
     var defaults: UserDefaults { UserDefaults(suiteName: root.lastPathComponent)! }
 
+    /// This device's Cloud Backing credentials: the Keychain item is per test too.
+    var credentials: CloudCredentials { CloudCredentials(defaults: defaults, service: "leafpdf-test-\(root.lastPathComponent)") }
+
     /// Opens the Library at `root`, keeping its saved Titles and Authors in
-    /// `detailsFile`, its Covers in `coversFolder` and its sort choice in `defaults`.
-    func openLibrary() throws -> LibraryModel {
-        try LibraryModel(root: root, detailsFile: detailsFile, coversFolder: coversFolder, defaults: defaults)
+    /// `detailsFile`, its Covers in `coversFolder`, its sort choice in `defaults`
+    /// and its Cloud Backing credentials in `credentials`.
+    func openLibrary(syncIntervals: SyncIntervals = SyncIntervals(debounceMs: 3000, pollMs: 10000)) throws -> LibraryModel {
+        try LibraryModel(
+            root: root, detailsFile: detailsFile, coversFolder: coversFolder, defaults: defaults,
+            credentials: credentials, syncIntervals: syncIntervals)
     }
 
     /// Imports a PDF with the given Title, oldest first when called in sequence.

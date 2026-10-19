@@ -34,7 +34,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -83,6 +83,8 @@ pub struct Library {
     /// storage. Held for a whole `sync`, so only one runs at a time. Taken
     /// before `doc`.
     cursor: Mutex<Cursor>,
+    /// How often a `sync` changed the Documents, see `sync_changes`.
+    sync_changes: AtomicU64,
 }
 
 /// What `documents` needs of one Document, read from the Library document.
@@ -119,6 +121,7 @@ impl Library {
             device_id,
             doc: Mutex::new(doc),
             cursor: Mutex::new(Cursor::decode(&cursor)),
+            sync_changes: AtomicU64::new(0),
         };
         library.reconcile()?;
         Ok(library)
@@ -128,6 +131,13 @@ impl Library {
     /// was first opened.
     pub fn device_id(&self) -> String {
         self.device_id.to_hex_string()
+    }
+
+    /// How often a `sync` has changed the Documents (added, Removed or got
+    /// them a File) since this Library was opened, even if that `sync` failed
+    /// later. A caller that sees it grow reloads `documents`.
+    pub fn sync_changes(&self) -> u64 {
+        self.sync_changes.load(Relaxed)
     }
 
     /// Brings the folders and the Library document in line after a crash, an
@@ -623,7 +633,7 @@ fn is_file_name(name: &str) -> bool {
 }
 
 /// Milliseconds since the Unix epoch.
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     millis(SystemTime::now())
 }
 

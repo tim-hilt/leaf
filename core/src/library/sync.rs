@@ -31,6 +31,7 @@ impl Library {
         let mut cursor = self.cursor.lock().unwrap_or_else(PoisonError::into_inner);
         if self.exchange_library(storage, &mut cursor)? {
             // Removes and names of other Devices.
+            self.sync_changes.fetch_add(1, Relaxed);
             self.reconcile()?;
         }
         let remote_files: HashSet<String> = storage
@@ -139,12 +140,14 @@ impl Library {
             return Ok(());
         }
         if !folder.exists() {
-            return fs::rename(staged, folder);
-        }
-        if self.file_path(entry)?.is_none() {
+            fs::rename(staged, folder)?;
+        } else if self.file_path(entry)?.is_none() {
             // The folder may hold a state already.
             fs::rename(staged.join(&entry.name), folder.join(&entry.name))?;
+        } else {
+            return Ok(());
         }
+        self.sync_changes.fetch_add(1, Relaxed);
         Ok(())
     }
 }

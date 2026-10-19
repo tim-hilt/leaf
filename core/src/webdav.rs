@@ -58,7 +58,9 @@ impl std::error::Error for ConnectError {}
 /// connect is another kind.
 pub struct WebDavStorage {
     agent: Agent,
-    /// The URL of the `LeafPDF` folder, without a trailing slash.
+    /// The Server URL, without a trailing slash.
+    base: String,
+    /// The URL of the `LeafPDF` folder inside it.
     root: String,
     /// The `Authorization` header value.
     auth: String,
@@ -82,41 +84,27 @@ impl WebDavStorage {
         Self::connect_with(url, username, password, ureq::tls::TlsConfig::default())
     }
 
+    /// The storage of a server that was connected before, e.g. at the last
+    /// launch. Contacts nobody, so it works offline; errors show on use.
+    pub fn resume(url: &str, username: &str, password: &str) -> Result<Self, ConnectError> {
+        Self::new(url, username, password, ureq::tls::TlsConfig::default())
+    }
+
     fn connect_with(
         url: &str,
         username: &str,
         password: &str,
         tls: ureq::tls::TlsConfig,
     ) -> Result<Self, ConnectError> {
-        let url = url.trim();
-        if !url
-            .get(..8)
-            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
-        {
-            return Err(ConnectError::NotHttps);
-        }
-        let base = url.trim_end_matches('/');
-        let config = Agent::config_builder()
-            .https_only(true)
-            // PROPFIND, MKCOL and MOVE.
-            .allow_non_standard_methods(true)
-            .http_status_as_error(false)
-            .tls_config(tls)
-            .timeout_connect(Some(Duration::from_secs(10)))
-            .timeout_recv_response(Some(Duration::from_secs(30)))
-            .build();
-        let storage = Self {
-            agent: Agent::new_with_config(config),
-            root: format!("{base}/{FOLDER}"),
-            auth: basic_auth(username, password),
-            known_dirs: Mutex::default(),
-        };
+        let storage = Self::new(url, username, password, tls)?;
 
         // The URL itself must be a WebDAV collection.
-        let answer = storage.propfind(base, "0").map_err(|e| match e.kind() {
-            io::ErrorKind::PermissionDenied => ConnectError::WrongCredentials,
-            _ => ConnectError::Unreachable,
-        })?;
+        let answer = storage
+            .propfind(&storage.base, "0")
+            .map_err(|e| match e.kind() {
+                io::ErrorKind::PermissionDenied => ConnectError::WrongCredentials,
+                _ => ConnectError::Unreachable,
+            })?;
         match answer.status().as_u16() {
             207 => {}
             500..=599 => return Err(ConnectError::Unreachable),
@@ -137,6 +125,39 @@ impl WebDavStorage {
             _ => return Err(ConnectError::NotWebDav),
         }
         Ok(storage)
+    }
+
+    /// The storage for `url`, which must be https, without any request.
+    fn new(
+        url: &str,
+        username: &str,
+        password: &str,
+        tls: ureq::tls::TlsConfig,
+    ) -> Result<Self, ConnectError> {
+        let url = url.trim();
+        if !url
+            .get(..8)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+        {
+            return Err(ConnectError::NotHttps);
+        }
+        let config = Agent::config_builder()
+            .https_only(true)
+            // PROPFIND, MKCOL and MOVE.
+            .allow_non_standard_methods(true)
+            .http_status_as_error(false)
+            .tls_config(tls)
+            .timeout_connect(Some(Duration::from_secs(10)))
+            .timeout_recv_response(Some(Duration::from_secs(30)))
+            .build();
+        let base = url.trim_end_matches('/').to_owned();
+        Ok(Self {
+            agent: Agent::new_with_config(config),
+            root: format!("{base}/{FOLDER}"),
+            base,
+            auth: basic_auth(username, password),
+            known_dirs: Mutex::default(),
+        })
     }
 
     /// The URL of `name`, a `/`-separated path below the `LeafPDF` folder.
@@ -623,6 +644,17 @@ mod tests {
             let error = WebDavStorage::connect(url, "u", "p").unwrap_err();
             assert_eq!(error, ConnectError::NotHttps, "{url:?}");
         }
+    }
+
+    #[test]
+    fn resuming_needs_an_https_url_but_contacts_no_server() {
+        assert_eq!(
+            WebDavStorage::resume("http://example.com", "u", "p").unwrap_err(),
+            ConnectError::NotHttps
+        );
+        // Nobody listens there: resuming works offline, using it fails.
+        let storage = WebDavStorage::resume("https://127.0.0.1:1", "u", "p").unwrap();
+        assert!(storage.list("").is_err());
     }
 
     #[test]

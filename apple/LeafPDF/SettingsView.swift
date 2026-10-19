@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The Settings: Theme, Highlight Colors (the Default Highlight Color), Page Style and Page Colors.
+/// The Settings: Theme, Highlight Colors (the Default Highlight Color), Cloud Backing, Page Style and Page Colors.
 /// A window on Mac (⌘,), a sheet from the Gallery's gear on iPhone and iPad.
 struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
@@ -25,6 +25,7 @@ struct SettingsView: View {
                     onRemove: { color in Task { await library.removeCustomColor(color) } },
                     trailing: { AddCustomColorButton { color in Task { await library.addCustomColor(color) } } })
             }
+            CloudBackingSection()
             Section("Page Style") {
                 PageStylePicker(selection: $settings.pageStyle, paper: settings.pageColors.paper)
             }
@@ -50,7 +51,7 @@ struct SettingsView: View {
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar { Button("Done") { dismiss() } }
             }
-            .presentationDetents([.medium])
+            .presentationDetents([.medium, .large])
         }
     }
 #endif

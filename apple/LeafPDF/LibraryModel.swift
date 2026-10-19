@@ -84,6 +84,71 @@ private final class ProgressRelay: ImportProgress {
     }
 }
 
+/// Where Sync stands, while Connected.
+enum SyncState: Equatable {
+    case syncing
+    /// The last Sync step succeeded then.
+    case synced(Date)
+    /// The last Sync step failed; the next one retries.
+    case offline
+
+    /// What Settings says.
+    func line(now: Date = .now) -> String {
+        switch self {
+        case .syncing: "Syncing…"
+        case .offline: "Offline"
+        case .synced(let date):
+            now.timeIntervalSince(date) < 60 ? "Synced just now" : "Synced \(date.formatted(.relative(presentation: .named)))"
+        }
+    }
+}
+
+/// The Cloud Provider this Device is Connected to.
+struct CloudConnection: Equatable {
+    /// The Server URL, or the directory of a test.
+    let server: String
+}
+
+extension ConnectError {
+    /// What Settings says next to the form.
+    var message: String {
+        switch self {
+        case .WrongCredentials: "Wrong username or password"
+        case .Unreachable: "Server not reachable"
+        case .NotHttps: "URL must start with https://"
+        case .NotWebDav: "Not a WebDAV server"
+        }
+    }
+}
+
+/// Forwards what the core's Sync loop reports, on its thread, to the main actor.
+private final class SyncRelay: SyncObserver {
+    private let onStatus: @Sendable @MainActor (SyncState) -> Void
+    private let onLibraryChanged: @Sendable @MainActor () -> Void
+
+    init(
+        status: @escaping @Sendable @MainActor (SyncState) -> Void,
+        libraryChanged: @escaping @Sendable @MainActor () -> Void
+    ) {
+        onStatus = status
+        onLibraryChanged = libraryChanged
+    }
+
+    func statusChanged(status: SyncStatus) {
+        let state: SyncState =
+            switch status {
+            case .syncing: .syncing
+            case .synced(let at): .synced(Date(timeIntervalSince1970: Double(at) / 1000))
+            case .offline: .offline
+            }
+        Task { @MainActor [onStatus] in onStatus(state) }
+    }
+
+    func libraryChanged() {
+        Task { @MainActor [onLibraryChanged] in onLibraryChanged() }
+    }
+}
+
 /// The Library as the clients see it: the core's Library folder plus its
 /// Documents, each with its saved Title and Author. One per app, shared by all
 /// windows.
@@ -111,10 +176,20 @@ final class LibraryModel {
     /// Non-nil from the start of an Import until it finishes. The UI is
     /// disabled meanwhile.
     private(set) var runningImport: RunningImport?
+    /// The Cloud Provider Connected to; nil while Cloud Backing is off.
+    private(set) var connection: CloudConnection?
+    /// Where Sync stands. Only meaningful while `connection` isn't nil.
+    private(set) var syncState = SyncState.syncing
     @ObservationIgnored private let core: LeafCore.Library
     @ObservationIgnored private let saved: DetailsStore
     @ObservationIgnored private let covers: CoverStore
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let credentials: CloudCredentials
+    @ObservationIgnored private let syncIntervals: SyncIntervals
+    /// Names the current Connection, so reports of a finished one are ignored.
+    @ObservationIgnored private var connectionID: UUID?
+    /// Document IDs whose details are being read from their PDFs.
+    @ObservationIgnored private var readingDetails: Set<String> = []
     /// The latest access to a Document's state in the core; the next one waits for it.
     @ObservationIgnored private var lastStateAccess: Task<Void, Never>?
 
@@ -122,17 +197,35 @@ final class LibraryModel {
     /// and Authors saved in `detailsFile`, Covers in `coversFolder` and the sort
     /// choice in `defaults`. Documents without saved details are
     /// listed by file name; a low-priority background pass then reads them
-    /// from the PDFs, one at a time.
-    init(root: URL, detailsFile: URL, coversFolder: URL, defaults: UserDefaults) throws {
+    /// from the PDFs, one at a time. A WebDAV server saved in `credentials` is
+    /// Connected again, without contacting it, so launching offline works;
+    /// Sync steps run `syncIntervals` apart.
+    init(
+        root: URL, detailsFile: URL, coversFolder: URL, defaults: UserDefaults, credentials: CloudCredentials,
+        syncIntervals: SyncIntervals = SyncIntervals(debounceMs: 3000, pollMs: 10000)
+    ) throws {
         core = try LeafCore.Library.open(root: root.path)
         saved = DetailsStore(file: detailsFile)
         covers = CoverStore(folder: coversFolder)
         self.defaults = defaults
+        self.credentials = credentials
+        self.syncIntervals = syncIntervals
         sort = LibrarySort(from: defaults)
         highlightColors = core.highlightColors().map(HighlightColor.init)
         defaultHighlightColor = HighlightColor(core.defaultHighlightColor())
         refresh()
         readMissingDetails()
+        if let account = credentials.load() {
+            let id = newConnection()
+            do {
+                try core.resumeWebdav(
+                    url: account.url, username: account.username, password: account.password,
+                    observer: relay(for: id), intervals: syncIntervals)
+                connection = CloudConnection(server: account.url)
+            } catch {
+                connectionID = nil
+            }
+        }
     }
 
     /// The Library in a hidden folder in Application Support, with Covers in
@@ -146,7 +239,73 @@ final class LibraryModel {
             root: support.appending(path: "Library", directoryHint: .isDirectory),
             detailsFile: support.appending(path: "Details.json"),
             coversFolder: caches.appending(path: "Covers", directoryHint: .isDirectory),
-            defaults: .standard)
+            defaults: .standard,
+            credentials: CloudCredentials(defaults: .standard, service: "com.timhilt.leafpdf.cloud"))
+    }
+
+    /// Connects to the WebDAV server at `url` and starts syncing, which first
+    /// merges this Library with the one in the cloud. Checks the details first
+    /// and throws a `ConnectError` if they are wrong. Keeps them, the password
+    /// in the Keychain, until `disconnect`. Replaces any earlier Connection.
+    func connect(url: String, username: String, password: String) async throws {
+        let core = core, id = newConnection(), observer = relay(for: id), intervals = syncIntervals
+        do {
+            try await Task.detached {
+                try core.connectWebdav(
+                    url: url, username: username, password: password, observer: observer, intervals: intervals)
+            }.value
+        } catch {
+            if connectionID == id { connectionID = nil }
+            throw error
+        }
+        connection = CloudConnection(server: url)
+        credentials.save(WebDAVAccount(url: url, username: username, password: password))
+    }
+
+    /// Connects to the directory `directory` as if it were a cloud, for tests.
+    /// Not remembered.
+    func connect(directory: URL) async throws {
+        let core = core, id = newConnection(), observer = relay(for: id), intervals = syncIntervals
+        try await Task.detached {
+            try core.connectDirectory(path: directory.path, observer: observer, intervals: intervals)
+        }.value
+        connection = CloudConnection(server: directory.path)
+    }
+
+    /// Stops syncing, cancelling running transfers, and forgets the URL,
+    /// username and password. Keeps the whole Library and leaves the cloud as it is.
+    func disconnect() async {
+        connectionID = nil
+        connection = nil
+        credentials.forget()
+        let core = core
+        await Task.detached { core.disconnect() }.value
+    }
+
+    /// The app is in the foreground: Syncs at once, then regularly.
+    func foreground() { core.foreground() }
+
+    /// The app goes to the background: Syncs once more, then stops.
+    func background() { core.background() }
+
+    private func newConnection() -> UUID {
+        let id = UUID()
+        connectionID = id
+        syncState = .syncing
+        return id
+    }
+
+    /// What the core reports about Connection `id`, as long as it is the current one.
+    private func relay(for id: UUID) -> SyncObserver {
+        SyncRelay(
+            status: { [weak self] state in
+                if self?.connectionID == id { self?.syncState = state }
+            },
+            libraryChanged: { [weak self] in
+                guard let self, connectionID == id else { return }
+                refresh()
+                readMissingDetails()
+            })
     }
 
     /// The Documents a Gallery shows for Library Search `searchText`: those
@@ -218,6 +377,7 @@ final class LibraryModel {
                 if let cover = read.cover { covers.save(cover, id: stored.id) }
             }
             refresh()
+            core.localChange()
             guard let document = documents.first(where: { $0.id == stored.id }) else {
                 return .failed("The imported file couldn't be opened.")
             }
@@ -235,6 +395,7 @@ final class LibraryModel {
         if (try? core.remove(id: document.id)) != nil {
             saved[document.id] = nil
             covers.remove(document.id)
+            core.localChange()
         }
         refresh()
     }
@@ -431,6 +592,12 @@ final class LibraryModel {
     /// everything was Removed.
     private func refresh() {
         guard let stored = try? core.documents() else { return }
+        let kept = Set(stored.map(\.id))
+        // Removed on another Device.
+        for gone in documents where !kept.contains(gone.id) {
+            saved[gone.id] = nil
+            covers.remove(gone.id)
+        }
         documents = stored.map { LibraryDocument($0, details: saved[$0.id]) }
     }
 
@@ -439,12 +606,14 @@ final class LibraryModel {
     /// publishing each as it arrives. A PDF that can't be read is skipped and
     /// tried again at the next launch.
     private func readMissingDetails() {
-        let missing = documents.filter { $0.pageCount == nil }.map { ($0.id, $0.file) }
+        let missing = documents.filter { $0.pageCount == nil && !readingDetails.contains($0.id) }.map { ($0.id, $0.file) }
         guard !missing.isEmpty else { return }
+        readingDetails.formUnion(missing.map(\.0))
         Task(priority: .background) { [weak self] in
             for (id, file) in missing {
                 let read = await Task.detached(priority: .background) { PDFDocument(url: file)?.details }.value
                 guard let self else { return }
+                self.readingDetails.remove(id)
                 self.publish(read, for: id)
             }
         }

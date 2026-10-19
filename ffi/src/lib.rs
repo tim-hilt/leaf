@@ -4,7 +4,11 @@
 //! `leafpdf-core` types to UniFFI-compatible ones and nothing else. Keep
 //! domain logic in `leafpdf-core` so it stays testable without bindings.
 
-use std::sync::Arc;
+use leafpdf_core::storage::{DirStorage, Storage};
+use leafpdf_core::sync_loop::{self, SyncLoop};
+use leafpdf_core::webdav::WebDavStorage;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 uniffi::setup_scaffolding!();
 
@@ -279,15 +283,198 @@ pub trait ImportProgress: Send + Sync {
     fn report(&self, copied: u64, total: u64);
 }
 
-/// The Library folder, see `leafpdf_core::library::Library`.
+/// Why connecting to a WebDAV server failed, see
+/// `leafpdf_core::webdav::ConnectError`.
+#[derive(Debug, uniffi::Error)]
+pub enum ConnectError {
+    WrongCredentials,
+    Unreachable,
+    NotHttps,
+    NotWebDav,
+}
+
+impl From<leafpdf_core::webdav::ConnectError> for ConnectError {
+    fn from(e: leafpdf_core::webdav::ConnectError) -> Self {
+        use leafpdf_core::webdav::ConnectError as Core;
+        match e {
+            Core::WrongCredentials => Self::WrongCredentials,
+            Core::Unreachable => Self::Unreachable,
+            Core::NotHttps => Self::NotHttps,
+            Core::NotWebDav => Self::NotWebDav,
+        }
+    }
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+/// Where Sync stands, see `leafpdf_core::sync_loop::Status`. `at` is
+/// milliseconds since the Unix epoch.
+#[derive(uniffi::Enum)]
+pub enum SyncStatus {
+    Syncing,
+    Synced { at: u64 },
+    Offline,
+}
+
+/// Receives what the Sync loop does. Implemented by the client and called from
+/// the loop's thread, not the main thread.
+#[uniffi::export(with_foreign)]
+pub trait SyncObserver: Send + Sync {
+    fn status_changed(&self, status: SyncStatus);
+    /// The Documents changed: list them again.
+    fn library_changed(&self);
+}
+
+/// When Sync steps run, see `leafpdf_core::sync_loop::Intervals`.
+#[derive(uniffi::Record)]
+pub struct SyncIntervals {
+    pub debounce_ms: u64,
+    pub poll_ms: u64,
+}
+
+impl From<SyncIntervals> for sync_loop::Intervals {
+    fn from(i: SyncIntervals) -> Self {
+        Self {
+            debounce: Duration::from_millis(i.debounce_ms),
+            poll: Duration::from_millis(i.poll_ms),
+        }
+    }
+}
+
+/// Adapts the client's observer to the core's.
+struct Observer(Arc<dyn SyncObserver>);
+
+impl sync_loop::Observer for Observer {
+    fn status(&self, status: sync_loop::Status) {
+        use sync_loop::Status as Core;
+        self.0.status_changed(match status {
+            Core::Syncing => SyncStatus::Syncing,
+            Core::Synced { at } => SyncStatus::Synced { at },
+            Core::Offline => SyncStatus::Offline,
+        });
+    }
+
+    fn library_changed(&self) {
+        self.0.library_changed();
+    }
+}
+
+/// The Library folder, see `leafpdf_core::library::Library`, and its
+/// Connection to a Cloud Provider, if any.
 #[derive(uniffi::Object)]
-pub struct Library(leafpdf_core::library::Library);
+pub struct Library {
+    core: Arc<leafpdf_core::library::Library>,
+    sync: Mutex<Option<SyncLoop>>,
+}
+
+impl Library {
+    /// Syncs with `storage` from now on, instead of with any earlier one.
+    fn start_sync(
+        &self,
+        storage: Arc<dyn Storage>,
+        observer: Arc<dyn SyncObserver>,
+        intervals: SyncIntervals,
+    ) {
+        self.disconnect();
+        let started = SyncLoop::start(
+            self.core.clone(),
+            storage,
+            Arc::new(Observer(observer)),
+            intervals.into(),
+        );
+        *self.sync() = Some(started);
+    }
+
+    fn sync(&self) -> std::sync::MutexGuard<'_, Option<SyncLoop>> {
+        self.sync.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
 
 #[uniffi::export]
 impl Library {
     #[uniffi::constructor]
     pub fn open(root: String) -> Result<Arc<Self>, LibraryError> {
-        Ok(Arc::new(Self(leafpdf_core::library::Library::open(root)?)))
+        Ok(Arc::new(Self {
+            core: Arc::new(leafpdf_core::library::Library::open(root)?),
+            sync: Mutex::new(None),
+        }))
+    }
+
+    /// Connects to the WebDAV server at `url` and starts syncing with it: the
+    /// first step merges the Library with the cloud's. Checks the details first
+    /// and creates the `LeafPDF` folder if needed; blocks while it talks to the
+    /// server. Replaces any earlier Connection.
+    pub fn connect_webdav(
+        &self,
+        url: String,
+        username: String,
+        password: String,
+        observer: Arc<dyn SyncObserver>,
+        intervals: SyncIntervals,
+    ) -> Result<(), ConnectError> {
+        let storage = WebDavStorage::connect(&url, &username, &password)?;
+        self.start_sync(Arc::new(storage), observer, intervals);
+        Ok(())
+    }
+
+    /// Like `connect_webdav` for a server connected before, e.g. at the last
+    /// launch: contacts nobody, so it works offline.
+    pub fn resume_webdav(
+        &self,
+        url: String,
+        username: String,
+        password: String,
+        observer: Arc<dyn SyncObserver>,
+        intervals: SyncIntervals,
+    ) -> Result<(), ConnectError> {
+        let storage = WebDavStorage::resume(&url, &username, &password)?;
+        self.start_sync(Arc::new(storage), observer, intervals);
+        Ok(())
+    }
+
+    /// Connects to the directory `path` as if it were a cloud, for tests.
+    pub fn connect_directory(
+        &self,
+        path: String,
+        observer: Arc<dyn SyncObserver>,
+        intervals: SyncIntervals,
+    ) -> Result<(), LibraryError> {
+        let storage = DirStorage::open(path)?;
+        self.start_sync(Arc::new(storage), observer, intervals);
+        Ok(())
+    }
+
+    /// Stops syncing and cancels running transfers. Keeps everything in the
+    /// Library and leaves the cloud untouched. Blocks until the transfers have
+    /// stopped.
+    pub fn disconnect(&self) {
+        let stopped = self.sync().take();
+        drop(stopped);
+    }
+
+    /// Something changed locally (an Import, a Remove): sends it soon.
+    pub fn local_change(&self) {
+        if let Some(sync) = &*self.sync() {
+            sync.local_change();
+        }
+    }
+
+    /// The app is in the foreground: syncs at once, then regularly.
+    pub fn foreground(&self) {
+        if let Some(sync) = &*self.sync() {
+            sync.foreground();
+        }
+    }
+
+    /// The app goes to the background: syncs once more, then idles.
+    pub fn background(&self) {
+        if let Some(sync) = &*self.sync() {
+            sync.background();
+        }
     }
 
     pub fn import(
@@ -295,22 +482,22 @@ impl Library {
         source: String,
         progress: Arc<dyn ImportProgress>,
     ) -> Result<ImportResult, LibraryError> {
-        let result = self.0.import(source.as_ref(), |copied, total| {
+        let result = self.core.import(source.as_ref(), |copied, total| {
             progress.report(copied, total)
         })?;
         Ok(result.into())
     }
 
     pub fn remove(&self, id: String) -> Result<(), LibraryError> {
-        Ok(self.0.remove(&id)?)
+        Ok(self.core.remove(&id)?)
     }
 
     pub fn save_progress(&self, id: String, progress: ReadingProgress) -> Result<(), LibraryError> {
-        Ok(self.0.save_progress(&id, &progress.into())?)
+        Ok(self.core.save_progress(&id, &progress.into())?)
     }
 
     pub fn markup(&self, id: String) -> Result<Markup, LibraryError> {
-        Ok(self.0.markup(&id)?.into())
+        Ok(self.core.markup(&id)?.into())
     }
 
     pub fn add_highlight(
@@ -322,9 +509,9 @@ impl Library {
         created: u64,
     ) -> Result<Highlight, LibraryError> {
         let anchor = anchor.into_iter().map(Into::into).collect();
-        let highlight = self
-            .0
-            .add_highlight(&id, anchor, &quoted_text, color.into(), created)?;
+        let highlight =
+            self.core
+                .add_highlight(&id, anchor, &quoted_text, color.into(), created)?;
         Ok(highlight.into())
     }
 
@@ -334,7 +521,9 @@ impl Library {
         highlight: String,
         color: Rgb,
     ) -> Result<(), LibraryError> {
-        Ok(self.0.set_highlight_color(&id, &highlight, color.into())?)
+        Ok(self
+            .core
+            .set_highlight_color(&id, &highlight, color.into())?)
     }
 
     pub fn set_highlight_note(
@@ -343,11 +532,11 @@ impl Library {
         highlight: String,
         note: String,
     ) -> Result<(), LibraryError> {
-        Ok(self.0.set_highlight_note(&id, &highlight, &note)?)
+        Ok(self.core.set_highlight_note(&id, &highlight, &note)?)
     }
 
     pub fn remove_highlight(&self, id: String, highlight: String) -> Result<(), LibraryError> {
-        Ok(self.0.remove_highlight(&id, &highlight)?)
+        Ok(self.core.remove_highlight(&id, &highlight)?)
     }
 
     pub fn add_page_note(
@@ -358,7 +547,10 @@ impl Library {
         y: f64,
         created: u64,
     ) -> Result<PageNote, LibraryError> {
-        Ok(self.0.add_page_note(&id, page_index, x, y, created)?.into())
+        Ok(self
+            .core
+            .add_page_note(&id, page_index, x, y, created)?
+            .into())
     }
 
     pub fn set_page_note_text(
@@ -367,15 +559,15 @@ impl Library {
         note: String,
         text: String,
     ) -> Result<(), LibraryError> {
-        Ok(self.0.set_page_note_text(&id, &note, &text)?)
+        Ok(self.core.set_page_note_text(&id, &note, &text)?)
     }
 
     pub fn remove_page_note(&self, id: String, note: String) -> Result<(), LibraryError> {
-        Ok(self.0.remove_page_note(&id, &note)?)
+        Ok(self.core.remove_page_note(&id, &note)?)
     }
 
     pub fn highlight_colors(&self) -> Vec<HighlightColor> {
-        self.0
+        self.core
             .highlight_colors()
             .into_iter()
             .map(Into::into)
@@ -383,22 +575,22 @@ impl Library {
     }
 
     pub fn default_highlight_color(&self) -> HighlightColor {
-        self.0.default_highlight_color().into()
+        self.core.default_highlight_color().into()
     }
 
     pub fn set_default_highlight_color(&self, id: String) -> Result<(), LibraryError> {
-        Ok(self.0.set_default_highlight_color(&id)?)
+        Ok(self.core.set_default_highlight_color(&id)?)
     }
 
     pub fn add_custom_color(&self, rgb: Rgb, added: u64) -> Result<HighlightColor, LibraryError> {
-        Ok(self.0.add_custom_color(rgb.into(), added)?.into())
+        Ok(self.core.add_custom_color(rgb.into(), added)?.into())
     }
 
     pub fn remove_custom_color(&self, id: String) -> Result<(), LibraryError> {
-        Ok(self.0.remove_custom_color(&id)?)
+        Ok(self.core.remove_custom_color(&id)?)
     }
 
     pub fn documents(&self) -> Result<Vec<Document>, LibraryError> {
-        Ok(self.0.documents()?.into_iter().map(Into::into).collect())
+        Ok(self.core.documents()?.into_iter().map(Into::into).collect())
     }
 }

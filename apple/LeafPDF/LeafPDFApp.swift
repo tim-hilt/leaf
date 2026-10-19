@@ -7,6 +7,7 @@ struct LeafPDFApp: App {
     }()
 
     @State private var settings = AppSettings(defaults: .standard)
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -14,6 +15,13 @@ struct LeafPDFApp: App {
                 .environment(library)
                 .environment(settings)
                 .preferredColorScheme(settings.theme.colorScheme)
+                .onChange(of: scenePhase) { _, phase in
+                    switch phase {
+                    case .active: library.foreground()
+                    case .background: library.background()
+                    default: break
+                    }
+                }
         }
         .commands {
             ImportCommands()
