@@ -81,6 +81,16 @@ pub const BUILT_IN_COLORS: [BuiltInColor; 6] = [
     built_in("Red", 255, 99, 99),
 ];
 
+impl BuiltInColor {
+    /// The built-in color called `name`, if there is one.
+    pub fn named(name: &str) -> Option<Self> {
+        BUILT_IN_COLORS.into_iter().find(|c| c.name == name)
+    }
+
+    /// Yellow, the Default Highlight Color until the user picks another.
+    pub const YELLOW: Self = BUILT_IN_COLORS[0];
+}
+
 /// A passage of a Document's text marked in a color. It may run across pages.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Highlight {

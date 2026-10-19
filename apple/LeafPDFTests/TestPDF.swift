@@ -3,6 +3,8 @@ import Foundation
 import PDFKit
 import Testing
 
+@testable import LeafPDF
+
 /// An entry of a test PDF's outline: a title, the point on a page it targets
 /// (PDF page space, origin bottom-left) and nested entries.
 struct OutlineEntry {
@@ -171,4 +173,9 @@ func writeFile(named fileName: String, bytes: Data) throws -> URL {
     let url = directory.appending(path: fileName)
     try bytes.write(to: url)
     return url
+}
+
+extension RGB {
+    /// A Highlight color for tests that don't care which.
+    static let sampleYellow = RGB(1, 235 / 255, 60 / 255)
 }

@@ -91,7 +91,7 @@ import Testing
         let document = try document(in: appearance)
         let anchor = HighlightAnchor(
             pages: [.init(pageIndex: 0, rects: [CGRect(x: 10, y: 20, width: 10, height: 20)])], quotedText: "x")
-        document.highlights = [Highlight(id: "a", anchor: anchor, color: Highlight.defaultColor)]
+        document.highlights = [Highlight(id: "a", anchor: anchor, color: RGB.sampleYellow)]
         return document
     }
 
@@ -105,7 +105,7 @@ import Testing
 
     @Test func lightPagesMultiplyHighlightsIntoThePage() throws {
         let (ink, paper, outside) = try samplesOfHighlight(.light)
-        #expect(paper.isClose(to: Highlight.defaultColor))  // paper is white: multiplying gives the color
+        #expect(paper.isClose(to: RGB.sampleYellow))  // paper is white: multiplying gives the color
         #expect(ink.isClose(to: RGB(0, 0, 0)))  // black ink stays readable
         #expect(outside.isClose(to: RGB(0, 0, 0)))
     }
@@ -117,7 +117,7 @@ import Testing
         #expect(outside.isClose(to: colors.ink))
         // Not the plain paper, and not the Highlight's own color: reversed with the page, hue kept.
         #expect(!paper.isClose(to: colors.paper, tolerance: 0.1))
-        #expect(!paper.isClose(to: Highlight.defaultColor, tolerance: 0.1))
+        #expect(!paper.isClose(to: RGB.sampleYellow, tolerance: 0.1))
         #expect(paper.r > paper.b + 0.1 && paper.g > paper.b + 0.1)
     }
 
@@ -125,7 +125,7 @@ import Testing
         let document = try document(in: .light)
         let anchor = HighlightAnchor(
             pages: [.init(pageIndex: 1, rects: [CGRect(x: 10, y: 20, width: 10, height: 20)])], quotedText: "x")
-        document.highlights = [Highlight(id: "a", anchor: anchor, color: Highlight.defaultColor)]
+        document.highlights = [Highlight(id: "a", anchor: anchor, color: RGB.sampleYellow)]
         let image = try #require(document.page(at: 0)?.image(pixelWidth: 612))
         #expect(image.pixel(x: 15, y: 792 - 35).isClose(to: RGB(1, 1, 1)))
     }

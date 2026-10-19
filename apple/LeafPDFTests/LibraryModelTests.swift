@@ -569,19 +569,18 @@ import Testing
     @Test func anAddedHighlightIsReturnedAndInTheDocumentsHighlights() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let color = RGB(1, 0, 128 / 255)
 
-        let added = try #require(await library.addHighlight(anchor, color: color, to: document))
+        let added = try #require(await library.addHighlight(anchor, to: document))
 
         #expect(added.anchor == anchor)
-        #expect(added.color == color)
+        #expect(added.color == library.defaultHighlightColor.color)
         #expect(await library.highlights(of: document) == [added])
     }
 
     @Test func highlightsSurviveReopeningTheLibrary() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let added = try #require(await library.addHighlight(anchor, color: Highlight.defaultColor, to: document))
+        let added = try #require(await library.addHighlight(anchor, to: document))
 
         let reopened = try openLibrary()
 
@@ -591,8 +590,8 @@ import Testing
     @Test func highlightsKeepTheOrderTheyWereAddedIn() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let first = try #require(await library.addHighlight(anchor, color: Highlight.defaultColor, to: document, at: Date(timeIntervalSince1970: 1)))
-        let second = try #require(await library.addHighlight(anchor, color: Highlight.defaultColor, to: document, at: Date(timeIntervalSince1970: 2)))
+        let first = try #require(await library.addHighlight(anchor, to: document, at: Date(timeIntervalSince1970: 1)))
+        let second = try #require(await library.addHighlight(anchor, to: document, at: Date(timeIntervalSince1970: 2)))
 
         #expect(first.id != second.id)
         #expect(await library.highlights(of: document) == [first, second])
@@ -603,7 +602,7 @@ import Testing
         let document = try await importDocument(into: library)
         library.remove(document)
 
-        #expect(await library.addHighlight(anchor, color: Highlight.defaultColor, to: document) == nil)
+        #expect(await library.addHighlight(anchor, to: document) == nil)
         #expect(await library.highlights(of: document) == [])
     }
 
@@ -611,7 +610,7 @@ import Testing
         let library = try openLibrary()
         let source = try writePDF(named: "a.pdf")
         guard case .opened(let document) = await library.import(source) else { throw ImportFailed() }
-        _ = await library.addHighlight(anchor, color: Highlight.defaultColor, to: document)
+        _ = await library.addHighlight(anchor, to: document)
 
         library.remove(document)
         _ = await library.import(source)
@@ -622,8 +621,8 @@ import Testing
     @Test func aRecoloredHighlightKeepsItsColorAfterReopeningTheLibrary() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let added = try #require(await library.addHighlight(anchor, color: Highlight.defaultColor, to: document))
-        let green = Highlight.builtInColors[1].color
+        let added = try #require(await library.addHighlight(anchor, to: document))
+        let green = library.highlightColors[1].color
 
         await library.setHighlightColor(green, of: added, in: document)
 
@@ -636,8 +635,8 @@ import Testing
     @Test func aRemovedHighlightIsGoneAfterReopeningTheLibrary() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let first = try #require(await library.addHighlight(anchor, color: Highlight.defaultColor, to: document))
-        let second = try #require(await library.addHighlight(anchor, color: Highlight.defaultColor, to: document))
+        let first = try #require(await library.addHighlight(anchor, to: document))
+        let second = try #require(await library.addHighlight(anchor, to: document))
 
         await library.removeHighlight(first, from: document)
 
@@ -648,18 +647,45 @@ import Testing
     @Test func recoloringAndRemovingInARemovedDocumentDoNothing() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let added = try #require(await library.addHighlight(anchor, color: Highlight.defaultColor, to: document))
+        let added = try #require(await library.addHighlight(anchor, to: document))
         library.remove(document)
 
-        await library.setHighlightColor(Highlight.builtInColors[1].color, of: added, in: document)
+        await library.setHighlightColor(library.highlightColors[1].color, of: added, in: document)
         await library.removeHighlight(added, from: document)
 
         #expect(await library.highlights(of: document) == [])
     }
 
-    @Test func theBuiltInHighlightColorsStartWithYellowTheDefault() {
-        #expect(Highlight.builtInColors.map(\.name) == ["Yellow", "Green", "Blue", "Pink", "Purple", "Red"])
-        #expect(Highlight.defaultColor == Highlight.builtInColors[0].color)
+    @Test func theHighlightColorsAreTheBuiltInOnesYellowFirst() throws {
+        let library = try openLibrary()
+        #expect(library.highlightColors.map(\.name) == ["Yellow", "Green", "Blue", "Pink", "Purple", "Red"])
+    }
+
+    @Test func theDefaultHighlightColorIsYellowUntilChosen() throws {
+        let library = try openLibrary()
+        #expect(library.defaultHighlightColor == library.highlightColors[0])
+    }
+
+    @Test func aChosenDefaultHighlightColorSurvivesReopeningTheLibrary() async throws {
+        let library = try openLibrary()
+        let purple = library.highlightColors[4]
+
+        await library.setDefaultHighlightColor(purple)
+
+        #expect(library.defaultHighlightColor == purple)
+        #expect(try openLibrary().defaultHighlightColor == purple)
+    }
+
+    @Test func newHighlightsGetTheDefaultHighlightColor() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        let green = library.highlightColors[1]
+        await library.setDefaultHighlightColor(green)
+
+        let added = try #require(await library.addHighlight(anchor, to: document))
+
+        #expect(added.color == green.color)
+        #expect(await library.highlights(of: document).map(\.color) == [green.color])
     }
 
     @Test func highlightsDoNotDisturbReadingProgress() async throws {
@@ -667,7 +693,7 @@ import Testing
         let document = try await importDocument(into: library)
         await library.saveProgress(place, of: document, at: lastRead)
 
-        _ = await library.addHighlight(anchor, color: Highlight.defaultColor, to: document)
+        _ = await library.addHighlight(anchor, to: document)
 
         #expect(try openLibrary().documents.first?.place == place)
     }

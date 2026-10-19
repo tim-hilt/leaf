@@ -24,6 +24,7 @@ struct LeafPDFApp: App {
         #if os(macOS)
             Settings {
                 SettingsView()
+                    .environment(library)
                     .environment(settings)
                     .preferredColorScheme(settings.theme.colorScheme)
                     .frame(width: 420)

@@ -352,7 +352,7 @@ import Testing
     func marked(_ id: String, _ rect: CGRect, onPage pageIndex: Int = 0) -> Highlight {
         Highlight(
             id: id, anchor: HighlightAnchor(pages: [.init(pageIndex: pageIndex, rects: [rect])], quotedText: id),
-            color: Highlight.defaultColor)
+            color: RGB.sampleYellow)
     }
 
     /// The centre of `rect` on page `pageIndex` + 1, in the view's coordinates.

@@ -102,6 +102,11 @@ final class LibraryModel {
     }
     /// `documents` in `sort` order, kept up to date as Titles arrive.
     private var sorted: [LibraryDocument] = []
+    /// The Highlight Colors to choose from, yellow first.
+    let highlightColors: [HighlightColor]
+    /// The color of new Highlights; one of `highlightColors`. Yellow until chosen,
+    /// kept in the Library's Preferences. Setting it shows at once, in every window.
+    private(set) var defaultHighlightColor: HighlightColor
     /// Non-nil from the start of an Import until it finishes. The UI is
     /// disabled meanwhile.
     private(set) var runningImport: RunningImport?
@@ -123,6 +128,8 @@ final class LibraryModel {
         covers = CoverStore(folder: coversFolder)
         self.defaults = defaults
         sort = LibrarySort(from: defaults)
+        highlightColors = core.highlightColors().map(HighlightColor.init)
+        defaultHighlightColor = HighlightColor(core.defaultHighlightColor())
         refresh()
         readMissingDetails()
     }
@@ -255,12 +262,12 @@ final class LibraryModel {
         return markup?.highlights.map(Highlight.init) ?? []
     }
 
-    /// Adds a Highlight over `anchor` in `color` to `document`, `created` now.
-    /// The core writes off the main thread, in order, and this returns the
-    /// stored Highlight when it has. Nil for a Document that was Removed, or
-    /// if the write failed.
+    /// Adds a Highlight over `anchor` in the Default Highlight Color to `document`,
+    /// `created` now. The core writes off the main thread, in order, and this
+    /// returns the stored Highlight when it has. Nil for a Document that was
+    /// Removed, or if the write failed.
     func addHighlight(
-        _ anchor: HighlightAnchor, color: RGB, to document: LibraryDocument, at created: Date = .now
+        _ anchor: HighlightAnchor, to document: LibraryDocument, at created: Date = .now
     ) async -> Highlight? {
         guard documents.contains(where: { $0.id == document.id }) else { return nil }
         let core = core, id = document.id
@@ -269,7 +276,7 @@ final class LibraryModel {
                 pageIndex: UInt32(page.pageIndex),
                 rects: page.rects.map { Rect(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height) })
         }
-        let rgb = Rgb(r: color.r.byte, g: color.g.byte, b: color.b.byte)
+        let rgb = Rgb(defaultHighlightColor.color)
         let milliseconds = UInt64(max(0, created.timeIntervalSince1970 * 1000).rounded())
         let stored = await inStateOrder {
             try? core.addHighlight(
@@ -286,7 +293,7 @@ final class LibraryModel {
     func setHighlightColor(_ color: RGB, of highlight: Highlight, in document: LibraryDocument) async {
         guard documents.contains(where: { $0.id == document.id }) else { return }
         let core = core, id = document.id, highlightID = highlight.id
-        let rgb = Rgb(r: color.r.byte, g: color.g.byte, b: color.b.byte)
+        let rgb = Rgb(color)
         await inStateOrder { try? core.setHighlightColor(id: id, highlight: highlightID, color: rgb) }
     }
 
@@ -299,8 +306,18 @@ final class LibraryModel {
         await inStateOrder { try? core.removeHighlight(id: id, highlight: highlightID) }
     }
 
+    /// Makes `color`, one of `highlightColors`, the Default Highlight Color. It
+    /// shows at once; the core writes off the main thread, in order, and this
+    /// returns when it has.
+    func setDefaultHighlightColor(_ color: HighlightColor) async {
+        defaultHighlightColor = color
+        let core = core, name = color.name
+        await inStateOrder { try? core.setDefaultHighlightColor(name: name) }
+    }
+
     /// Runs `access` off the main thread, after every earlier access to the
-    /// core's Document state has finished, so reads and writes never overlap.
+    /// core's state (a Document's or the Preferences) has finished, so reads
+    /// and writes never overlap.
     private func inStateOrder<T: Sendable>(_ access: @escaping @Sendable () -> T) async -> T {
         let previous = lastStateAccess
         let running = Task.detached {
@@ -378,6 +395,12 @@ extension Highlight {
                 },
                 quotedText: stored.quotedText),
             color: RGB(stored.color))
+    }
+}
+
+extension Rgb {
+    fileprivate init(_ color: RGB) {
+        self.init(r: color.r.byte, g: color.g.byte, b: color.b.byte)
     }
 }
 

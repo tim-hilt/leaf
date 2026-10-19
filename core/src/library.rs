@@ -11,7 +11,8 @@
 //! folder's only non-hidden entry. The state is stored like an Import: written
 //! to staging, then renamed into place.
 
-use crate::markup::{self, Highlight, Markup, PageRects, Rgb};
+use crate::markup::{self, BuiltInColor, Highlight, Markup, PageRects, Rgb};
+use crate::preferences;
 use crate::progress::{self, ReadingProgress};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -23,6 +24,7 @@ use std::time::SystemTime;
 const STAGING: &str = ".staging";
 const REMOVING: &str = ".removing";
 const STATE: &str = ".state.automerge";
+const PREFERENCES: &str = ".preferences.automerge";
 
 /// A Document in the Library.
 #[derive(Debug, Clone, PartialEq)]
@@ -193,23 +195,60 @@ impl Library {
         self.update_state(id, |existing| markup::remove(existing, highlight))
     }
 
+    /// The Highlight Colors to choose from, yellow first.
+    pub fn highlight_colors(&self) -> Vec<BuiltInColor> {
+        markup::BUILT_IN_COLORS.to_vec()
+    }
+
+    /// The color of new Highlights: yellow until the user picks another, or if
+    /// the Preferences are unreadable.
+    pub fn default_highlight_color(&self) -> BuiltInColor {
+        fs::read(self.preferences()).map_or(BuiltInColor::YELLOW, |bytes| {
+            preferences::default_color(&bytes)
+        })
+    }
+
+    /// Makes the built-in Highlight Color called `name` the Default Highlight
+    /// Color. A `name` that is no Highlight Color is `InvalidInput`. Corrupt
+    /// Preferences are replaced.
+    pub fn set_default_highlight_color(&self, name: &str) -> io::Result<()> {
+        let color = BuiltInColor::named(name).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{name:?} is not a Highlight Color"),
+            )
+        })?;
+        self.replace_file(&self.preferences(), |existing| {
+            preferences::set_default_color(existing, color)
+        })
+    }
+
     /// Replaces the state of Document `id` with what `write` makes of the
     /// stored one (none if missing). Nothing happens if the Document isn't in
-    /// the Library. The state is staged and renamed into place, so it is never
-    /// half written.
+    /// the Library.
     fn update_state(
         &self,
         id: &str,
         write: impl FnOnce(Option<&[u8]>) -> Vec<u8>,
     ) -> io::Result<()> {
-        let folder = self.folder(id)?;
-        let state = folder.join(STATE);
-        let existing = fs::read(&state).ok();
+        let state = self.folder(id)?.join(STATE);
+        self.replace_file(&state, write)
+    }
+
+    /// Replaces the file `path` with what `write` makes of its content (none if
+    /// missing). The file is staged and renamed into place, so it is never half
+    /// written.
+    fn replace_file(
+        &self,
+        path: &Path,
+        write: impl FnOnce(Option<&[u8]>) -> Vec<u8>,
+    ) -> io::Result<()> {
+        let existing = fs::read(path).ok();
         let staged = self.staging().join(unique_name());
         let mut file = File::create_new(&staged)?;
         file.write_all(&write(existing.as_deref()))?;
         file.sync_all()?;
-        match fs::rename(&staged, state) {
+        match fs::rename(&staged, path) {
             // The folder is gone: the Document was never there or was Removed.
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 let _ = fs::remove_file(&staged);
@@ -259,6 +298,10 @@ impl Library {
 
     fn removing(&self) -> PathBuf {
         self.root.join(REMOVING)
+    }
+
+    fn preferences(&self) -> PathBuf {
+        self.root.join(PREFERENCES)
     }
 }
 
@@ -1060,6 +1103,84 @@ mod tests {
         assert_eq!(
             library.markup(&document.id).unwrap().highlights,
             vec![added]
+        );
+    }
+
+    #[test]
+    fn the_highlight_colors_are_the_six_built_in_ones_yellow_first() {
+        let scratch = Scratch::new();
+        let names: Vec<_> = scratch
+            .library()
+            .highlight_colors()
+            .iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, ["Yellow", "Green", "Blue", "Pink", "Purple", "Red"]);
+    }
+
+    #[test]
+    fn the_default_highlight_color_is_yellow_until_set() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        assert_eq!(library.default_highlight_color().name, "Yellow");
+    }
+
+    #[test]
+    fn the_default_highlight_color_survives_reopening_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+
+        library.set_default_highlight_color("Purple").unwrap();
+        assert_eq!(library.default_highlight_color().name, "Purple");
+        drop(library);
+
+        let library = scratch.library();
+        let purple = library.default_highlight_color();
+        assert_eq!(purple.name, "Purple");
+        assert_eq!(purple, library.highlight_colors()[4]);
+        library.set_default_highlight_color("Yellow").unwrap();
+        assert_eq!(scratch.library().default_highlight_color().name, "Yellow");
+    }
+
+    #[test]
+    fn setting_an_unknown_default_highlight_color_is_invalid_input() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        library.set_default_highlight_color("Green").unwrap();
+
+        let err = library.set_default_highlight_color("Teal").unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(library.default_highlight_color().name, "Green");
+    }
+
+    #[test]
+    fn corrupt_preferences_read_as_yellow_and_are_replaced_by_the_next_choice() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        fs::write(scratch.0.join("library").join(PREFERENCES), b"garbage").unwrap();
+        assert_eq!(library.default_highlight_color().name, "Yellow");
+
+        library.set_default_highlight_color("Red").unwrap();
+
+        assert_eq!(library.default_highlight_color().name, "Red");
+    }
+
+    #[test]
+    fn preferences_are_a_hidden_file_at_the_library_root_and_no_document() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        library.set_default_highlight_color("Blue").unwrap();
+
+        assert!(scratch.0.join("library/.preferences.automerge").is_file());
+        assert_eq!(library.documents().unwrap(), vec![document]);
+        assert_eq!(
+            fs::read_dir(scratch.0.join("library/.staging"))
+                .unwrap()
+                .count(),
+            0
         );
     }
 

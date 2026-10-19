@@ -16,11 +16,21 @@ const SCHEMA_VERSION: u64 = 2;
 /// current schema version and compacted. A missing or unreadable `existing`
 /// starts a new document.
 pub(crate) fn update(existing: Option<&[u8]>, change: impl FnOnce(&mut AutoCommit)) -> Vec<u8> {
+    update_versioned(existing, SCHEMA_VERSION, change)
+}
+
+/// `update` for an Automerge document with its own schema `version`, like
+/// Preferences (`preferences`).
+pub(crate) fn update_versioned(
+    existing: Option<&[u8]>,
+    version: u64,
+    change: impl FnOnce(&mut AutoCommit),
+) -> Vec<u8> {
     let mut doc = existing
         .and_then(|bytes| AutoCommit::load(bytes).ok())
         .unwrap_or_default();
     change(&mut doc);
-    doc.put(ROOT, "version", SCHEMA_VERSION)
+    doc.put(ROOT, "version", version)
         .expect("a root map accepts new keys");
     doc.save()
 }

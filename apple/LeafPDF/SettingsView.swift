@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// The Settings: Theme, Page Style and Page Colors. A window on Mac (⌘,), a sheet from the
-/// Gallery's gear on iPhone and iPad.
+/// The Settings: Theme, Highlight Colors (the Default Highlight Color), Page Style and Page Colors.
+/// A window on Mac (⌘,), a sheet from the Gallery's gear on iPhone and iPad.
 struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(LibraryModel.self) private var library
 
     var body: some View {
         @Bindable var settings = settings
@@ -16,6 +17,11 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+            }
+            Section("Highlight Colors") {
+                HighlightColorGrid(
+                    colors: library.highlightColors, selected: library.defaultHighlightColor.color,
+                    onSelect: { color in Task { await library.setDefaultHighlightColor(color) } })
             }
             Section("Page Style") {
                 PageStylePicker(selection: $settings.pageStyle, paper: settings.pageColors.paper)

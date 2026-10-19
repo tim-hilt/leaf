@@ -98,16 +98,13 @@ pub struct BuiltInColor {
     pub rgb: Rgb,
 }
 
-/// The built-in Highlight Colors, yellow (the default) first.
-#[uniffi::export]
-pub fn built_in_colors() -> Vec<BuiltInColor> {
-    leafpdf_core::markup::BUILT_IN_COLORS
-        .iter()
-        .map(|c| BuiltInColor {
+impl From<leafpdf_core::markup::BuiltInColor> for BuiltInColor {
+    fn from(c: leafpdf_core::markup::BuiltInColor) -> Self {
+        Self {
             name: c.name.to_owned(),
             rgb: c.rgb.into(),
-        })
-        .collect()
+        }
+    }
 }
 
 /// See `leafpdf_core::markup::Highlight`. `created` is milliseconds since the
@@ -311,6 +308,22 @@ impl Library {
 
     pub fn remove_highlight(&self, id: String, highlight: String) -> Result<(), LibraryError> {
         Ok(self.0.remove_highlight(&id, &highlight)?)
+    }
+
+    pub fn highlight_colors(&self) -> Vec<BuiltInColor> {
+        self.0
+            .highlight_colors()
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+
+    pub fn default_highlight_color(&self) -> BuiltInColor {
+        self.0.default_highlight_color().into()
+    }
+
+    pub fn set_default_highlight_color(&self, name: String) -> Result<(), LibraryError> {
+        Ok(self.0.set_default_highlight_color(&name)?)
     }
 
     pub fn documents(&self) -> Result<Vec<Document>, LibraryError> {

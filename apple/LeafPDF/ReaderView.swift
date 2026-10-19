@@ -166,7 +166,7 @@ struct ReaderView: View {
         .popover(item: $openHighlight, attachmentAnchor: .rect(.rect(CGRect(origin: openHighlight?.point ?? .zero, size: CGSize(width: 1, height: 1))))) { open in
             if let highlight = highlights.first(where: { $0.id == open.id }) {
                 HighlightPopover(
-                    color: highlight.color, onColor: { recolor(highlight, to: $0) },
+                    colors: library.highlightColors, color: highlight.color, onColor: { recolor(highlight, to: $0) },
                     onRemove: { remove(highlight) })
                     .presentationCompactAdaptation(.sheet)
             }
@@ -202,7 +202,7 @@ struct ReaderView: View {
     /// Adds a Highlight over `anchor`; it shows once the Library has stored it.
     private func highlight(_ anchor: HighlightAnchor) {
         Task {
-            guard let added = await library.addHighlight(anchor, color: Highlight.defaultColor, to: document)
+            guard let added = await library.addHighlight(anchor, to: document)
             else { return }
             highlights.append(added)
         }

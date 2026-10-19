@@ -20,13 +20,18 @@ struct Highlight: Identifiable, Equatable {
     let id: String
     let anchor: HighlightAnchor
     var color: RGB
+}
 
-    /// The built-in Highlight Colors from the core, yellow first.
-    static let builtInColors: [(name: String, color: RGB)] = LeafCore.builtInColors().map { ($0.name, RGB($0.rgb)) }
+/// One of the Highlight Colors to choose from. The name identifies it.
+struct HighlightColor: Identifiable, Equatable, Sendable {
+    let name: String
+    let color: RGB
 
-    /// The color of new Highlights: yellow, until the Default Highlight Color
-    /// is a setting.
-    static let defaultColor = builtInColors[0].color
+    var id: String { name }
+}
+
+extension HighlightColor {
+    init(_ stored: BuiltInColor) { self.init(name: stored.name, color: RGB(stored.rgb)) }
 }
 
 extension RGB {
