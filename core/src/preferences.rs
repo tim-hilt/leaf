@@ -14,7 +14,7 @@
 
 use crate::markup::Rgb;
 use crate::state;
-use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
+use automerge::{ActorId, AutoCommit, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 
 const SCHEMA_VERSION: u64 = 1;
 
@@ -121,39 +121,38 @@ pub(crate) fn default_color(bytes: Option<&[u8]>) -> HighlightColor {
     color.unwrap_or_else(|| BuiltInColor::YELLOW.into())
 }
 
-/// The Automerge document `existing` with the color `id` as the Default
-/// Highlight Color, compacted. A missing or unreadable `existing` starts a new
-/// document. It doesn't check that `id` is a color.
-pub(crate) fn set_default_color(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
-    state::update_versioned(existing, SCHEMA_VERSION, |doc| {
-        doc.put(ROOT, "default_color", ScalarValue::Str(id.into()))
-            .expect("a root map accepts new keys");
-    })
+/// The Automerge document `existing` with `change` made as `actor`, stamped
+/// with the schema version and compacted.
+pub(crate) fn update(
+    existing: Option<&[u8]>,
+    actor: &ActorId,
+    change: impl FnOnce(&mut AutoCommit),
+) -> Vec<u8> {
+    state::update_versioned(existing, actor, SCHEMA_VERSION, change)
 }
 
-/// The Automerge document `existing` with a new Custom Color `rgb`, added at
-/// `now` in milliseconds since the Unix epoch, compacted; and that color. It
-/// comes after every Custom Color already there, even if clocks disagree.
-pub(crate) fn add_custom_color(
-    existing: Option<&[u8]>,
-    rgb: Rgb,
-    now: u64,
-) -> (Vec<u8>, HighlightColor) {
-    let mut added = None;
-    let bytes = state::update_versioned(existing, SCHEMA_VERSION, |doc| {
-        let after = custom_colors(doc).last().and_then(|c| added_at(&c.id));
-        let time = after.map_or(now, |last| now.max(last + 1));
-        let id = format!("{time:013x}-{}", state::new_id());
-        let map = state::map_to_write(doc, "custom_colors");
-        doc.put(&map, id.as_str(), ScalarValue::Uint(rgb.packed()))
-            .expect("a map accepts new keys");
-        added = Some(HighlightColor {
-            id,
-            rgb,
-            is_custom: true,
-        });
-    });
-    (bytes, added.expect("the update ran"))
+/// Makes the color `id` the Default Highlight Color in `doc`. It doesn't check
+/// that `id` is a color.
+pub(crate) fn set_default_color(doc: &mut AutoCommit, id: &str) {
+    doc.put(ROOT, "default_color", ScalarValue::Str(id.into()))
+        .expect("a root map accepts new keys");
+}
+
+/// Adds a new Custom Color `rgb` to `doc`, added at `now` in milliseconds
+/// since the Unix epoch, and returns it. It comes after every Custom Color
+/// already there, even if clocks disagree.
+pub(crate) fn add_custom_color(doc: &mut AutoCommit, rgb: Rgb, now: u64) -> HighlightColor {
+    let after = custom_colors(doc).last().and_then(|c| added_at(&c.id));
+    let time = after.map_or(now, |last| now.max(last + 1));
+    let id = format!("{time:013x}-{}", state::new_id());
+    let map = state::map_to_write(doc, "custom_colors");
+    doc.put(&map, id.as_str(), ScalarValue::Uint(rgb.packed()))
+        .expect("a map accepts new keys");
+    HighlightColor {
+        id,
+        rgb,
+        is_custom: true,
+    }
 }
 
 /// When the Custom Color `id` was added, as it was given to `add_custom_color`.
@@ -161,15 +160,13 @@ fn added_at(id: &str) -> Option<u64> {
     u64::from_str_radix(id.split_once('-')?.0, 16).ok()
 }
 
-/// The Automerge document `existing` without Custom Color `id`, compacted.
-/// Built-in colors and unknown IDs are left alone. A removal wins over a
-/// concurrent use of the color as the Default Highlight Color.
-pub(crate) fn remove_custom_color(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
-    state::update_versioned(existing, SCHEMA_VERSION, |doc| {
-        for map in state::maps(doc, "custom_colors") {
-            doc.delete(&map, id).expect("a map accepts deletions");
-        }
-    })
+/// Removes Custom Color `id` from `doc`. Built-in colors and unknown IDs are
+/// left alone. A removal wins over a concurrent use of the color as the
+/// Default Highlight Color.
+pub(crate) fn remove_custom_color(doc: &mut AutoCommit, id: &str) {
+    for map in state::maps(doc, "custom_colors") {
+        doc.delete(&map, id).expect("a map accepts deletions");
+    }
 }
 
 #[cfg(test)]
@@ -192,6 +189,26 @@ mod tests {
         BuiltInColor::named(name).unwrap().into()
     }
 
+    fn edit(existing: Option<&[u8]>, change: impl FnOnce(&mut AutoCommit)) -> Vec<u8> {
+        update(existing, &ActorId::random(), change)
+    }
+
+    fn set_default_color(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
+        edit(existing, |doc| super::set_default_color(doc, id))
+    }
+
+    fn add_custom_color(existing: Option<&[u8]>, rgb: Rgb, now: u64) -> (Vec<u8>, HighlightColor) {
+        let mut added = None;
+        let bytes = edit(existing, |doc| {
+            added = Some(super::add_custom_color(doc, rgb, now));
+        });
+        (bytes, added.expect("the update ran"))
+    }
+
+    fn remove_custom_color(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
+        edit(existing, |doc| super::remove_custom_color(doc, id))
+    }
+
     /// Two devices, with actor IDs 1 and 2, start from `base`, apply `one` and
     /// `other` offline, then merge. Returns the merged document in both
     /// directions.
@@ -207,7 +224,7 @@ mod tests {
         };
         let base = base.map(<[u8]>::to_vec).unwrap_or_else(|| {
             // Both devices share the document's creation.
-            state::update_versioned(None, SCHEMA_VERSION, |_| {})
+            edit(None, |_| {})
         });
         let (mut a, mut b) = (device(1, one(Some(&base))), device(2, other(Some(&base))));
         let mut a2 = AutoCommit::load(&a.save()).unwrap();

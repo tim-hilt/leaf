@@ -45,6 +45,16 @@ pub(crate) fn read(bytes: &[u8]) -> Option<ReadingProgress> {
         .max_by_key(|progress| progress.last_read)
 }
 
+/// The Reading Progress held by the stored Automerge documents `states`, e.g.
+/// those of a Document's Imports: the one with the newest Last Read, the last
+/// of those if several have it.
+pub(crate) fn read_all<'a>(states: impl IntoIterator<Item = &'a [u8]>) -> Option<ReadingProgress> {
+    states
+        .into_iter()
+        .filter_map(read)
+        .max_by_key(|progress| progress.last_read)
+}
+
 /// The Reading Progress held by the map `map`, if it is complete.
 fn read_map(doc: &AutoCommit, map: &ObjId) -> Option<ReadingProgress> {
     let field = |name: &str| state::scalar(doc, map, name);
@@ -56,15 +66,9 @@ fn read_map(doc: &AutoCommit, map: &ObjId) -> Option<ReadingProgress> {
     })
 }
 
-/// The Automerge document `existing` with `progress` written into it,
-/// compacted. A missing or unreadable `existing` starts a new document.
-pub(crate) fn write(existing: Option<&[u8]>, progress: &ReadingProgress) -> Vec<u8> {
-    state::update(existing, |doc| put_progress(doc, progress))
-}
-
 /// Writes `progress` into `doc` as one new `progress` map, replacing every
 /// value (also concurrent ones) the key held.
-fn put_progress(doc: &mut AutoCommit, progress: &ReadingProgress) {
+pub(crate) fn put_progress(doc: &mut AutoCommit, progress: &ReadingProgress) {
     let map = doc
         .put_object(ROOT, "progress", ObjType::Map)
         .expect("a root map accepts new keys");
@@ -84,6 +88,13 @@ fn put_progress(doc: &mut AutoCommit, progress: &ReadingProgress) {
 mod tests {
     use super::*;
     use automerge::ActorId;
+
+    /// The Automerge document `existing` with `progress` written into it.
+    fn write(existing: Option<&[u8]>, progress: &ReadingProgress) -> Vec<u8> {
+        state::update(existing, &ActorId::random(), |doc| {
+            put_progress(doc, progress);
+        })
+    }
 
     fn place(page_index: u32, last_read: u64) -> ReadingProgress {
         ReadingProgress {
@@ -123,6 +134,14 @@ mod tests {
             read(&a.save())
         };
         [merge(1, 2), merge(2, 1)]
+    }
+
+    #[test]
+    fn the_newest_last_read_of_several_documents_wins() {
+        let (old, new) = (write(None, &place(3, 1_000)), write(None, &place(7, 2_000)));
+        let states = [old.as_slice(), b"garbage", new.as_slice(), old.as_slice()];
+        assert_eq!(read_all(states), Some(place(7, 2_000)));
+        assert_eq!(read_all([]), None);
     }
 
     #[test]

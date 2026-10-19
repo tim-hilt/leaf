@@ -115,13 +115,35 @@ pub(crate) fn read(bytes: &[u8]) -> Markup {
     let Ok(doc) = AutoCommit::load(bytes) else {
         return Markup::default();
     };
-    let mut highlights = entries(&doc, HIGHLIGHTS, read_highlight);
-    highlights.sort_by(|a, b| (a.created, &a.id).cmp(&(b.created, &b.id)));
-    let mut page_notes = entries(&doc, PAGE_NOTES, read_page_note);
-    page_notes.sort_by(|a, b| (a.created, &a.id).cmp(&(b.created, &b.id)));
-    Markup {
-        highlights,
-        page_notes,
+    let mut markup = Markup {
+        highlights: entries(&doc, HIGHLIGHTS, read_highlight),
+        page_notes: entries(&doc, PAGE_NOTES, read_page_note),
+    };
+    markup.sort();
+    markup
+}
+
+/// The Markup held by all the stored Automerge documents `states` together.
+/// They are separate documents, e.g. the states of a Document's Imports, never
+/// merged into one: each Highlight and page Note is in the one it was added to.
+pub(crate) fn read_all<'a>(states: impl IntoIterator<Item = &'a [u8]>) -> Markup {
+    let mut all = Markup::default();
+    for bytes in states {
+        let markup = read(bytes);
+        all.highlights.extend(markup.highlights);
+        all.page_notes.extend(markup.page_notes);
+    }
+    all.sort();
+    all
+}
+
+impl Markup {
+    /// Puts the Highlights and page Notes in order, oldest first.
+    fn sort(&mut self) {
+        self.highlights
+            .sort_by(|a, b| (a.created, &a.id).cmp(&(b.created, &b.id)));
+        self.page_notes
+            .sort_by(|a, b| (a.created, &a.id).cmp(&(b.created, &b.id)));
     }
 }
 
@@ -149,46 +171,16 @@ fn entry_of(doc: &AutoCommit, map: &ObjId, id: &str) -> Option<ObjId> {
     }
 }
 
-/// The Automerge document `existing` with `highlight` added, compacted.
-pub(crate) fn add(existing: Option<&[u8]>, highlight: &Highlight) -> Vec<u8> {
-    state::update(existing, |doc| put_highlight(doc, highlight))
+/// Removes Highlight `id` from `doc`. A removal wins over a concurrent change
+/// of the same Highlight.
+pub(crate) fn remove_highlight(doc: &mut AutoCommit, id: &str) {
+    delete(doc, HIGHLIGHTS, id);
 }
 
-/// The Automerge document `existing` with the color of Highlight `id` set to
-/// `color`, compacted. Unknown Highlights are left alone.
-pub(crate) fn set_color(existing: Option<&[u8]>, id: &str, color: Rgb) -> Vec<u8> {
-    state::update(existing, |doc| put_color(doc, id, color))
-}
-
-/// The Automerge document `existing` with the Note of Highlight `id` set to
-/// `text`, compacted. Empty `text` removes the Note. Unknown Highlights are
-/// left alone.
-pub(crate) fn set_note(existing: Option<&[u8]>, id: &str, text: &str) -> Vec<u8> {
-    state::update(existing, |doc| put_note(doc, id, text))
-}
-
-/// The Automerge document `existing` without Highlight `id`, compacted. A
-/// removal wins over a concurrent change of the same Highlight.
-pub(crate) fn remove(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
-    state::update(existing, |doc| delete(doc, HIGHLIGHTS, id))
-}
-
-/// The Automerge document `existing` with `note` added, compacted.
-pub(crate) fn add_page_note(existing: Option<&[u8]>, note: &PageNote) -> Vec<u8> {
-    state::update(existing, |doc| put_page_note(doc, note))
-}
-
-/// The Automerge document `existing` with the text of page Note `id` set to
-/// `text`, compacted. Empty `text` removes the page Note. Unknown page Notes
-/// are left alone.
-pub(crate) fn set_page_note_text(existing: Option<&[u8]>, id: &str, text: &str) -> Vec<u8> {
-    state::update(existing, |doc| put_page_note_text(doc, id, text))
-}
-
-/// The Automerge document `existing` without page Note `id`, compacted. A
-/// removal wins over a concurrent edit of the same page Note.
-pub(crate) fn remove_page_note(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
-    state::update(existing, |doc| delete(doc, PAGE_NOTES, id))
+/// Removes page Note `id` from `doc`. A removal wins over a concurrent edit of
+/// the same page Note.
+pub(crate) fn remove_page_note(doc: &mut AutoCommit, id: &str) {
+    delete(doc, PAGE_NOTES, id);
 }
 
 /// The root map `key` holding the map entry `id`, and that entry.
@@ -206,14 +198,14 @@ fn delete(doc: &mut AutoCommit, key: &str, id: &str) {
     }
 }
 
-fn put_color(doc: &mut AutoCommit, id: &str, color: Rgb) {
+pub(crate) fn put_color(doc: &mut AutoCommit, id: &str, color: Rgb) {
     if let Some((_, entry)) = find(doc, HIGHLIGHTS, id) {
         doc.put(&entry, "color", ScalarValue::Uint(color.packed()))
             .expect("a map accepts new keys");
     }
 }
 
-fn put_note(doc: &mut AutoCommit, id: &str, text: &str) {
+pub(crate) fn put_note(doc: &mut AutoCommit, id: &str, text: &str) {
     let Some((_, entry)) = find(doc, HIGHLIGHTS, id) else {
         return;
     };
@@ -237,7 +229,7 @@ fn write_text(doc: &mut AutoCommit, entry: &ObjId, key: &str, text: &str) {
         .expect("a text accepts new content");
 }
 
-fn put_page_note_text(doc: &mut AutoCommit, id: &str, text: &str) {
+pub(crate) fn put_page_note_text(doc: &mut AutoCommit, id: &str, text: &str) {
     let Some((map, entry)) = find(doc, PAGE_NOTES, id) else {
         return;
     };
@@ -250,7 +242,7 @@ fn put_page_note_text(doc: &mut AutoCommit, id: &str, text: &str) {
 
 /// Adds `note` to the winning `page_notes` map of `doc`, creating it if there
 /// is none.
-fn put_page_note(doc: &mut AutoCommit, note: &PageNote) {
+pub(crate) fn put_page_note(doc: &mut AutoCommit, note: &PageNote) {
     let map = state::map_to_write(doc, PAGE_NOTES);
     let entry = doc
         .put_object(&map, note.id.as_str(), ObjType::Map)
@@ -333,7 +325,7 @@ fn read_page_rects(doc: &AutoCommit, anchor: &ObjId, index: usize) -> Option<Pag
 
 /// Adds `highlight` to the winning `highlights` map of `doc`, creating it if
 /// there is none.
-fn put_highlight(doc: &mut AutoCommit, highlight: &Highlight) {
+pub(crate) fn put_highlight(doc: &mut AutoCommit, highlight: &Highlight) {
     let map = state::map_to_write(doc, HIGHLIGHTS);
     let entry = doc
         .put_object(&map, highlight.id.as_str(), ObjType::Map)
@@ -377,6 +369,39 @@ fn put_highlight(doc: &mut AutoCommit, highlight: &Highlight) {
 mod tests {
     use super::*;
     use automerge::ActorId;
+
+    /// The Automerge document `existing` with `change` made.
+    fn edit(existing: Option<&[u8]>, change: impl FnOnce(&mut AutoCommit)) -> Vec<u8> {
+        state::update(existing, &ActorId::random(), change)
+    }
+
+    fn add(existing: Option<&[u8]>, highlight: &Highlight) -> Vec<u8> {
+        edit(existing, |doc| put_highlight(doc, highlight))
+    }
+
+    fn set_color(existing: Option<&[u8]>, id: &str, color: Rgb) -> Vec<u8> {
+        edit(existing, |doc| put_color(doc, id, color))
+    }
+
+    fn set_note(existing: Option<&[u8]>, id: &str, text: &str) -> Vec<u8> {
+        edit(existing, |doc| put_note(doc, id, text))
+    }
+
+    fn remove(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
+        edit(existing, |doc| remove_highlight(doc, id))
+    }
+
+    fn add_page_note(existing: Option<&[u8]>, note: &PageNote) -> Vec<u8> {
+        edit(existing, |doc| put_page_note(doc, note))
+    }
+
+    fn set_page_note_text(existing: Option<&[u8]>, id: &str, text: &str) -> Vec<u8> {
+        edit(existing, |doc| put_page_note_text(doc, id, text))
+    }
+
+    fn remove_page_note(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
+        edit(existing, |doc| super::remove_page_note(doc, id))
+    }
 
     /// The entry of Highlight `id` in `doc`.
     fn entry(doc: &AutoCommit, id: &str) -> ObjId {
@@ -451,13 +476,32 @@ mod tests {
     }
 
     #[test]
+    fn the_markup_of_several_documents_is_listed_together_oldest_first() {
+        let (one, two) = (add(None, &highlight("a", 2)), add(None, &highlight("b", 1)));
+        let note = page_note("n", 0, "x");
+        let with_note = add_page_note(None, &note);
+
+        let all = read_all([
+            one.as_slice(),
+            b"garbage",
+            two.as_slice(),
+            with_note.as_slice(),
+        ]);
+
+        let ids: Vec<_> = all.highlights.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, ["b", "a"]);
+        assert_eq!(all.page_notes, vec![note]);
+        assert_eq!(read_all([]), Markup::default());
+    }
+
+    #[test]
     fn bytes_that_are_no_automerge_document_hold_no_markup() {
         assert_eq!(read(b"garbage"), Markup::default());
     }
 
     #[test]
     fn concurrent_additions_to_a_document_without_markup_are_both_kept() {
-        let base = state::update(None, |_| {});
+        let base = state::update(None, &ActorId::random(), |_| {});
         let (one, two) = (highlight("one", 1), highlight("two", 2));
         let expected = Markup {
             highlights: vec![one.clone(), two.clone()],
@@ -480,7 +524,7 @@ mod tests {
 
     #[test]
     fn adding_after_a_merge_keeps_every_highlight() {
-        let base = state::update(None, |_| {});
+        let base = state::update(None, &ActorId::random(), |_| {});
         let mut a = AutoCommit::load(&base)
             .unwrap()
             .with_actor(ActorId::from([1; 16]));
@@ -833,7 +877,7 @@ mod tests {
 
     #[test]
     fn concurrent_page_note_additions_are_both_kept() {
-        let base = state::update(None, |_| {});
+        let base = state::update(None, &ActorId::random(), |_| {});
         let (one, two) = (page_note("one", 1, "x"), page_note("two", 2, "y"));
         let expected = only_page_notes(vec![one.clone(), two.clone()]);
         let merged = merged_edits(

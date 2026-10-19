@@ -2,7 +2,7 @@
 
 Each imported File is stored unchanged at `<library>/<sha256>/<original file name>`, in a hidden folder in Application Support. Listing that folder gives the Library; keeping the original name keeps the Title fallback working without extra metadata. The core owns this folder and doesn't care about file formats, so supporting other formats later won't change the layout. The Automerge Library document (ADR-0008) was deferred until Cloud Backing needed it (ADR-0015).
 
-The Document's Automerge document (ADR-0008) is a hidden file in the same folder, so Remove takes it along in its one rename. The File is the folder's only non-hidden entry.
+The Library document (ADR-0015) lists what was Imported and Removed, with Date Imported. A Document's synced state (ADR-0008) is one hidden file per Import in the same folder, so Remove takes it along in its one rename. The File is the folder's only non-hidden entry.
 
 ## Considered Options
 

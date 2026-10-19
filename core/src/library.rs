@@ -1,4 +1,4 @@
-//! The Library: the Documents a user has imported, kept as plain folders.
+//! The Library: the Documents a user has imported.
 //!
 //! Layout (ADR-0012): `<root>/<sha256>/<original file name>`. The hash is the
 //! Document's ID (ADR-0007). Imports are staged under `<root>/.staging` and
@@ -6,26 +6,41 @@
 //! Removals go the other way: the folder is renamed into `<root>/.removing`
 //! first, then deleted.
 //!
-//! Next to its File, a Document's folder holds the Document's Automerge
-//! document as a hidden file (`STATE`), see `state`. The File is the
-//! folder's only non-hidden entry. The state is stored like an Import: written
-//! to staging, then renamed into place.
+//! What was Imported and Removed, with each Import's Date Imported, is the
+//! Library document (`LIBRARY`), see `library_doc`. It is recorded before the
+//! folder changes, so `open` can finish what a crash interrupted.
+//!
+//! Next to its File, a Document's folder holds the state of each of its Imports
+//! as a hidden file (`state_name`), see `state`; the Document reads as the
+//! union of them. They are separate Automerge documents, never merged into
+//! one, so the Device ID can be the actor in all of them. The File is the folder's only non-hidden entry. A state is
+//! stored like an Import: written to staging, then renamed into place.
+//!
+//! Every local change to an Automerge document is made as the Device ID, which
+//! is generated once and kept in `DEVICE`.
 
+use crate::library_doc::{Import, LibraryDoc};
 use crate::markup::{self, Highlight, Markup, PageNote, PageRects, Rgb};
 use crate::preferences::{self, HighlightColor};
 use crate::progress::{self, ReadingProgress};
 use crate::state;
+use automerge::{ActorId, AutoCommit};
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
-use std::time::SystemTime;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const STAGING: &str = ".staging";
 const REMOVING: &str = ".removing";
-const STATE: &str = ".state.automerge";
+const LIBRARY: &str = ".library.automerge";
+const DEVICE: &str = ".device";
 const PREFERENCES: &str = ".preferences.automerge";
+/// The state of a Document before Imports had their own, see `open`.
+const LEGACY_STATE: &str = ".state.automerge";
 
 /// A Document in the Library.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,21 +68,100 @@ pub enum ImportResult {
 #[derive(Debug)]
 pub struct Library {
     root: PathBuf,
+    device_id: ActorId,
+    /// The Library document. Imports and Removes change it and the folders
+    /// under this lock, so they never interleave.
+    doc: Mutex<LibraryDoc>,
+}
+
+/// What `documents` needs of one Document, read from the Library document.
+struct Entry {
+    id: String,
+    name: String,
+    /// Date Imported: that of the Document's first Import.
+    imported: u64,
+    /// The IDs of the Document's Imports, first Import first.
+    imports: Vec<String>,
 }
 
 impl Library {
     /// Opens the Library at `root`, creating it if needed and discarding
     /// leftovers of Imports and Removals that never finished.
+    ///
+    /// A Library without a Library document migrates: each folder becomes an
+    /// Import dated by the folder, and its state becomes the state of that
+    /// Import.
     pub fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
-        let library = Library { root: root.into() };
-        for dir in [library.staging(), library.removing()] {
+        let root = root.into();
+        for dir in [root.join(STAGING), root.join(REMOVING)] {
             match fs::remove_dir_all(&dir) {
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
                 _ => {}
             }
             fs::create_dir_all(&dir)?;
         }
+        let device_id = load_device_id(&root)?;
+        let doc = LibraryDoc::load(fs::read(root.join(LIBRARY)).ok().as_deref(), &device_id);
+        let library = Library {
+            root,
+            device_id,
+            doc: Mutex::new(doc),
+        };
+        library.reconcile()?;
         Ok(library)
+    }
+
+    /// This Device's ID: 32 lowercase hex digits, generated when the Library
+    /// was first opened.
+    pub fn device_id(&self) -> String {
+        self.device_id.to_hex_string()
+    }
+
+    /// Brings the folders and the Library document in line after a crash or
+    /// an older version: each folder with a File but no Import gets one, the
+    /// folder of a Removed Document is deleted, and every Document's
+    /// first Import adopts a state left in the old place.
+    fn reconcile(&self) -> io::Result<()> {
+        let mut doc = self.catalog();
+        let mut folders = Vec::new();
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            let hash = entry.file_name().to_string_lossy().into_owned();
+            if !hash.starts_with('.') && entry.file_type()?.is_dir() {
+                folders.push((hash, entry.path()));
+            }
+        }
+        let removed_hashes: HashSet<String> = doc
+            .imports()
+            .iter()
+            .filter(|i| i.removed)
+            .map(|i| i.hash.clone())
+            .collect();
+        let mut changed = false;
+        let mut first_imports = Vec::new();
+        for (hash, folder) in folders {
+            if let Some(import) = doc.live(&hash).next() {
+                first_imports.push((folder, import.id.clone()));
+            } else if removed_hashes.contains(&hash) {
+                // A Remove that was recorded but never finished.
+                fs::remove_dir_all(&folder)?;
+            } else if let Some((name, imported)) = stored_file(&folder)? {
+                let id = doc.add_import(&hash, &name, imported);
+                changed = true;
+                first_imports.push((folder, id));
+            }
+        }
+        if changed {
+            self.save_catalog(&mut doc)?;
+        }
+        // Only now, so a crash in between doesn't strand a state.
+        for (folder, import) in first_imports {
+            match fs::rename(folder.join(LEGACY_STATE), folder.join(state_name(&import))) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// Copies the File at `source` into the Library, unchanged. Importing a
@@ -81,27 +175,27 @@ impl Library {
         source: &Path,
         progress: impl FnMut(u64, u64),
     ) -> io::Result<ImportResult> {
-        let name = source.file_name().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "source has no file name")
-        })?;
+        let name = source
+            .file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "source has no file name"))?
+            .to_string_lossy()
+            .into_owned();
 
         let staged = self.staging().join(unique_name());
         fs::create_dir(&staged)?;
 
-        let result = copy_hashed(source, &staged.join(name), progress).and_then(|id| {
-            let dir = self.root.join(&id);
-            let is_new = !dir.exists();
-            if is_new {
-                fs::rename(&staged, &dir)?;
-            }
-            Ok((id, is_new))
-        });
+        let result = copy_hashed(source, &staged.join(&name), progress)
+            .and_then(|id| Ok((id.clone(), self.admit(&staged, &id, &name)?)));
         // Nothing left to remove after a successful rename.
         let _ = fs::remove_dir_all(&staged);
 
         let (id, is_new) = result?;
         // A duplicate keeps the name it was first imported under.
-        let document = document_in(&self.root.join(&id))?
+        let document = self
+            .entry(&id)
+            .map(|entry| self.document(&entry))
+            .transpose()?
+            .flatten()
             .ok_or_else(|| io::Error::other("imported Document is empty"))?;
         Ok(if is_new {
             ImportResult::Imported(document)
@@ -110,36 +204,91 @@ impl Library {
         })
     }
 
-    /// All Documents, newest Import first.
-    pub fn documents(&self) -> io::Result<Vec<Document>> {
-        let mut folders = Vec::new();
-        for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
-            if !entry.file_name().to_string_lossy().starts_with('.') && entry.file_type()?.is_dir()
-            {
-                folders.push(entry.path());
+    /// Moves the staged Import of the File `id` named `name` into the Library
+    /// as a Document, unless it is there already, and records the Import. True
+    /// if it moved.
+    fn admit(&self, staged: &Path, id: &str, name: &str) -> io::Result<bool> {
+        let folder = self.root.join(id);
+        let mut doc = self.catalog();
+        if folder.exists() {
+            return Ok(false);
+        }
+        // The Library may list the File already, e.g. after an interrupted
+        // Import: it keeps its Import, and its name.
+        let listed = doc.live(id).next().map(|i| i.name.clone());
+        match listed {
+            Some(listed) if is_file_name(&listed) => {
+                fs::rename(staged.join(name), staged.join(listed))?;
+            }
+            Some(_) => {}
+            None => {
+                doc.add_import(id, name, now());
+                self.save_catalog(&mut doc)?;
             }
         }
-        // Reading each folder (its File and state) dominates, so it is spread
-        // over the cores: a Library of 1,000 Documents lists in half the time.
+        fs::rename(staged, folder)?;
+        Ok(true)
+    }
+
+    /// All Documents, newest Import first.
+    pub fn documents(&self) -> io::Result<Vec<Document>> {
+        let mut entries = self.entries();
+        entries.sort_by(|a, b| b.imported.cmp(&a.imported).then_with(|| a.id.cmp(&b.id)));
+        // Reading each Document's state dominates, so it is spread over the
+        // cores: a Library of 1,000 Documents lists in half the time.
         let threads = std::thread::available_parallelism().map_or(1, usize::from);
-        let per_thread = folders.len().div_ceil(threads).max(1);
+        let per_thread = entries.len().div_ceil(threads).max(1);
         let per_chunk = std::thread::scope(|scope| {
-            let workers: Vec<_> = folders
+            let workers: Vec<_> = entries
                 .chunks(per_thread)
-                .map(|chunk| {
-                    scope.spawn(|| chunk.iter().map(|f| imported_document_in(f)).collect())
-                })
+                .map(|chunk| scope.spawn(|| chunk.iter().map(|e| self.document(e)).collect()))
                 .collect();
             workers
                 .into_iter()
-                .map(|worker| worker.join().expect("listing a folder doesn't panic"))
+                .map(|worker| worker.join().expect("listing a Document doesn't panic"))
                 .collect::<io::Result<Vec<Vec<_>>>>()
         })?;
-        // Folders without a File (`None`) are skipped.
-        let mut found: Vec<_> = per_chunk.into_iter().flatten().flatten().collect();
-        found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
-        Ok(found.into_iter().map(|(_, document)| document).collect())
+        // Documents without a File (`None`) are skipped.
+        Ok(per_chunk.into_iter().flatten().flatten().collect())
+    }
+
+    /// The Documents the Library document lists, in no order.
+    fn entries(&self) -> Vec<Entry> {
+        let doc = self.catalog();
+        let mut by_hash: HashMap<&str, Vec<&Import>> = HashMap::new();
+        for import in doc.imports().iter().filter(|i| !i.removed) {
+            by_hash.entry(&import.hash).or_default().push(import);
+        }
+        by_hash.into_values().map(Entry::new).collect()
+    }
+
+    /// The Document `id` the Library document lists, if any.
+    fn entry(&self, id: &str) -> Option<Entry> {
+        let doc = self.catalog();
+        let imports: Vec<_> = doc.live(id).collect();
+        (!imports.is_empty()).then(|| Entry::new(imports))
+    }
+
+    /// The Document of `entry`, if its File is stored.
+    fn document(&self, entry: &Entry) -> io::Result<Option<Document>> {
+        let path = self.root.join(&entry.id).join(&entry.name);
+        // A name from the Library document must not point outside the folder.
+        if !is_file_name(&entry.name) {
+            return Ok(None);
+        }
+        match fs::metadata(&path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+            Ok(meta) if !meta.is_file() => return Ok(None),
+            Ok(_) => {}
+        }
+        let states = self.read_states(&entry.id, &entry.imports);
+        let progress = progress::read_all(states.iter().map(Vec::as_slice));
+        Ok(Some(Document {
+            id: entry.id.clone(),
+            path,
+            progress,
+        }))
     }
 
     /// Stores `progress` as the Reading Progress of Document `id`, replacing
@@ -147,15 +296,16 @@ impl Library {
     /// imported, or Removed, even just now) does nothing. An `id` that isn't a
     /// Document ID is `InvalidInput`. A corrupt state is replaced.
     pub fn save_progress(&self, id: &str, progress: &ReadingProgress) -> io::Result<()> {
-        self.update_state(id, |existing| progress::write(existing, progress))
+        self.edit_states(id, |doc| progress::put_progress(doc, progress))
     }
 
     /// The Markup of Document `id`: empty if it has none, or the Document isn't
     /// in the Library, or its state is unreadable. An `id` that isn't a
     /// Document ID is `InvalidInput`.
     pub fn markup(&self, id: &str) -> io::Result<Markup> {
-        let state = self.folder(id)?.join(STATE);
-        Ok(fs::read(state).map_or_else(|_| Markup::default(), |bytes| markup::read(&bytes)))
+        self.folder(id)?;
+        let states = self.read_states(id, &self.import_ids(id));
+        Ok(markup::read_all(states.iter().map(Vec::as_slice)))
     }
 
     /// Adds a Highlight of `quoted_text` at `anchor` in `color`, `created` in
@@ -179,7 +329,7 @@ impl Library {
             created,
             note: None,
         };
-        self.update_state(id, |existing| markup::add(existing, &highlight))?;
+        self.add_to_state(id, |doc| markup::put_highlight(doc, &highlight))?;
         Ok(highlight)
     }
 
@@ -187,7 +337,7 @@ impl Library {
     /// for a Highlight that isn't there, or a Document that isn't in the
     /// Library; a Highlight removed on another device stays removed.
     pub fn set_highlight_color(&self, id: &str, highlight: &str, color: Rgb) -> io::Result<()> {
-        self.update_state(id, |existing| markup::set_color(existing, highlight, color))
+        self.edit_states(id, |doc| markup::put_color(doc, highlight, color))
     }
 
     /// Sets the Note of Highlight `highlight` of Document `id` to `note`, an
@@ -195,14 +345,14 @@ impl Library {
     /// removes the Note. Does nothing for a Highlight that isn't there, or a
     /// Document that isn't in the Library.
     pub fn set_highlight_note(&self, id: &str, highlight: &str, note: &str) -> io::Result<()> {
-        self.update_state(id, |existing| markup::set_note(existing, highlight, note))
+        self.edit_states(id, |doc| markup::put_note(doc, highlight, note))
     }
 
     /// Removes Highlight `highlight` from Document `id`, without a trace. Does
     /// nothing for a Highlight that isn't there, or a Document that isn't in the
     /// Library.
     pub fn remove_highlight(&self, id: &str, highlight: &str) -> io::Result<()> {
-        self.update_state(id, |existing| markup::remove(existing, highlight))
+        self.edit_states(id, |doc| markup::remove_highlight(doc, highlight))
     }
 
     /// Adds a page Note at (`x`, `y`) in page space on page `page_index` of
@@ -226,7 +376,7 @@ impl Library {
             created,
             text: String::new(),
         };
-        self.update_state(id, |existing| markup::add_page_note(existing, &note))?;
+        self.add_to_state(id, |doc| markup::put_page_note(doc, &note))?;
         Ok(note)
     }
 
@@ -235,16 +385,14 @@ impl Library {
     /// Does nothing for a page Note that isn't there, or a Document that isn't
     /// in the Library.
     pub fn set_page_note_text(&self, id: &str, note: &str, text: &str) -> io::Result<()> {
-        self.update_state(id, |existing| {
-            markup::set_page_note_text(existing, note, text)
-        })
+        self.edit_states(id, |doc| markup::put_page_note_text(doc, note, text))
     }
 
     /// Removes page Note `note` from Document `id`, without a trace. Does
     /// nothing for a page Note that isn't there, or a Document that isn't in the
     /// Library.
     pub fn remove_page_note(&self, id: &str, note: &str) -> io::Result<()> {
-        self.update_state(id, |existing| markup::remove_page_note(existing, note))
+        self.edit_states(id, |doc| markup::remove_page_note(doc, note))
     }
 
     /// The Highlight Colors to choose from: the six built-in ones, yellow
@@ -269,9 +417,7 @@ impl Library {
                 format!("{id:?} is not a Highlight Color"),
             ));
         }
-        self.replace_file(&self.preferences(), |existing| {
-            preferences::set_default_color(existing, id)
-        })
+        self.edit_preferences(|doc| preferences::set_default_color(doc, id))
     }
 
     /// Adds `rgb` as a Custom Color after the others, `added` in milliseconds
@@ -279,10 +425,8 @@ impl Library {
     /// Preferences are replaced.
     pub fn add_custom_color(&self, rgb: Rgb, added: u64) -> io::Result<HighlightColor> {
         let mut color = None;
-        self.replace_file(&self.preferences(), |existing| {
-            let (bytes, new) = preferences::add_custom_color(existing, rgb, added);
-            color = Some(new);
-            bytes
+        self.edit_preferences(|doc| {
+            color = Some(preferences::add_custom_color(doc, rgb, added));
         })?;
         Ok(color.expect("the write ran"))
     }
@@ -291,25 +435,65 @@ impl Library {
     /// the Default Highlight Color, that is yellow again. Does nothing for a
     /// built-in color, which can't be removed, or an unknown `id`.
     pub fn remove_custom_color(&self, id: &str) -> io::Result<()> {
-        self.replace_file(&self.preferences(), |existing| {
-            preferences::remove_custom_color(existing, id)
-        })
+        self.edit_preferences(|doc| preferences::remove_custom_color(doc, id))
     }
 
     fn read_preferences(&self) -> Option<Vec<u8>> {
         fs::read(self.preferences()).ok()
     }
 
-    /// Replaces the state of Document `id` with what `write` makes of the
-    /// stored one (none if missing). Nothing happens if the Document isn't in
-    /// the Library.
-    fn update_state(
-        &self,
-        id: &str,
-        write: impl FnOnce(Option<&[u8]>) -> Vec<u8>,
-    ) -> io::Result<()> {
-        let state = self.folder(id)?.join(STATE);
-        self.replace_file(&state, write)
+    fn edit_preferences(&self, change: impl FnOnce(&mut AutoCommit)) -> io::Result<()> {
+        self.replace_file(&self.preferences(), |existing| {
+            preferences::update(existing, &self.device_id, change)
+        })
+    }
+
+    /// Makes `change` to the state of every Import of Document `id`. It does
+    /// nothing in a state that holds nothing it changes. Nothing happens if the
+    /// Document isn't in the Library.
+    fn edit_states(&self, id: &str, change: impl Fn(&mut AutoCommit)) -> io::Result<()> {
+        for path in self.state_paths(id)? {
+            self.update_state(&path, &change)?;
+        }
+        Ok(())
+    }
+
+    /// Makes `change` to the state of the Document's first Import, which
+    /// holds what is added. Nothing happens if the Document isn't in the
+    /// Library.
+    fn add_to_state(&self, id: &str, change: impl FnOnce(&mut AutoCommit)) -> io::Result<()> {
+        match self.state_paths(id)?.first() {
+            Some(path) => self.update_state(path, change),
+            None => Ok(()),
+        }
+    }
+
+    fn update_state(&self, path: &Path, change: impl FnOnce(&mut AutoCommit)) -> io::Result<()> {
+        self.replace_file(path, |existing| {
+            state::update(existing, &self.device_id, change)
+        })
+    }
+
+    /// The paths of the states of Document `id`, first Import first. Not every
+    /// state is stored. An `id` that isn't a Document ID is `InvalidInput`.
+    fn state_paths(&self, id: &str) -> io::Result<Vec<PathBuf>> {
+        let folder = self.folder(id)?;
+        let imports = self.import_ids(id);
+        Ok(imports.iter().map(|i| folder.join(state_name(i))).collect())
+    }
+
+    /// The IDs of the Imports of Document `id`, first Import first.
+    fn import_ids(&self, id: &str) -> Vec<String> {
+        self.catalog().live(id).map(|i| i.id.clone()).collect()
+    }
+
+    /// The stored states of the Imports `imports` of Document `id`.
+    fn read_states(&self, id: &str, imports: &[String]) -> Vec<Vec<u8>> {
+        let folder = self.root.join(id);
+        imports
+            .iter()
+            .filter_map(|i| fs::read(folder.join(state_name(i))).ok())
+            .collect()
     }
 
     /// Replaces the file `path` with what `write` makes of its content (none if
@@ -321,33 +505,44 @@ impl Library {
         write: impl FnOnce(Option<&[u8]>) -> Vec<u8>,
     ) -> io::Result<()> {
         let existing = fs::read(path).ok();
-        let staged = self.staging().join(unique_name());
-        let mut file = File::create_new(&staged)?;
-        file.write_all(&write(existing.as_deref()))?;
-        file.sync_all()?;
-        match fs::rename(&staged, path) {
+        match write_atomically(&self.staging(), path, &write(existing.as_deref())) {
             // The folder is gone: the Document was never there or was Removed.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                let _ = fs::remove_file(&staged);
-                Ok(())
-            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             result => result,
         }
+    }
+
+    /// The Library document, locked.
+    fn catalog(&self) -> MutexGuard<'_, LibraryDoc> {
+        // A panic in another thread leaves the document as it was saved.
+        self.doc.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Stores the Library document.
+    fn save_catalog(&self, doc: &mut LibraryDoc) -> io::Result<()> {
+        write_atomically(&self.staging(), &self.root.join(LIBRARY), &doc.save())
     }
 
     /// Deletes the Document `id` and its File. Removing a Document that
     /// isn't there does nothing. An `id` that isn't a Document ID (e.g. a
     /// path) is `InvalidInput`.
     ///
-    /// The folder leaves the Library in one rename, so a crash mid-delete
-    /// never leaves a half-deleted Document listed; `open` finishes the job.
-    /// Nothing is remembered about the Document, so it can be Imported again.
+    /// The Remove is recorded in the Library document, which a re-Import
+    /// doesn't reuse: it starts without state. The folder leaves the Library
+    /// in one rename, so a crash mid-delete never leaves a half-deleted
+    /// Document listed; `open` finishes the job.
     pub fn remove(&self, id: &str) -> io::Result<()> {
         let folder = self.folder(id)?;
         let doomed = self.removing().join(unique_name());
-        match fs::rename(folder, &doomed) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-            result => result?,
+        {
+            let mut doc = self.catalog();
+            if doc.remove(id) {
+                self.save_catalog(&mut doc)?;
+            }
+            match fs::rename(folder, &doomed) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+                result => result?,
+            }
         }
         fs::remove_dir_all(doomed)
     }
@@ -382,11 +577,73 @@ impl Library {
     }
 }
 
+impl Entry {
+    /// The Document of `imports`, its first Import first.
+    fn new(imports: Vec<&Import>) -> Self {
+        let first = imports[0];
+        Self {
+            id: first.hash.clone(),
+            name: first.name.clone(),
+            imported: first.imported,
+            imports: imports.iter().map(|i| i.id.clone()).collect(),
+        }
+    }
+}
+
+/// The name of the file holding the state of Import `import`. Hidden, so the
+/// File stays the folder's only non-hidden entry.
+fn state_name(import: &str) -> String {
+    format!(".state-{import}.automerge")
+}
+
+/// Whether `name` is a plain file name, not a path.
+fn is_file_name(name: &str) -> bool {
+    Path::new(name).file_name().is_some_and(|n| n == name)
+}
+
+/// Milliseconds since the Unix epoch.
+fn now() -> u64 {
+    millis(SystemTime::now())
+}
+
+fn millis(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
 /// A name no other call in this process, or an earlier one, has used for a
 /// scratch folder.
 fn unique_name() -> String {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Relaxed))
+}
+
+/// The Device ID stored in the Library folder `root`, generated first if there
+/// is none.
+fn load_device_id(root: &Path) -> io::Result<ActorId> {
+    let path = root.join(DEVICE);
+    let stored = fs::read_to_string(&path)
+        .ok()
+        .and_then(|hex| ActorId::try_from(hex.trim()).ok());
+    if let Some(id) = stored {
+        return Ok(id);
+    }
+    let id = ActorId::random();
+    write_atomically(&root.join(STAGING), &path, id.to_hex_string().as_bytes())?;
+    Ok(id)
+}
+
+/// Writes `bytes` to a new file in `staging` and renames it to `path`.
+fn write_atomically(staging: &Path, path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let staged = staging.join(unique_name());
+    let mut file = File::create_new(&staged)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    let result = fs::rename(&staged, path);
+    if result.is_err() {
+        let _ = fs::remove_file(&staged);
+    }
+    result
 }
 
 /// Streams `from` into a new file at `to`, returning the SHA-256 of the bytes.
@@ -415,37 +672,25 @@ fn copy_hashed(from: &Path, to: &Path, mut progress: impl FnMut(u64, u64)) -> io
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// `document_in(dir)` with when it was Imported.
-fn imported_document_in(dir: &Path) -> io::Result<Option<(SystemTime, Document)>> {
+/// The name of the File in the Document folder `dir`, and when the folder was
+/// created in milliseconds since the Unix epoch. None if it holds no File.
+fn stored_file(dir: &Path) -> io::Result<Option<(String, u64)>> {
     let meta = fs::metadata(dir)?;
-    let imported = meta.created().or_else(|_| meta.modified())?;
-    Ok(document_in(dir)?.map(|document| (imported, document)))
-}
-
-/// The Document stored in the folder `<sha256>`, if it holds a File.
-fn document_in(dir: &Path) -> io::Result<Option<Document>> {
-    let is_hidden = |entry: &io::Result<fs::DirEntry>| matches!(entry, Ok(e) if e.file_name().to_string_lossy().starts_with('.'));
-    let Some(file) = fs::read_dir(dir)?.find(|e| !is_hidden(e)).transpose()? else {
-        return Ok(None);
-    };
-    let progress = fs::read(dir.join(STATE))
-        .ok()
-        .and_then(|bytes| progress::read(&bytes));
-    Ok(Some(Document {
-        id: dir
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
-        path: file.path(),
-        progress,
-    }))
+    let created = meta.created().or_else(|_| meta.modified())?;
+    for entry in fs::read_dir(dir)? {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        if !name.starts_with('.') {
+            return Ok(Some((name, millis(created))));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::markup::Rect;
+    use automerge::{ActorId, AutoCommit};
     use std::fs;
     use std::thread::sleep;
     use std::time::Duration;
@@ -568,11 +813,12 @@ mod tests {
         );
 
         assert_eq!(library.documents().unwrap().len(), 1);
-        assert_eq!(
-            fs::read_dir(scratch.0.join("library")).unwrap().count(),
-            // The Document plus the (empty) staging and removal folders.
-            3
-        );
+        let folders = fs::read_dir(scratch.0.join("library"))
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().file_type().unwrap().is_dir())
+            .count();
+        // The Document plus the (empty) staging and removal folders.
+        assert_eq!(folders, 3);
         assert_eq!(
             fs::read_dir(scratch.0.join("library/.staging"))
                 .unwrap()
@@ -698,6 +944,18 @@ mod tests {
 
         assert!(!leftover.exists());
         assert_eq!(library.documents().unwrap(), vec![]);
+    }
+
+    /// The path of the state of `document`'s first Import.
+    fn state_path(library: &Library, document: &Document) -> PathBuf {
+        library.state_paths(&document.id).unwrap().remove(0)
+    }
+
+    /// A state holding only `progress`, as any Device would write it.
+    fn stored_progress(progress: &ReadingProgress) -> Vec<u8> {
+        state::update(None, &ActorId::random(), |doc| {
+            progress::put_progress(doc, progress);
+        })
     }
 
     fn progress(page_index: u32, last_read: u64) -> ReadingProgress {
@@ -909,7 +1167,7 @@ mod tests {
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
         let empty = automerge::AutoCommit::new().save();
-        fs::write(document.path.parent().unwrap().join(STATE), empty).unwrap();
+        fs::write(state_path(&library, &document), empty).unwrap();
 
         assert_eq!(listed_progress(&library, &document.id), None);
     }
@@ -1029,8 +1287,8 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
-        let state = document.path.parent().unwrap().join(STATE);
-        let mut v1 = AutoCommit::load(&progress::write(None, &progress(7, 1_000))).unwrap();
+        let state = state_path(&library, &document);
+        let mut v1 = AutoCommit::load(&stored_progress(&progress(7, 1_000))).unwrap();
         v1.put(ROOT, "version", 1_u64).unwrap();
         fs::write(&state, v1.save()).unwrap();
 
@@ -1311,7 +1569,7 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
-        let state = document.path.parent().unwrap().join(STATE);
+        let state = state_path(&library, &document);
         fs::write(&state, b"garbage").unwrap();
         assert_eq!(library.markup(&document.id).unwrap(), Markup::default());
 
@@ -1496,6 +1754,358 @@ mod tests {
         );
     }
 
+    /// Every Automerge document stored under `dir`, the Library's own, the
+    /// Preferences and the states.
+    fn automerge_files(dir: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                found.extend(automerge_files(&path));
+            } else if path.extension().is_some_and(|e| e == "automerge") {
+                found.push(path);
+            }
+        }
+        found
+    }
+
+    /// The actors of all changes in the stored Automerge document `path`.
+    fn actors_of(path: &Path) -> Vec<String> {
+        let mut doc = AutoCommit::load(&fs::read(path).unwrap()).unwrap();
+        let mut actors: Vec<_> = doc
+            .get_changes(&[])
+            .iter()
+            .map(|c| c.actor_id().to_hex_string())
+            .collect();
+        actors.dedup();
+        actors
+    }
+
+    fn assert_all_changes_are_by(scratch: &Scratch, device: &str) {
+        let files = automerge_files(&scratch.0.join("library"));
+        // The Library document, the Preferences and a state.
+        assert!(files.len() >= 3, "{files:?}");
+        for file in files {
+            assert_eq!(actors_of(&file), [device], "{file:?}");
+        }
+    }
+
+    #[test]
+    fn the_device_id_is_generated_once_and_differs_between_libraries() {
+        let one = Scratch::new();
+        let other = Scratch::new();
+
+        let id = one.library().device_id();
+
+        assert_eq!(id.len(), 32);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(one.library().device_id(), id);
+        assert_ne!(other.library().device_id(), id);
+    }
+
+    #[test]
+    fn every_local_change_carries_the_device_id_as_actor_also_after_reopening() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let device = library.device_id();
+        let source = scratch.file("a.pdf", b"abc");
+        let kept = import_new(&library, &source);
+        let gone = import_new(&library, &scratch.file("b.pdf", b"def"));
+        let work = |library: &Library| {
+            library
+                .save_progress(&kept.id, &progress(7, 1_000))
+                .unwrap();
+            let added = highlight(library, &kept.id, "the passage", 1);
+            library
+                .set_highlight_note(&kept.id, &added.id, "my thought")
+                .unwrap();
+            let note = library.add_page_note(&kept.id, 0, 1.0, 2.0, 1).unwrap();
+            library.set_page_note_text(&kept.id, &note.id, "x").unwrap();
+            library.add_custom_color(TEAL, 100).unwrap();
+            library.set_default_highlight_color("Green").unwrap();
+        };
+        work(&library);
+        library.remove(&gone.id).unwrap();
+        assert_all_changes_are_by(&scratch, &device);
+        drop(library);
+
+        let library = scratch.library();
+        work(&library);
+        library.remove(&kept.id).unwrap();
+        import_new(&library, &source);
+        library.save_progress(&kept.id, &progress(1, 1)).unwrap();
+        assert_eq!(library.device_id(), device);
+        assert_all_changes_are_by(&scratch, &device);
+    }
+
+    /// A Document stored the way a Library without a Library document kept it:
+    /// a folder with its File and the state next to it.
+    fn legacy_document(
+        scratch: &Scratch,
+        id: &str,
+        name: &str,
+        progress: &ReadingProgress,
+        highlight: &Highlight,
+    ) {
+        let folder = scratch.0.join("library").join(id);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join(name), id).unwrap();
+        let state = state::update(None, &ActorId::random(), |doc| {
+            progress::put_progress(doc, progress);
+            markup::put_highlight(doc, highlight);
+        });
+        fs::write(folder.join(".state.automerge"), state).unwrap();
+    }
+
+    fn a_highlight(id: &str) -> Highlight {
+        Highlight {
+            id: id.to_owned(),
+            anchor: anchor(),
+            quoted_text: format!("passage {id}"),
+            color: YELLOW,
+            created: 1,
+            note: None,
+        }
+    }
+
+    #[test]
+    fn an_existing_library_migrates_on_first_open_keeping_dates_progress_and_markup() {
+        let scratch = Scratch::new();
+        legacy_document(
+            &scratch,
+            "old",
+            "old.pdf",
+            &progress(3, 1_000),
+            &a_highlight("h"),
+        );
+        sleep(Duration::from_millis(20));
+        legacy_document(
+            &scratch,
+            "new",
+            "new.pdf",
+            &progress(5, 2_000),
+            &a_highlight("i"),
+        );
+
+        for _ in 0..2 {
+            let library = scratch.library();
+            let documents = library.documents().unwrap();
+
+            let ids: Vec<_> = documents.iter().map(|d| d.id.as_str()).collect();
+            assert_eq!(ids, ["new", "old"]);
+            assert_eq!(documents[0].progress, Some(progress(5, 2_000)));
+            assert_eq!(documents[1].progress, Some(progress(3, 1_000)));
+            assert_eq!(documents[1].path, scratch.0.join("library/old/old.pdf"));
+            assert_eq!(
+                library.markup("old").unwrap().highlights,
+                vec![a_highlight("h")]
+            );
+            assert!(!scratch.0.join("library/old/.state.automerge").exists());
+        }
+        // A Document imported after the migration is the newest.
+        let library = scratch.library();
+        let fresh = import_new(&library, &scratch.file("c.pdf", b"c"));
+        assert_eq!(library.documents().unwrap()[0], fresh);
+    }
+
+    #[test]
+    fn a_state_left_behind_by_an_interrupted_migration_is_adopted_on_open() {
+        let scratch = Scratch::new();
+        legacy_document(
+            &scratch,
+            "old",
+            "old.pdf",
+            &progress(3, 1_000),
+            &a_highlight("h"),
+        );
+        let library = scratch.library();
+        // The Import was recorded, but the state wasn't moved yet.
+        let folder = scratch.0.join("library/old");
+        fs::rename(
+            library.state_paths("old").unwrap().remove(0),
+            folder.join(".state.automerge"),
+        )
+        .unwrap();
+        drop(library);
+
+        let library = scratch.library();
+
+        assert_eq!(
+            library.documents().unwrap()[0].progress,
+            Some(progress(3, 1_000))
+        );
+    }
+
+    #[test]
+    fn a_re_imported_document_is_the_newest_again() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let source = scratch.file("a.pdf", b"first");
+        let first = import_new(&library, &source);
+        sleep(Duration::from_millis(5));
+        let second = import_new(&library, &scratch.file("b.pdf", b"second"));
+        sleep(Duration::from_millis(5));
+        library.remove(&first.id).unwrap();
+
+        let again = import_new(&library, &source);
+
+        assert_eq!(library.documents().unwrap(), vec![again, second]);
+    }
+
+    #[test]
+    fn a_re_import_starts_fresh_even_if_the_old_state_was_never_deleted() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let source = scratch.file("a.pdf", b"abc");
+        let first = import_new(&library, &source);
+        library.save_progress(&first.id, &progress(3, 5)).unwrap();
+        highlight(&library, &first.id, "the passage", 1);
+        let old_state = state_path(&library, &first);
+        let old_bytes = fs::read(&old_state).unwrap();
+        library.remove(&first.id).unwrap();
+
+        let again = import_new(&library, &source);
+        // A state of the Removed Import coming back, e.g. from another Device.
+        fs::write(&old_state, old_bytes).unwrap();
+
+        assert_eq!(again.progress, None);
+        assert_eq!(library.documents().unwrap()[0].progress, None);
+        assert_eq!(library.markup(&again.id).unwrap(), Markup::default());
+    }
+
+    #[test]
+    fn a_folder_of_a_recorded_remove_is_deleted_on_open() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        {
+            // The Remove was recorded, but the folder wasn't renamed yet.
+            let mut doc = library.catalog();
+            assert!(doc.remove(&document.id));
+            library.save_catalog(&mut doc).unwrap();
+        }
+        drop(library);
+
+        let library = scratch.library();
+
+        assert!(!document.path.exists());
+        assert_eq!(library.documents().unwrap(), vec![]);
+        let again = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        assert_eq!(again.progress, None);
+    }
+
+    /// Records another Import of Document `id`, as Sync would, and returns its
+    /// ID.
+    fn add_import(library: &Library, id: &str, imported: u64) -> String {
+        let mut doc = library.catalog();
+        let import = doc.add_import(id, "a.pdf", imported);
+        library.save_catalog(&mut doc).unwrap();
+        import
+    }
+
+    #[test]
+    fn a_document_with_several_imports_is_listed_once_and_reads_as_the_merge_of_their_states() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        library
+            .save_progress(&document.id, &progress(3, 1_000))
+            .unwrap();
+        library
+            .add_highlight(&document.id, anchor(), "first", YELLOW, 1)
+            .unwrap();
+        let second = add_import(&library, &document.id, u64::MAX / 2);
+        let other = a_highlight("other");
+        let other_state = state::update(None, &ActorId::random(), |doc| {
+            progress::put_progress(doc, &progress(9, 2_000));
+            markup::put_highlight(doc, &other);
+        });
+        let folder = document.path.parent().unwrap();
+        fs::write(
+            folder.join(format!(".state-{second}.automerge")),
+            other_state,
+        )
+        .unwrap();
+
+        let documents = library.documents().unwrap();
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].progress, Some(progress(9, 2_000)));
+        assert_eq!(library.markup(&document.id).unwrap().highlights.len(), 2);
+
+        // Edits reach the Import that holds what they change.
+        library
+            .set_highlight_color(&document.id, "other", GREEN)
+            .unwrap();
+        let colors: Vec<_> = library
+            .markup(&document.id)
+            .unwrap()
+            .highlights
+            .iter()
+            .map(|h| h.color)
+            .collect();
+        assert!(colors.contains(&GREEN) && colors.contains(&YELLOW));
+        library
+            .save_progress(&document.id, &progress(1, 3_000))
+            .unwrap();
+        assert_eq!(
+            library.documents().unwrap()[0].progress,
+            Some(progress(1, 3_000))
+        );
+        library.remove_highlight(&document.id, "other").unwrap();
+        assert_eq!(library.markup(&document.id).unwrap().highlights.len(), 1);
+
+        // Removing the Document removes every Import.
+        library.remove(&document.id).unwrap();
+        drop(library);
+        assert_eq!(scratch.library().documents().unwrap(), vec![]);
+    }
+
+    #[test]
+    fn an_import_listed_without_its_file_is_not_a_document_until_the_file_is_imported() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        add_import(&library, ABC_SHA256, 5);
+        assert_eq!(library.documents().unwrap(), vec![]);
+
+        let document = import_new(&library, &scratch.file("other-name.pdf", b"abc"));
+
+        // It is stored under the listed name and keeps the listed Import.
+        assert_eq!(document.path.file_name().unwrap(), "a.pdf");
+        assert_eq!(library.catalog().live(ABC_SHA256).count(), 1);
+        assert_eq!(library.documents().unwrap(), vec![document]);
+    }
+
+    #[test]
+    fn a_listed_file_name_that_points_outside_the_document_is_not_a_document() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        fs::write(scratch.0.join("library/outside.pdf"), b"x").unwrap();
+        fs::create_dir(scratch.0.join("library/evil")).unwrap();
+        let mut doc = library.catalog();
+        doc.add_import("evil", "../outside.pdf", 1);
+        drop(doc);
+
+        assert_eq!(library.documents().unwrap(), vec![]);
+    }
+
+    #[test]
+    fn imports_on_several_threads_are_all_listed() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let sources: Vec<_> = (0..8)
+            .map(|n| scratch.file(&format!("{n}.pdf"), format!("document {n}").as_bytes()))
+            .collect();
+
+        std::thread::scope(|scope| {
+            for source in &sources {
+                scope.spawn(|| import_new(&library, source));
+            }
+        });
+
+        assert_eq!(library.documents().unwrap().len(), 8);
+        assert_eq!(scratch.library().documents().unwrap().len(), 8);
+    }
+
     /// Imports `count` distinct Documents and saves Reading Progress for each.
     fn library_of_opened_documents(scratch: &Scratch, count: u32) -> Library {
         let library = scratch.library();
@@ -1521,7 +2131,7 @@ mod tests {
                 .unwrap();
         }
 
-        let state = fs::read(document.path.parent().unwrap().join(STATE)).unwrap();
+        let state = fs::read(state_path(&library, &document)).unwrap();
         assert!(state.len() < 64 * 1024, "state is {} bytes", state.len());
     }
 
