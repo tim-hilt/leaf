@@ -84,7 +84,7 @@ final class Tabs {
 
     /// Stores the view state of the Tab of `id`, for when it is shown again.
     /// Nothing if it has no Tab, e.g. when the Reader of a closed Tab disappears.
-    func store(_ state: ReaderViewState?, for id: String) {
+    func store(_ state: ReaderViewState, for id: String) {
         guard openIDs.contains(id) else { return }
         viewStates[id] = state
     }

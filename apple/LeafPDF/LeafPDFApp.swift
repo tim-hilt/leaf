@@ -12,6 +12,10 @@ struct LeafPDFApp: App {
         do { library = try .inApplicationSupport() } catch { fatalError("Can't open the Library: \(error)") }
         _library = State(initialValue: library)
         _tabs = State(initialValue: Tabs(defaults: .standard, library: library.documents))
+        #if os(macOS)
+            // Tabs are our own (ADR 0018); no native window tabs, nor their View menu items.
+            NSWindow.allowsAutomaticWindowTabbing = false
+        #endif
     }
 
     var body: some Scene {

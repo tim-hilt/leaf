@@ -136,7 +136,7 @@ struct FileGalleryView: View {
             isGridFocused = true
         }
         .onChange(of: library.documents) { tabs.keep(onlyIn: library.documents) }
-        .focusedSceneValue(\.readerTabs, tabs.isShowingReader ? tabs : nil)
+        .focusedSceneValue(\.tabs, tabs)
         .disabled(library.runningImport != nil)
         .focusedSceneValue(\.isImporting, library.runningImport == nil ? $isImporting : nil)
         .overlay {
