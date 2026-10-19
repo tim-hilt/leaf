@@ -72,6 +72,29 @@ import Testing
         #expect(reader.scaleFactor == zoom)
     }
 
+    // MARK: View state
+
+    @Test func reopeningFromAViewStateRestoresPlaceZoomAndBack() throws {
+        let first = try makeReader(size: portrait)
+        first.go(to: place)
+        first.jump(to: target)
+        first.zoomIn()
+        let state = try #require(first.viewState)
+        let reopened = try makeReader(size: portrait, restoring: state)
+        try expectAtTop(try #require(first.topOfViewport), of: reopened)
+        #expect(abs(reopened.scaleFactor - first.scaleFactor) < 0.001)
+        #expect(reopened.backPlace == first.backPlace)
+        #expect(reopened.backPlace != nil)
+    }
+
+    @Test func aViewStateKeepsTheZoomRelativeToFitToWidth() throws {
+        let first = try makeReader(size: portrait)
+        first.zoomIn()
+        let multiple = first.scaleFactor / first.scaleFactorForSizeToFit
+        let reopened = try makeReader(size: landscape, restoring: try #require(first.viewState))
+        #expect(abs(reopened.scaleFactor / reopened.scaleFactorForSizeToFit - multiple) < 0.001)
+    }
+
     @Test func aSecondJumpReplacesTheBackPlace() throws {
         let reader = try makeReader(size: portrait)
         reader.go(to: place)
@@ -664,11 +687,12 @@ private func viewPoint(of rect: CGRect, in reader: ReaderPDFView) -> CGPoint {
 /// `inScene` puts the window in the app's scene, as the find bar needs.
 @MainActor
 private func makeReader(
-    size: CGSize, openingAt place: Place? = nil, links: [LinkEntry] = [], pageTexts: [String] = [],
+    size: CGSize, openingAt place: Place? = nil, restoring state: ReaderViewState? = nil, links: [LinkEntry] = [], pageTexts: [String] = [],
     inScene: Bool = false
 ) throws -> ReaderPDFView {
     let reader = ReaderPDFView(handle: ReaderHandle())
     if let place { reader.open(at: place) }
+    if let state { reader.open(from: state) }
     reader.displayMode = .singlePageContinuous
     reader.autoScales = true
     reader.frame = CGRect(origin: .zero, size: size)

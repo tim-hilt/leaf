@@ -27,8 +27,9 @@ import SwiftUI
 /// in the middle of the viewport. Its popover opens in editing and also has "Remove
 /// Note"; emptying the Note removes it. Page Notes can't be moved.
 ///
-/// Opens at the Document's Reading Progress at fit-to-width, or at page 1, and
-/// saves it (see `ReadingProgressSaver`) when opened, after scrolling stops,
+/// Opens at the Tab's place, zoom and Back place if it was shown before (kept
+/// in `Tabs`, in memory), else at the Document's Reading Progress at
+/// fit-to-width, or at page 1. It saves Reading Progress (see `ReadingProgressSaver`) when opened, after scrolling stops,
 /// when it disappears and when the scene goes to the background. Reading
 /// Progress from another Device never moves it; Markup from another Device
 /// shows up live.
@@ -104,7 +105,10 @@ struct ReaderView: View {
                 pageNotes = await library.pageNotes(of: document)
             }
         }
-        .onDisappear { saver?.saveIfMoved() }
+        .onDisappear {
+            saver?.saveIfMoved()
+            if let state = handle.view?.viewState { tabs.store(state, for: document.id) }
+        }
         .onChange(of: scenePhase) { if scenePhase == .background { saver?.saveIfMoved() } }
         .navigationTitle(document.title)
         .toolbar {
@@ -180,7 +184,8 @@ struct ReaderView: View {
                 PDFKitView(
                     document: pdf, appearance: settings.pageAppearance(systemScheme: colorScheme), highlights: highlights,
                     pageNotes: pageNotes, pageNoteColor: library.highlightColors[0].color,
-                    handle: handle, results: results, place: document.place,
+                    handle: handle, results: results,
+                    state: tabs.viewState(of: document.id) ?? document.place.map { ReaderViewState(place: $0) },
                     onHighlight: highlight, onHighlightTap: { openMarkup = OpenMarkup(target: .highlight($0.id), point: $1) },
                     onAddNote: addPageNote, onPageNoteTap: { openMarkup = OpenMarkup(target: .pageNote($0.id), point: $1) },
                     onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
@@ -370,7 +375,7 @@ private struct BackCapsule: View {
 #endif
 
 /// PDFKit's native viewer, laid out as one vertical, continuously scrolling
-/// column. Opens at fit-to-width, at `place` if there is one; see
+/// column. Opens as `state` if there is one, else at page 1 at fit-to-width; see
 /// `ReaderPDFView` for zooming, keeping your place, taps and scrolling.
 private struct PDFKitView {
     let document: StyledDocument
@@ -380,7 +385,7 @@ private struct PDFKitView {
     let pageNoteColor: RGB
     let handle: ReaderHandle
     let results: SearchResults
-    let place: Place?
+    let state: ReaderViewState?
     let onHighlight: (HighlightAnchor) -> Void
     let onHighlightTap: (Highlight, CGPoint) -> Void
     let onAddNote: (Place) -> Void
@@ -398,7 +403,7 @@ private struct PDFKitView {
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
         view.autoScales = true
-        if let place { view.open(at: place) }
+        if let state { view.open(from: state) }
         view.document = document
         view.pageAppearance = appearance
         view.highlights = highlights

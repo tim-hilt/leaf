@@ -28,9 +28,10 @@ final class ReaderHandle {
 ///
 /// A Jump goes to a Place and remembers where the viewport was, so that Back
 /// can return there. Only the latest Jump is remembered, and only for as long
-/// as the view lives. Following a link to a place in the Document is a Jump;
-/// links to web pages keep PDFKit's behaviour and are not. A Document Search
-/// session counts as one Jump from where the search started.
+/// as the view lives, unless it is carried over by a `viewState` (a Tab's).
+/// Following a link to a place in the Document is a Jump; links to web pages
+/// keep PDFKit's behaviour and are not. A Document Search session counts as
+/// one Jump from where the search started.
 final class ReaderPDFView: PDFView {
     /// Where the viewport was before a size change, to be restored once the
     /// new layout is known.
@@ -44,8 +45,8 @@ final class ReaderPDFView: PDFView {
     /// refreshed on every layout. Nil until the first layout.
     private var zoomRange: ZoomRange?
     private var viewpoint: Viewpoint?
-    /// Where to open, until the first layout of a Document.
-    private var openingPlace: Place?
+    /// How to open, until the first layout of a Document.
+    private var openingState: ReaderViewState?
     private var hasOpened = false
 
     /// How the pages are drawn. Changing it redraws them, keeping the viewport.
@@ -128,7 +129,18 @@ final class ReaderPDFView: PDFView {
 
     /// Makes the Document, once it is set and laid out, open with `place` at the
     /// top of the viewport at fit-to-width. Call before setting the Document.
-    func open(at place: Place) { openingPlace = place }
+    func open(at place: Place) { open(from: ReaderViewState(place: place)) }
+
+    /// Makes the Document, once it is set and laid out, open as `state` was
+    /// captured: same place, zoom and Back place. Call before setting the Document.
+    func open(from state: ReaderViewState) { openingState = state }
+
+    /// The place, zoom and Back place as they are now, to reopen from with
+    /// `open(from:)`. Nil until the Document is laid out.
+    var viewState: ReaderViewState? {
+        guard let place = topOfViewport, let range = zoomRange else { return nil }
+        return ReaderViewState(place: place, zoom: scaleFactor / range.fitToWidth, backPlace: backPlace)
+    }
 
     // MARK: Keyboard zoom, anchored at the top of the viewport
 
@@ -398,10 +410,11 @@ final class ReaderPDFView: PDFView {
         noteIcons.refresh()
         if !hasOpened {
             hasOpened = true
-            if let place = openingPlace {
-                openingPlace = nil
-                scaleFactor = range.fitToWidth
-                go(to: place)
+            if let state = openingState {
+                openingState = nil
+                scaleFactor = range.clamped(range.fitToWidth * state.zoom)
+                go(to: state.place)
+                backPlace = state.backPlace
             }
             observeScrolling()
             onOpen()

@@ -107,6 +107,39 @@ import Testing
         #expect(tabs.openIDs == ["a", "b"])
     }
 
+    // MARK: View state
+
+    let state = ReaderViewState(
+        place: Place(pageIndex: 3, point: CGPoint(x: 0, y: 200)), zoom: 2,
+        backPlace: Place(pageIndex: 1, point: CGPoint(x: 0, y: 700)))
+
+    @Test func aTabKeepsItsViewState() {
+        let tabs = makeTabs()
+        tabs.open([a, b])
+        tabs.store(state, for: "a")
+        tabs.select("b")
+        tabs.select("a")
+        #expect(tabs.viewState(of: "a") == state)
+        #expect(tabs.viewState(of: "b") == nil)
+    }
+
+    @Test func aClosedTabForgetsItsViewState() {
+        let tabs = makeTabs()
+        tabs.open([a, b])
+        tabs.store(state, for: "a")
+        tabs.close("a")
+        tabs.store(state, for: "a")
+        tabs.open([a])
+        #expect(tabs.viewState(of: "a") == nil)
+    }
+
+    @Test func aRestoredTabHasNoViewState() {
+        let tabs = makeTabs()
+        tabs.open([a, b])
+        tabs.store(state, for: "a")
+        #expect(makeTabs().viewState(of: "a") == nil)
+    }
+
     // MARK: Select
 
     @Test func selectingATabShowsTheReaderOnIt() {

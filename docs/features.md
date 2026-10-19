@@ -100,7 +100,7 @@ One window on iPhone, iPad and Mac (ADR-0018). The Reader keeps several Document
 - The strip shows from 2 Tabs, fits 2–3 on an iPhone in portrait and scrolls sideways beyond that. Immersive Mode hides it.
 - Closing the active Tab shows the one to its right, else its left; closing the last goes to the Gallery. Closing leaves the Document in the Library.
 - Go to Gallery (back chevron, edge swipe) keeps the Tabs; the Gallery's "Reader" button (`book`) returns to the active one while any are open.
-- Only the active Tab is loaded and saves Reading Progress and Last Read. A Tab reopens at its Reading Progress at fit-to-width; the find bar and popovers close when switching.
+- Only the active Tab is loaded and saves Reading Progress and Last Read. A Tab you come back to keeps its place, zoom and Back capsule (in memory only); a new or restored Tab opens at its Reading Progress at fit-to-width. The find bar and popovers close when switching.
 - ⌘W closes the active Tab (nothing in the Gallery), ⌃Tab and ⌃⇧Tab switch to the next and previous Tab, ⌘1–⌘9 pick a Tab by position. On Mac they sit in the Window menu.
 - A Removed Document closes its Tab silently.
 - VoiceOver announces each Tab's Title and selection, with a Close action.
