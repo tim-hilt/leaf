@@ -18,7 +18,11 @@
 //!
 //! Every local change to an Automerge document is made as the Device ID, which
 //! is generated once and kept in `DEVICE`.
+//!
+//! `sync` exchanges the Library and its Files with a storage, see `sync`. What
+//! this Device knows of that exchange is kept in `LIBRARY_CURSOR`.
 
+use crate::chunks::Cursor;
 use crate::library_doc::{Import, LibraryDoc};
 use crate::markup::{self, Highlight, Markup, PageNote, PageRects, Rgb};
 use crate::preferences::{self, HighlightColor};
@@ -34,9 +38,12 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod sync;
+
 const STAGING: &str = ".staging";
 const REMOVING: &str = ".removing";
 const LIBRARY: &str = ".library.automerge";
+const LIBRARY_CURSOR: &str = ".library.cursor";
 const DEVICE: &str = ".device";
 const PREFERENCES: &str = ".preferences.automerge";
 /// The state of a Document before Imports had their own, see `open`.
@@ -72,6 +79,10 @@ pub struct Library {
     /// The Library document. Imports and Removes change it and the folders
     /// under this lock, so they never interleave.
     doc: Mutex<LibraryDoc>,
+    /// What this Device knows of its exchange of the Library document with a
+    /// storage. Held for a whole `sync`, so only one runs at a time. Taken
+    /// before `doc`.
+    cursor: Mutex<Cursor>,
 }
 
 /// What `documents` needs of one Document, read from the Library document.
@@ -102,10 +113,12 @@ impl Library {
         }
         let device_id = load_device_id(&root)?;
         let doc = LibraryDoc::load(fs::read(root.join(LIBRARY)).ok().as_deref(), &device_id);
+        let cursor = fs::read_to_string(root.join(LIBRARY_CURSOR)).unwrap_or_default();
         let library = Library {
             root,
             device_id,
             doc: Mutex::new(doc),
+            cursor: Mutex::new(Cursor::decode(&cursor)),
         };
         library.reconcile()?;
         Ok(library)
@@ -117,10 +130,11 @@ impl Library {
         self.device_id.to_hex_string()
     }
 
-    /// Brings the folders and the Library document in line after a crash or
-    /// an older version: each folder with a File but no Import gets one, the
-    /// folder of a Removed Document is deleted, and every Document's
-    /// first Import adopts a state left in the old place.
+    /// Brings the folders and the Library document in line after a crash, an
+    /// older version or a Sync: each folder with a File but no Import gets one,
+    /// the folder of a Removed Document is deleted, the File of a Document
+    /// takes the name its Library document lists, and every Document's first
+    /// Import adopts a state left in the old place.
     fn reconcile(&self) -> io::Result<()> {
         let mut doc = self.catalog();
         let mut folders = Vec::new();
@@ -141,6 +155,7 @@ impl Library {
         let mut first_imports = Vec::new();
         for (hash, folder) in folders {
             if let Some(import) = doc.live(&hash).next() {
+                adopt_name(&folder, &import.name)?;
                 first_imports.push((folder, import.id.clone()));
             } else if removed_hashes.contains(&hash) {
                 // A Remove that was recorded but never finished.
@@ -271,17 +286,9 @@ impl Library {
 
     /// The Document of `entry`, if its File is stored.
     fn document(&self, entry: &Entry) -> io::Result<Option<Document>> {
-        let path = self.root.join(&entry.id).join(&entry.name);
-        // A name from the Library document must not point outside the folder.
-        if !is_file_name(&entry.name) {
+        let Some(path) = self.file_path(entry)? else {
             return Ok(None);
-        }
-        match fs::metadata(&path) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e),
-            Ok(meta) if !meta.is_file() => return Ok(None),
-            Ok(_) => {}
-        }
+        };
         let states = self.read_states(&entry.id, &entry.imports);
         let progress = progress::read_all(states.iter().map(Vec::as_slice));
         Ok(Some(Document {
@@ -289,6 +296,20 @@ impl Library {
             path,
             progress,
         }))
+    }
+
+    /// Where the File of `entry` is stored, if it is.
+    fn file_path(&self, entry: &Entry) -> io::Result<Option<PathBuf>> {
+        // A name from the Library document must not point outside the folder.
+        if !is_file_name(&entry.name) {
+            return Ok(None);
+        }
+        let path = self.root.join(&entry.id).join(&entry.name);
+        match fs::metadata(&path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+            Ok(meta) => Ok(meta.is_file().then_some(path)),
+        }
     }
 
     /// Stores `progress` as the Reading Progress of Document `id`, replacing
@@ -646,10 +667,22 @@ fn write_atomically(staging: &Path, path: &Path, bytes: &[u8]) -> io::Result<()>
     result
 }
 
-/// Streams `from` into a new file at `to`, returning the SHA-256 of the bytes.
-fn copy_hashed(from: &Path, to: &Path, mut progress: impl FnMut(u64, u64)) -> io::Result<String> {
+/// Streams the file `from` into a new file at `to`, returning the SHA-256 of
+/// the bytes.
+fn copy_hashed(from: &Path, to: &Path, progress: impl FnMut(u64, u64)) -> io::Result<String> {
     let mut input = File::open(from)?;
     let total = input.metadata()?.len();
+    stream_hashed(&mut input, to, total, progress)
+}
+
+/// Streams `input`, `total` bytes long, into a new file at `to`, returning the
+/// SHA-256 of the bytes. `progress` is called as in `Library::import`.
+fn stream_hashed(
+    input: &mut dyn Read,
+    to: &Path,
+    total: u64,
+    mut progress: impl FnMut(u64, u64),
+) -> io::Result<String> {
     let mut copied = 0;
     progress(copied, total);
     let mut output = File::create_new(to)?;
@@ -670,6 +703,19 @@ fn copy_hashed(from: &Path, to: &Path, mut progress: impl FnMut(u64, u64)) -> io
     }
     output.sync_all()?;
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Renames the File in the Document folder `folder` to `name`, if it has
+/// another one and `name` is a plain file name. Does nothing if there is no
+/// File, or the folder already has one under `name`.
+fn adopt_name(folder: &Path, name: &str) -> io::Result<()> {
+    if !is_file_name(name) || folder.join(name).is_file() {
+        return Ok(());
+    }
+    if let Some((stored, _)) = stored_file(folder)? {
+        fs::rename(folder.join(stored), folder.join(name))?;
+    }
+    Ok(())
 }
 
 /// The name of the File in the Document folder `dir`, and when the folder was

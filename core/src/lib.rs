@@ -12,9 +12,11 @@
 /// Semantic version of the core, as declared in the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub(crate) mod chunks;
 pub mod library;
 pub(crate) mod library_doc;
 pub mod markup;
 pub mod preferences;
 pub mod progress;
 pub(crate) mod state;
+pub mod storage;

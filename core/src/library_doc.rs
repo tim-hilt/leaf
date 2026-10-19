@@ -12,6 +12,7 @@
 //! Devices that first write to `imports` or `removed` concurrently each create
 //! their own map; reading lists the entries of all of them (see `state`).
 
+use crate::chunks::{Cursor, Outgoing, Pulled};
 use crate::state;
 use automerge::{
     ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value,
@@ -116,6 +117,20 @@ impl LibraryDoc {
             import.removed = true;
         }
         true
+    }
+
+    /// Merges what `pulled` fetched into the document; true if that changed it.
+    pub fn merge(&mut self, cursor: &mut Cursor, pulled: Pulled) -> bool {
+        let merged = cursor.apply(&mut self.doc, pulled);
+        if merged {
+            self.imports = read_imports(&self.doc);
+        }
+        merged
+    }
+
+    /// This Device's changes that `cursor` doesn't count as sent.
+    pub fn outgoing(&mut self, cursor: &Cursor) -> Option<Outgoing> {
+        cursor.outgoing(&mut self.doc)
     }
 
     /// The document as stored bytes.

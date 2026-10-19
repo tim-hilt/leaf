@@ -1,0 +1,389 @@
+//! Exchanging one Automerge document between Devices through a storage
+//! directory (ADR-0009).
+//!
+//! Each Device writes its own changes as immutable chunks named
+//! `<device>-<number>` and never touches another Device's chunks. Chunk
+//! numbers only go up, so a Device's `Cursor` tells which chunks of the others
+//! it has applied by remembering one number each, and a Sync step with nothing
+//! new costs one listing.
+//!
+//! A step is split so the network never runs while the document is locked:
+//! `pull` fetches new chunks, `Cursor::apply` merges them and `Cursor::outgoing`
+//! collects the Device's own new changes, which `push` writes.
+
+use crate::storage::{Storage, get_bytes};
+use automerge::{AutoCommit, ChangeHash};
+use std::collections::BTreeMap;
+use std::io;
+
+/// What a Device knows of its exchange with one storage directory. Losing it
+/// is harmless: chunks apply twice without harm, and the Device sends its
+/// changes again.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Cursor {
+    /// The document's heads when the Device last sent: everything up to them is
+    /// in its chunks.
+    sent_heads: Vec<ChangeHash>,
+    /// The number of the Device's latest chunk, which stays even if a storage
+    /// loses its chunks, so numbers never repeat.
+    sent: u64,
+    /// The number of the latest chunk applied from each other Device.
+    seen: BTreeMap<String, u64>,
+}
+
+/// New chunks of other Devices, fetched.
+#[derive(Debug)]
+pub(crate) struct Pulled {
+    /// In the order of Device, then number.
+    chunks: Vec<Chunk>,
+    /// The number of the Device's own latest chunk in the storage, 0 if none.
+    own_latest: u64,
+}
+
+#[derive(Debug)]
+struct Chunk {
+    device: String,
+    number: u64,
+    bytes: Vec<u8>,
+}
+
+/// A Device's own changes not yet in the storage.
+#[derive(Debug)]
+pub(crate) struct Outgoing {
+    /// The chunk's name in the directory.
+    name: String,
+    number: u64,
+    /// Empty if the new changes are all those of other Devices, which they
+    /// send themselves.
+    bytes: Vec<u8>,
+    heads: Vec<ChangeHash>,
+}
+
+/// Fetches the chunks in `dir` of Devices other than `device` that `cursor`
+/// hasn't applied.
+pub(crate) fn pull(
+    storage: &dyn Storage,
+    dir: &str,
+    device: &str,
+    cursor: &Cursor,
+) -> io::Result<Pulled> {
+    let mut wanted = Vec::new();
+    let mut own_latest = 0;
+    for blob in storage.list(dir)? {
+        let Some((from, number)) = blob
+            .name
+            .rsplit_once('-')
+            .and_then(|(from, number)| Some((from.to_owned(), number.parse::<u64>().ok()?)))
+        else {
+            continue;
+        };
+        if from == device {
+            own_latest = own_latest.max(number);
+        } else if number > cursor.seen.get(&from).copied().unwrap_or(0) {
+            wanted.push((from, number));
+        }
+    }
+    wanted.sort();
+    let mut chunks = Vec::new();
+    for (from, number) in wanted {
+        // A chunk replaced by its Device's snapshot meanwhile is skipped: the
+        // snapshot is the next one.
+        if let Some(bytes) = get_bytes(storage, &format!("{dir}/{from}-{number}"))? {
+            chunks.push(Chunk {
+                device: from,
+                number,
+                bytes,
+            });
+        }
+    }
+    Ok(Pulled { chunks, own_latest })
+}
+
+/// Writes `outgoing` to `dir`, which the Device's `cursor` then counts as sent.
+pub(crate) fn push(
+    storage: &dyn Storage,
+    dir: &str,
+    cursor: &mut Cursor,
+    outgoing: Outgoing,
+) -> io::Result<()> {
+    if !outgoing.bytes.is_empty() {
+        storage.put(
+            &format!("{dir}/{}", outgoing.name),
+            &mut outgoing.bytes.as_slice(),
+        )?;
+        cursor.sent = outgoing.number;
+    }
+    cursor.sent_heads = outgoing.heads;
+    Ok(())
+}
+
+impl Cursor {
+    /// Merges `pulled` into `doc`; true if that changed it. A chunk that isn't
+    /// an Automerge document is skipped for good.
+    pub fn apply(&mut self, doc: &mut AutoCommit, pulled: Pulled) -> bool {
+        // The storage lost our chunks, e.g. because it is another one: send
+        // everything again.
+        if pulled.own_latest < self.sent {
+            self.sent_heads.clear();
+        }
+        self.sent = self.sent.max(pulled.own_latest);
+        let before = doc.get_heads();
+        for chunk in pulled.chunks {
+            let _ = doc.load_incremental(&chunk.bytes);
+            let seen = self.seen.entry(chunk.device).or_default();
+            *seen = (*seen).max(chunk.number);
+        }
+        doc.get_heads() != before
+    }
+
+    /// The changes `doc` got from its Device since the last `push`; none if
+    /// it hasn't changed.
+    pub fn outgoing(&self, doc: &mut AutoCommit) -> Option<Outgoing> {
+        let heads = doc.get_heads();
+        if heads == self.sent_heads {
+            return None;
+        }
+        let device = doc.get_actor().clone();
+        let bytes = doc
+            .get_changes(&self.sent_heads)
+            .iter()
+            .filter(|change| change.actor_id() == &device)
+            .flat_map(|change| change.raw_bytes().iter().copied())
+            .collect();
+        let number = self.sent + 1;
+        Some(Outgoing {
+            name: format!("{}-{number}", device.to_hex_string()),
+            number,
+            bytes,
+            heads,
+        })
+    }
+
+    /// The cursor as stored: a line `sent <number>`, a line `heads <hash>…`
+    /// and a line `seen <device> <number>` per other Device.
+    pub fn encode(&self) -> String {
+        let heads: String = self.sent_heads.iter().map(|h| format!(" {h}")).collect();
+        let mut text = format!("sent {}\nheads{heads}\n", self.sent);
+        for (device, number) in &self.seen {
+            text.push_str(&format!("seen {device} {number}\n"));
+        }
+        text
+    }
+
+    /// The cursor `encode` made `text` from. What can't be read is forgotten.
+    pub fn decode(text: &str) -> Self {
+        let mut cursor = Self::default();
+        for line in text.lines() {
+            let mut words = line.split(' ');
+            match words.next() {
+                Some("sent") => {
+                    cursor.sent = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                }
+                Some("heads") => cursor.sent_heads = words.filter_map(|h| h.parse().ok()).collect(),
+                Some("seen") => {
+                    if let (Some(device), Some(Ok(number))) =
+                        (words.next(), words.next().map(str::parse))
+                    {
+                        cursor.seen.insert(device.to_owned(), number);
+                    }
+                }
+                _ => {}
+            }
+        }
+        cursor
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::DirStorage;
+    use automerge::{ActorId, ROOT, ReadDoc, transaction::Transactable};
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// One Device's copy of a document and its cursor.
+    struct Replica {
+        doc: AutoCommit,
+        cursor: Cursor,
+    }
+
+    impl Replica {
+        fn new(n: u8) -> Self {
+            Self {
+                doc: AutoCommit::new().with_actor(ActorId::from([n; 16])),
+                cursor: Cursor::default(),
+            }
+        }
+
+        fn device(&self) -> String {
+            self.doc.get_actor().to_hex_string()
+        }
+
+        fn set(&mut self, key: &str, value: &str) {
+            self.doc.put(ROOT, key, value).unwrap();
+        }
+
+        fn get(&self, key: &str) -> Option<String> {
+            let (value, _) = self.doc.get(ROOT, key).unwrap()?;
+            Some(value.into_string().unwrap())
+        }
+
+        /// One full exchange.
+        fn exchange(&mut self, storage: &dyn Storage) {
+            let pulled = pull(storage, "doc", &self.device(), &self.cursor).unwrap();
+            self.cursor.apply(&mut self.doc, pulled);
+            if let Some(outgoing) = self.cursor.outgoing(&mut self.doc) {
+                push(storage, "doc", &mut self.cursor, outgoing).unwrap();
+            }
+        }
+    }
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> (Self, DirStorage) {
+            let dir =
+                std::env::temp_dir().join(format!("leafpdf-chunks-{}-{name}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            let storage = DirStorage::open(&dir).unwrap();
+            (Scratch(dir), storage)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn changes_reach_the_other_device_and_concurrent_ones_merge() {
+        let (_alive, storage) = Scratch::new("merge");
+        let (mut a, mut b) = (Replica::new(1), Replica::new(2));
+        a.set("a", "from a");
+        b.set("b", "from b");
+
+        a.exchange(&storage);
+        b.exchange(&storage);
+        a.exchange(&storage);
+
+        for replica in [&a, &b] {
+            assert_eq!(replica.get("a").as_deref(), Some("from a"));
+            assert_eq!(replica.get("b").as_deref(), Some("from b"));
+        }
+    }
+
+    #[test]
+    fn an_exchange_with_nothing_new_changes_nothing() {
+        let (alive, storage) = Scratch::new("idle");
+        let mut a = Replica::new(1);
+        a.set("a", "x");
+        a.exchange(&storage);
+        let cursor = a.cursor.clone();
+        let blobs = fs::read_dir(alive.0.join("doc")).unwrap().count();
+
+        a.exchange(&storage);
+
+        assert_eq!(a.cursor, cursor);
+        assert_eq!(fs::read_dir(alive.0.join("doc")).unwrap().count(), blobs);
+    }
+
+    #[test]
+    fn a_device_sends_only_its_own_changes() {
+        let (alive, storage) = Scratch::new("own");
+        let (mut a, mut b) = (Replica::new(1), Replica::new(2));
+        a.set("a", "x");
+        a.exchange(&storage);
+        b.exchange(&storage);
+        assert_eq!(b.get("a").as_deref(), Some("x"));
+
+        b.exchange(&storage);
+
+        let b_chunks = fs::read_dir(alive.0.join("doc"))
+            .unwrap()
+            .filter(|e| {
+                let name = e
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned();
+                name.starts_with(&b.device())
+            })
+            .count();
+        assert_eq!(b_chunks, 0);
+    }
+
+    #[test]
+    fn a_device_that_changes_again_sends_just_the_new_changes() {
+        let (_alive, storage) = Scratch::new("again");
+        let (mut a, mut b) = (Replica::new(1), Replica::new(2));
+        a.set("a", "1");
+        a.exchange(&storage);
+        b.exchange(&storage);
+        a.set("a", "2");
+        a.set("c", "3");
+        a.exchange(&storage);
+        b.exchange(&storage);
+
+        assert_eq!(b.get("a").as_deref(), Some("2"));
+        assert_eq!(b.get("c").as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn a_cursor_survives_encoding_and_garbage_decodes_to_a_fresh_one() {
+        let (_alive, storage) = Scratch::new("encode");
+        let (mut a, mut b) = (Replica::new(1), Replica::new(2));
+        a.set("a", "x");
+        a.exchange(&storage);
+        b.exchange(&storage);
+        b.set("b", "y");
+        b.exchange(&storage);
+
+        assert_eq!(Cursor::decode(&b.cursor.encode()), b.cursor);
+        assert_eq!(Cursor::decode("\u{0}garbage\nsent x"), Cursor::default());
+    }
+
+    #[test]
+    fn a_device_sends_everything_again_to_a_storage_that_lacks_its_chunks() {
+        let (_one, first) = Scratch::new("first");
+        let (_two, second) = Scratch::new("second");
+        let (mut a, mut b) = (Replica::new(1), Replica::new(2));
+        a.set("a", "x");
+        a.exchange(&first);
+
+        a.exchange(&second);
+        b.exchange(&second);
+
+        assert_eq!(b.get("a").as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn a_device_that_lost_its_cursor_neither_loses_nor_overwrites_chunks() {
+        let (_alive, storage) = Scratch::new("lost");
+        let (mut a, mut b) = (Replica::new(1), Replica::new(2));
+        a.set("a", "x");
+        a.exchange(&storage);
+        a.cursor = Cursor::default();
+        a.set("c", "z");
+
+        a.exchange(&storage);
+        b.exchange(&storage);
+
+        assert_eq!(b.get("a").as_deref(), Some("x"));
+        assert_eq!(b.get("c").as_deref(), Some("z"));
+    }
+
+    #[test]
+    fn a_chunk_that_is_not_a_document_is_skipped() {
+        let (_alive, storage) = Scratch::new("garbage");
+        storage.put("doc/ff-1", &mut &b"garbage"[..]).unwrap();
+        storage.put("doc/not-a-chunk", &mut &b"x"[..]).unwrap();
+        let mut a = Replica::new(1);
+
+        a.exchange(&storage);
+
+        assert_eq!(a.cursor.seen.get("ff"), Some(&1));
+    }
+}
