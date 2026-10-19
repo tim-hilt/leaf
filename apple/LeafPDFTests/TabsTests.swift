@@ -313,6 +313,17 @@ import Testing
         #expect(restored.activeID == "c")
     }
 
+    @Test func restoringDroppingABackgroundDocumentKeepsTheActiveTab() {
+        let tabs = makeTabs()
+        tabs.open([a, b, c])
+        tabs.select("c")
+
+        let restored = makeTabs(in: [a, c])
+        #expect(restored.openIDs == ["a", "c"])
+        #expect(restored.activeID == "c")
+        #expect(restored.isShowingReader)
+    }
+
     @Test func restoringWithNoDocumentLeftShowsTheGallery() {
         let tabs = makeTabs()
         tabs.open([a])
