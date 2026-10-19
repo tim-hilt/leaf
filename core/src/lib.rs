@@ -20,3 +20,4 @@ pub mod preferences;
 pub mod progress;
 pub(crate) mod state;
 pub mod storage;
+pub mod webdav;

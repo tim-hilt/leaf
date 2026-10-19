@@ -25,6 +25,9 @@ pub struct Blob {
 /// Names are plain: every part is non-empty, isn't `.` or `..`, and doesn't
 /// start with a dot. Anything else is `InvalidInput`. Directories exist as soon
 /// as a blob is in them; a missing one is empty.
+///
+/// Errors are `io::Error`s. Credentials the storage rejects are
+/// `PermissionDenied`, so they can be told from being offline.
 pub trait Storage: Send + Sync {
     /// Stores everything `data` yields as the blob `name`, replacing any
     /// previous one. A blob is never visible under `name` before all of it is
@@ -40,6 +43,22 @@ pub trait Storage: Send + Sync {
 
     /// Deletes blob `name`. Deleting a blob that isn't there does nothing.
     fn delete(&self, name: &str) -> io::Result<()>;
+}
+
+/// Checks that `name` is a plain blob name, see `Storage`.
+pub(crate) fn check_name(name: &str) -> io::Result<()> {
+    let plain = !name.is_empty()
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.'));
+    if plain {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name:?} is not a blob name"),
+        ))
+    }
 }
 
 /// The content of blob `name` in memory, for small blobs. None if missing.
@@ -79,22 +98,9 @@ impl DirStorage {
 
     /// The path of `name`, which may not exist.
     fn path(&self, name: &str) -> io::Result<PathBuf> {
-        let plain = !name.is_empty()
-            && name
-                .split('/')
-                .all(|part| !part.is_empty() && !part.starts_with('.'));
-        if !plain {
-            return Err(invalid_name(name));
-        }
+        check_name(name)?;
         Ok(self.root.join(name))
     }
-}
-
-fn invalid_name(name: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("{name:?} is not a blob name"),
-    )
 }
 
 impl Storage for DirStorage {
@@ -165,10 +171,33 @@ impl Storage for DirStorage {
 
 /// The contract every `Storage` keeps, as tests. A storage runs them with
 /// `storage_contract_tests!(make)`, where `make()` returns a new, empty
-/// `Storage` (and whatever must stay alive with it).
+/// `Storage` (and whatever must stay alive with it), or none to skip the
+/// tests, e.g. when the server they need isn't installed.
 #[cfg(test)]
 pub(crate) mod contract {
     use super::*;
+
+    /// A fresh directory under the system temp dir, removed on drop.
+    pub struct Scratch(pub PathBuf);
+
+    impl Scratch {
+        pub fn new(prefix: &str) -> Self {
+            static NEXT: AtomicU32 = AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "leafpdf-{prefix}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Relaxed)
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     pub fn put_bytes(storage: &dyn Storage, name: &str, bytes: &[u8]) {
         storage.put(name, &mut &bytes[..]).unwrap();
@@ -295,7 +324,9 @@ pub(crate) mod contract {
             $(
                 #[test]
                 fn $check() {
-                    let (_alive, storage) = $make();
+                    let Some((_alive, storage)) = $make() else {
+                        return;
+                    };
                     $crate::storage::contract::$check(&storage);
                 }
             )+
@@ -306,32 +337,18 @@ pub(crate) mod contract {
 
 #[cfg(test)]
 mod tests {
-    use super::contract::storage_contract_tests;
+    use super::contract::{Scratch, storage_contract_tests};
     use super::*;
 
-    /// A fresh directory under the system temp dir, removed on drop.
-    struct Scratch(PathBuf);
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
     fn scratch_storage() -> (Scratch, DirStorage) {
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "leafpdf-storage-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Relaxed)
-        ));
-        let storage = DirStorage::open(&dir).unwrap();
-        (Scratch(dir), storage)
+        let scratch = Scratch::new("storage");
+        let storage = DirStorage::open(&scratch.0).unwrap();
+        (scratch, storage)
     }
 
     mod dir_storage {
         use super::*;
-        storage_contract_tests!(scratch_storage);
+        storage_contract_tests!(|| Some(scratch_storage()));
     }
 
     #[test]
