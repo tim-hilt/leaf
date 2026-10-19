@@ -9,10 +9,16 @@
 //! it deletes it. Devices that first write a Note to one Highlight
 //! concurrently each create their own text, and Automerge keeps one of them.
 //!
+//! The root's `page_notes` map holds the Notes on a spot of a page, keyed by ID
+//! likewise: `page_index`, `x` and `y` (the spot in page space), `created` and
+//! `text`, Automerge text. A page Note is its text: emptying it deletes the
+//! page Note, and one without text, which only exists between adding it and
+//! typing, isn't listed.
+//!
 //! Devices that first add a Highlight concurrently each create their own
 //! `highlights` map, and Automerge keeps one of them as the winner. Reading
 //! therefore lists the Highlights of all of them, and writing goes to the
-//! winner.
+//! winner. The same goes for page Notes.
 //!
 //! Positions are engine-neutral (ADR-0003): page index plus rectangles in PDF
 //! page space (points, origin at the page's bottom-left), with the quoted text
@@ -110,11 +116,29 @@ pub struct Highlight {
     pub note: Option<String>,
 }
 
+/// A Note on a spot of a page, belonging to no passage.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageNote {
+    /// Unique among all page Notes, also across devices.
+    pub id: String,
+    /// Zero-based index of the page.
+    pub page_index: u32,
+    /// The spot, in PDF page space.
+    pub x: f64,
+    pub y: f64,
+    /// When it was added, in milliseconds since the Unix epoch.
+    pub created: u64,
+    /// What the user wrote. Never empty in the Markup.
+    pub text: String,
+}
+
 /// Everything the user added on top of a Document.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Markup {
     /// Oldest first.
     pub highlights: Vec<Highlight>,
+    /// Oldest first.
+    pub page_notes: Vec<PageNote>,
 }
 
 /// A new ID, unique across devices.
@@ -133,7 +157,15 @@ pub(crate) fn read(bytes: &[u8]) -> Markup {
         .flat_map(|map| doc.keys(map).filter_map(|id| read_highlight(&doc, map, id)))
         .collect();
     highlights.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
-    Markup { highlights }
+    let mut page_notes: Vec<_> = state::maps(&doc, PAGE_NOTES)
+        .iter()
+        .flat_map(|map| doc.keys(map).filter_map(|id| read_page_note(&doc, map, id)))
+        .collect();
+    page_notes.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
+    Markup {
+        highlights,
+        page_notes,
+    }
 }
 
 /// The Automerge document `existing` with `highlight` added, compacted.
@@ -160,9 +192,34 @@ pub(crate) fn remove(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
     state::update(existing, |doc| delete_highlight(doc, id))
 }
 
+/// The Automerge document `existing` with `note` added, compacted.
+pub(crate) fn add_page_note(existing: Option<&[u8]>, note: &PageNote) -> Vec<u8> {
+    state::update(existing, |doc| put_page_note(doc, note))
+}
+
+/// The Automerge document `existing` with the text of page Note `id` set to
+/// `text`, compacted. Empty `text` removes the page Note. Unknown page Notes
+/// are left alone.
+pub(crate) fn set_page_note_text(existing: Option<&[u8]>, id: &str, text: &str) -> Vec<u8> {
+    state::update(existing, |doc| put_page_note_text(doc, id, text))
+}
+
+/// The Automerge document `existing` without page Note `id`, compacted. A
+/// removal wins over a concurrent edit of the same page Note.
+pub(crate) fn remove_page_note(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
+    state::update(existing, |doc| delete_page_note(doc, id))
+}
+
+const PAGE_NOTES: &str = "page_notes";
+
 /// The `highlights` map holding Highlight `id`, and its entry.
 fn find(doc: &AutoCommit, id: &str) -> Option<(ObjId, ObjId)> {
-    highlight_maps(doc)
+    find_in(doc, "highlights", id)
+}
+
+/// The root map `key` holding the map entry `id`, and that entry.
+fn find_in(doc: &AutoCommit, key: &str, id: &str) -> Option<(ObjId, ObjId)> {
+    state::maps(doc, key)
         .into_iter()
         .find_map(|map| match doc.get(&map, id).ok()? {
             Some((Value::Object(ObjType::Map), entry)) => Some((map, entry)),
@@ -185,14 +242,78 @@ fn put_note(doc: &mut AutoCommit, id: &str, text: &str) {
         doc.delete(&entry, "note").expect("a map accepts deletions");
         return;
     }
-    let note = match doc.get(&entry, "note").expect("a map has readable keys") {
-        Some((Value::Object(ObjType::Text), note)) => note,
+    write_text(doc, &entry, "note", text);
+}
+
+/// Sets the text at `key` of `entry` to `text` by diffing, creating it if
+/// there is none.
+fn write_text(doc: &mut AutoCommit, entry: &ObjId, key: &str, text: &str) {
+    let object = match doc.get(entry, key).expect("a map has readable keys") {
+        Some((Value::Object(ObjType::Text), object)) => object,
         _ => doc
-            .put_object(&entry, "note", ObjType::Text)
+            .put_object(entry, key, ObjType::Text)
             .expect("a map accepts new keys"),
     };
-    doc.update_text(&note, text)
+    doc.update_text(&object, text)
         .expect("a text accepts new content");
+}
+
+fn put_page_note_text(doc: &mut AutoCommit, id: &str, text: &str) {
+    let Some((map, entry)) = find_in(doc, PAGE_NOTES, id) else {
+        return;
+    };
+    if text.is_empty() {
+        doc.delete(&map, id).expect("a map accepts deletions");
+    } else {
+        write_text(doc, &entry, "text", text);
+    }
+}
+
+fn delete_page_note(doc: &mut AutoCommit, id: &str) {
+    if let Some((map, _)) = find_in(doc, PAGE_NOTES, id) {
+        doc.delete(&map, id).expect("a map accepts deletions");
+    }
+}
+
+/// Adds `note` to the winning `page_notes` map of `doc`, creating it if there
+/// is none.
+fn put_page_note(doc: &mut AutoCommit, note: &PageNote) {
+    let map = state::maps(doc, PAGE_NOTES).pop().unwrap_or_else(|| {
+        doc.put_object(ROOT, PAGE_NOTES, ObjType::Map)
+            .expect("a root map accepts new keys")
+    });
+    let entry = doc
+        .put_object(&map, note.id.as_str(), ObjType::Map)
+        .expect("a map accepts new keys");
+    let fields = [
+        ("page_index", ScalarValue::Uint(u64::from(note.page_index))),
+        ("x", ScalarValue::F64(note.x)),
+        ("y", ScalarValue::F64(note.y)),
+        ("created", ScalarValue::Uint(note.created)),
+    ];
+    for (key, value) in fields {
+        doc.put(&entry, key, value)
+            .expect("a new map accepts new keys");
+    }
+    write_text(doc, &entry, "text", &note.text);
+}
+
+fn read_page_note(doc: &AutoCommit, map: &ObjId, id: String) -> Option<PageNote> {
+    let Some((Value::Object(ObjType::Map), entry)) = doc.get(map, &id).ok()? else {
+        return None;
+    };
+    let field = |name: &str| state::scalar(doc, &entry, name);
+    let Some((Value::Object(ObjType::Text), text)) = doc.get(&entry, "text").ok()? else {
+        return None;
+    };
+    Some(PageNote {
+        page_index: u32::try_from(field("page_index")?.as_u64()?).ok()?,
+        x: field("x")?.as_f64()?,
+        y: field("y")?.as_f64()?,
+        created: field("created")?.as_u64()?,
+        text: doc.text(&text).ok().filter(|text| !text.is_empty())?,
+        id,
+    })
 }
 
 fn delete_highlight(doc: &mut AutoCommit, id: &str) {
@@ -356,7 +477,8 @@ mod tests {
         assert_eq!(
             read(&add(None, &added)),
             Markup {
-                highlights: vec![added]
+                highlights: vec![added],
+                ..Markup::default()
             }
         );
     }
@@ -385,6 +507,7 @@ mod tests {
         let (one, two) = (highlight("one", 1), highlight("two", 2));
         let expected = Markup {
             highlights: vec![one.clone(), two.clone()],
+            ..Markup::default()
         };
         assert_eq!(merged(&base, &one, &two), [expected.clone(), expected]);
     }
@@ -396,6 +519,7 @@ mod tests {
         let (one, two) = (highlight("one", 1), highlight("two", 2));
         let expected = Markup {
             highlights: vec![first, one.clone(), two.clone()],
+            ..Markup::default()
         };
         assert_eq!(merged(&base, &one, &two), [expected.clone(), expected]);
     }
@@ -529,6 +653,7 @@ mod tests {
                 quoted_text: "edited".to_owned(),
                 ..highlight("a", 5)
             }],
+            ..Markup::default()
         };
         let merged = merged_edits(&base, |doc| put_color(doc, "a", GREEN), edit_quote);
         assert_eq!(merged, [expected.clone(), expected]);
@@ -617,6 +742,7 @@ mod tests {
         );
         let expected = Markup {
             highlights: vec![with_note(highlight("a", 5), "the quick brown fox jumps")],
+            ..Markup::default()
         };
         assert_eq!(merged, [expected.clone(), expected]);
     }
@@ -629,6 +755,7 @@ mod tests {
                 color: GREEN,
                 ..with_note(highlight("a", 5), "new")
             }],
+            ..Markup::default()
         };
         let merged = merged_edits(
             &base,
@@ -659,7 +786,134 @@ mod tests {
         );
         let expected = Markup {
             highlights: vec![highlight("a", 5)],
+            ..Markup::default()
         };
+        assert_eq!(merged, [expected.clone(), expected]);
+    }
+
+    // Page Notes
+
+    fn page_note(id: &str, created: u64, text: &str) -> PageNote {
+        PageNote {
+            id: id.to_owned(),
+            page_index: 3,
+            x: 10.5,
+            y: 20.5,
+            created,
+            text: text.to_owned(),
+        }
+    }
+
+    fn with_page_note(existing: Option<&[u8]>, note: &PageNote) -> Vec<u8> {
+        add_page_note(existing, note)
+    }
+
+    fn only_page_notes(notes: Vec<PageNote>) -> Markup {
+        Markup {
+            page_notes: notes,
+            ..Markup::default()
+        }
+    }
+
+    #[test]
+    fn a_page_note_reads_back_as_it_was_written() {
+        let note = page_note("a", 5, "my thought");
+        let doc = with_page_note(None, &note);
+        assert_eq!(read(&doc), only_page_notes(vec![note]));
+    }
+
+    #[test]
+    fn a_page_note_without_text_is_not_listed_until_it_has_some() {
+        let doc = add_page_note(None, &page_note("a", 5, ""));
+        assert_eq!(read(&doc), Markup::default());
+        let typed = set_page_note_text(Some(&doc), "a", "now");
+        assert_eq!(
+            read(&typed),
+            only_page_notes(vec![page_note("a", 5, "now")])
+        );
+    }
+
+    #[test]
+    fn page_notes_are_listed_oldest_first_and_new_text_replaces_the_old() {
+        let later = with_page_note(None, &page_note("later", 2, "l"));
+        let both = with_page_note(Some(&later), &page_note("earlier", 1, "e"));
+        let edited = set_page_note_text(Some(&both), "later", "l2");
+        assert_eq!(
+            read(&edited),
+            only_page_notes(vec![
+                page_note("earlier", 1, "e"),
+                page_note("later", 2, "l2")
+            ])
+        );
+    }
+
+    #[test]
+    fn an_empty_text_removes_the_page_note() {
+        let doc = with_page_note(None, &page_note("a", 5, "x"));
+        let emptied = set_page_note_text(Some(&doc), "a", "");
+        assert_eq!(read(&emptied), Markup::default());
+    }
+
+    #[test]
+    fn removing_a_page_note_leaves_the_others() {
+        let doc = with_page_note(None, &page_note("a", 1, "x"));
+        let doc = with_page_note(Some(&doc), &page_note("b", 2, "y"));
+        let removed = remove_page_note(Some(&doc), "a");
+        assert_eq!(
+            read(&removed),
+            only_page_notes(vec![page_note("b", 2, "y")])
+        );
+    }
+
+    #[test]
+    fn changing_or_removing_an_unknown_page_note_changes_nothing() {
+        let doc = with_page_note(None, &page_note("a", 1, "x"));
+        let doc = set_page_note_text(Some(&doc), "nope", "y");
+        let doc = remove_page_note(Some(&doc), "nope");
+        assert_eq!(read(&doc), only_page_notes(vec![page_note("a", 1, "x")]));
+    }
+
+    #[test]
+    fn page_notes_and_highlights_are_kept_side_by_side() {
+        let doc = add(None, &highlight("h", 1));
+        let doc = with_page_note(Some(&doc), &page_note("n", 2, "x"));
+        let doc = remove(Some(&doc), "h");
+        assert_eq!(read(&doc), only_page_notes(vec![page_note("n", 2, "x")]));
+    }
+
+    #[test]
+    fn concurrent_typing_in_one_page_note_merges_character_by_character() {
+        let base = with_page_note(None, &page_note("a", 5, "the quick fox"));
+        let merged = merged_edits(
+            &base,
+            |doc| put_page_note_text(doc, "a", "the quick brown fox"),
+            |doc| put_page_note_text(doc, "a", "the quick fox jumps"),
+        );
+        let expected = only_page_notes(vec![page_note("a", 5, "the quick brown fox jumps")]);
+        assert_eq!(merged, [expected.clone(), expected]);
+    }
+
+    #[test]
+    fn a_page_note_removal_wins_over_a_concurrent_edit() {
+        let base = with_page_note(None, &page_note("a", 5, "old"));
+        let merged = merged_edits(
+            &base,
+            |doc| delete_page_note(doc, "a"),
+            |doc| put_page_note_text(doc, "a", "new"),
+        );
+        assert_eq!(merged, [Markup::default(), Markup::default()]);
+    }
+
+    #[test]
+    fn concurrent_page_note_additions_are_both_kept() {
+        let base = state::update(None, |_| {});
+        let (one, two) = (page_note("one", 1, "x"), page_note("two", 2, "y"));
+        let expected = only_page_notes(vec![one.clone(), two.clone()]);
+        let merged = merged_edits(
+            &base,
+            |doc| put_page_note(doc, &one),
+            |doc| put_page_note(doc, &two),
+        );
         assert_eq!(merged, [expected.clone(), expected]);
     }
 

@@ -11,7 +11,7 @@
 //! folder's only non-hidden entry. The state is stored like an Import: written
 //! to staging, then renamed into place.
 
-use crate::markup::{self, Highlight, Markup, PageRects, Rgb};
+use crate::markup::{self, Highlight, Markup, PageNote, PageRects, Rgb};
 use crate::preferences::{self, HighlightColor};
 use crate::progress::{self, ReadingProgress};
 use sha2::{Digest, Sha256};
@@ -202,6 +202,48 @@ impl Library {
     /// Library.
     pub fn remove_highlight(&self, id: &str, highlight: &str) -> io::Result<()> {
         self.update_state(id, |existing| markup::remove(existing, highlight))
+    }
+
+    /// Adds a page Note at (`x`, `y`) in page space on page `page_index` of
+    /// Document `id`, `created` in milliseconds since the Unix epoch, and
+    /// returns it, still without text: it isn't in the Markup until
+    /// `set_page_note_text` gives it some. Like `add_highlight`, it does nothing
+    /// for a Document that isn't in the Library.
+    pub fn add_page_note(
+        &self,
+        id: &str,
+        page_index: u32,
+        x: f64,
+        y: f64,
+        created: u64,
+    ) -> io::Result<PageNote> {
+        let note = PageNote {
+            id: markup::new_id(),
+            page_index,
+            x,
+            y,
+            created,
+            text: String::new(),
+        };
+        self.update_state(id, |existing| markup::add_page_note(existing, &note))?;
+        Ok(note)
+    }
+
+    /// Sets the text of page Note `note` of Document `id` to `text`, an edit
+    /// that merges with concurrent typing. Empty `text` removes the page Note.
+    /// Does nothing for a page Note that isn't there, or a Document that isn't
+    /// in the Library.
+    pub fn set_page_note_text(&self, id: &str, note: &str, text: &str) -> io::Result<()> {
+        self.update_state(id, |existing| {
+            markup::set_page_note_text(existing, note, text)
+        })
+    }
+
+    /// Removes page Note `note` from Document `id`, without a trace. Does
+    /// nothing for a page Note that isn't there, or a Document that isn't in the
+    /// Library.
+    pub fn remove_page_note(&self, id: &str, note: &str) -> io::Result<()> {
+        self.update_state(id, |existing| markup::remove_page_note(existing, note))
     }
 
     /// The Highlight Colors to choose from: the six built-in ones, yellow
@@ -936,6 +978,7 @@ mod tests {
         assert_eq!(added.created, 1_000);
         let expected = Markup {
             highlights: vec![added],
+            ..Markup::default()
         };
         assert_eq!(library.markup(&document.id).unwrap(), expected);
         drop(library);
@@ -1096,6 +1139,100 @@ mod tests {
             reopened.markup(&document.id).unwrap().highlights,
             vec![second]
         );
+    }
+
+    #[test]
+    fn a_page_note_survives_reopening_the_library_and_emptying_it_removes_it() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        let added = library
+            .add_page_note(&document.id, 4, 100.5, 200.5, 1_000)
+            .unwrap();
+        assert_eq!(library.markup(&document.id).unwrap(), Markup::default());
+        library
+            .set_page_note_text(&document.id, &added.id, "my thought")
+            .unwrap();
+
+        let reopened = scratch.library();
+        let expected = PageNote {
+            text: "my thought".to_owned(),
+            ..added.clone()
+        };
+        assert_eq!(
+            reopened.markup(&document.id).unwrap().page_notes,
+            vec![expected]
+        );
+        assert_eq!((added.page_index, added.x, added.y), (4, 100.5, 200.5));
+        assert_eq!(added.created, 1_000);
+
+        reopened
+            .set_page_note_text(&document.id, &added.id, "")
+            .unwrap();
+        assert_eq!(
+            scratch.library().markup(&document.id).unwrap(),
+            Markup::default()
+        );
+    }
+
+    #[test]
+    fn a_removed_page_note_is_gone_after_reopening_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let first = library.add_page_note(&document.id, 0, 1.0, 2.0, 1).unwrap();
+        let second = library.add_page_note(&document.id, 1, 3.0, 4.0, 2).unwrap();
+        for note in [&first, &second] {
+            library
+                .set_page_note_text(&document.id, &note.id, "x")
+                .unwrap();
+        }
+
+        library.remove_page_note(&document.id, &first.id).unwrap();
+
+        let ids: Vec<_> = scratch
+            .library()
+            .markup(&document.id)
+            .unwrap()
+            .page_notes
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(ids, [second.id]);
+    }
+
+    #[test]
+    fn changing_or_removing_an_unknown_page_note_does_nothing() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let added = library.add_page_note(&document.id, 0, 1.0, 2.0, 1).unwrap();
+        library
+            .set_page_note_text(&document.id, &added.id, "x")
+            .unwrap();
+
+        library
+            .set_page_note_text(&document.id, "nope", "y")
+            .unwrap();
+        library.remove_page_note(&document.id, "nope").unwrap();
+
+        assert_eq!(library.markup(&document.id).unwrap().page_notes.len(), 1);
+    }
+
+    #[test]
+    fn remove_takes_page_notes_along() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let added = library.add_page_note(&document.id, 0, 1.0, 2.0, 1).unwrap();
+        library
+            .set_page_note_text(&document.id, &added.id, "x")
+            .unwrap();
+
+        library.remove(&document.id).unwrap();
+
+        assert_eq!(library.markup(&document.id).unwrap(), Markup::default());
     }
 
     #[test]

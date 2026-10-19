@@ -647,6 +647,54 @@ import Testing
         #expect(await (try openLibrary()).highlights(of: document) == [added])
     }
 
+    @Test func aNeverNotedDocumentHasNoPageNotes() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+
+        #expect(await library.pageNotes(of: document) == [])
+    }
+
+    @Test func anAddedPageNoteIsAtItsPlaceAndListedOnceItHasText() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        let place = Place(pageIndex: 4, point: CGPoint(x: 100.5, y: 200.5))
+
+        let added = try #require(await library.addPageNote(at: place, to: document))
+
+        #expect(added.place == place)
+        #expect(added.text == "")
+        #expect(await library.pageNotes(of: document) == [])
+
+        await library.setText("my thought", of: added, in: document)
+        var typed = added
+        typed.text = "my thought"
+        #expect(await library.pageNotes(of: document) == [typed])
+        #expect(await (try openLibrary()).pageNotes(of: document) == [typed])
+    }
+
+    @Test func emptyingAPageNoteOrRemovingItLeavesNoPageNote() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        let place = Place(pageIndex: 0, point: .zero)
+        let emptied = try #require(await library.addPageNote(at: place, to: document))
+        let removed = try #require(await library.addPageNote(at: place, to: document))
+        await library.setText("x", of: emptied, in: document)
+        await library.setText("y", of: removed, in: document)
+
+        await library.setText("", of: emptied, in: document)
+        await library.removePageNote(removed, from: document)
+
+        #expect(await (try openLibrary()).pageNotes(of: document) == [])
+    }
+
+    @Test func addingAPageNoteToARemovedDocumentDoesNothing() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        library.remove(document)
+
+        #expect(await library.addPageNote(at: Place(pageIndex: 0, point: .zero), to: document) == nil)
+    }
+
     @Test func aRemovedHighlightIsGoneAfterReopeningTheLibrary() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)

@@ -465,9 +465,115 @@ import Testing
         var reported: [String] = []
         reader.onHighlightTap = { highlight, _ in reported.append(highlight.id) }
 
-        #expect(reader.reportHighlightTap(at: CGPoint(x: icon.midX, y: icon.midY)))
+        #expect(reader.reportMarkupTap(at: CGPoint(x: icon.midX, y: icon.midY)))
 
         #expect(reported == ["a"])
+    }
+
+    // MARK: Page Notes
+
+    /// A page Note with text at `point` (page space) on page `pageIndex` + 1.
+    func pageNote(_ id: String, at point: CGPoint, onPage pageIndex: Int = 0) -> PageNote {
+        PageNote(id: id, place: Place(pageIndex: pageIndex, point: point), text: "a thought")
+    }
+
+    @Test func addNoteAtAViewPointReportsThePlaceUnderIt() throws {
+        let reader = try readerWithText()
+        var reported: [Place] = []
+        reader.onAddNote = { reported.append($0) }
+        let spot = CGPoint(x: 300, y: 400)
+
+        reader.addNote(at: centre(ofRect: CGRect(origin: spot, size: .zero), onPage: 1, in: reader))
+
+        #expect(reported.count == 1)
+        #expect(reported.first?.pageIndex == 1)
+        #expect(abs((reported.first?.point.x ?? 0) - spot.x) < 0.001)
+        #expect(abs((reported.first?.point.y ?? 0) - spot.y) < 0.001)
+    }
+
+    @Test func addNoteOffThePagesReportsNothing() throws {
+        let reader = try readerWithText()
+        var reported = 0
+        reader.onAddNote = { _ in reported += 1 }
+
+        reader.addNote(at: CGPoint(x: -50, y: -50))
+
+        #expect(reported == 0)
+    }
+
+    @Test func addNoteInTheVisiblePageReportsTheMiddleOfTheViewport() throws {
+        let reader = try readerWithText()
+        reader.go(to: Place(pageIndex: 3, point: CGPoint(x: 0, y: 600)))
+        var reported: [Place] = []
+        reader.onAddNote = { reported.append($0) }
+
+        reader.addNoteInVisiblePage()
+
+        let place = try #require(reported.first)
+        let middle = CGPoint(x: reader.bounds.midX, y: reader.bounds.midY)
+        let page = try #require(reader.document?.page(at: place.pageIndex))
+        #expect(reported.count == 1)
+        #expect(reader.page(for: middle, nearest: true) == page)
+        let spot = reader.convert(place.point, from: page)
+        #expect(abs(spot.x - middle.x) < 0.001 && abs(spot.y - middle.y) < 0.001)
+    }
+
+    @Test func thePageNoteIconIsCentredOnItsSpotAndKeepsItsOnScreenSizeAtAnyZoom() throws {
+        let reader = try readerWithText()
+        let note = pageNote("a", at: CGPoint(x: 300, y: 400))
+        reader.pageNotes = [note]
+        let page = try #require(reader.document?.page(at: 0))
+
+        let icon = try #require(reader.noteIconRect(of: note))
+        let spot = reader.convert(note.place.point, from: page)
+        #expect(abs(icon.midX - spot.x) < 0.001 && abs(icon.midY - spot.y) < 0.001)
+
+        reader.zoomIn()
+        reader.zoomIn()
+        #expect(reader.noteIconRect(of: note)?.size == icon.size)
+    }
+
+    @Test func reportsThePageNoteAtAViewPoint() throws {
+        let reader = try readerWithText()
+        let note = pageNote("a", at: CGPoint(x: 300, y: 400))
+        reader.pageNotes = [note]
+        let icon = try #require(reader.noteIconRect(of: note))
+
+        #expect(reader.pageNote(at: CGPoint(x: icon.midX, y: icon.midY))?.id == "a")
+        #expect(reader.pageNote(at: CGPoint(x: icon.maxX + 40, y: icon.midY)) == nil)
+    }
+
+    @Test func clickingAPageNoteIconReportsItForThePopover() throws {
+        let reader = try readerWithText()
+        let note = pageNote("a", at: CGPoint(x: 300, y: 400))
+        reader.pageNotes = [note]
+        let icon = try #require(reader.noteIconRect(of: note))
+        var reported: [String] = []
+        reader.onPageNoteTap = { note, _ in reported.append(note.id) }
+
+        #expect(reader.reportMarkupTap(at: CGPoint(x: icon.midX, y: icon.midY)))
+
+        #expect(reported == ["a"])
+    }
+
+    @Test func aSpotWithoutTextHighlightOrNoteIsEmpty() throws {
+        let reader = try readerWithText()
+        let page = try #require(reader.document?.page(at: 0))
+        let word = try #require(page.selection(for: NSRange(location: 0, length: 5))).bounds(for: page)
+        let note = pageNote("a", at: CGPoint(x: 300, y: 300))
+        let marked = marked("h", CGRect(x: 300, y: 500, width: 40, height: 20))
+        reader.pageNotes = [note]
+        reader.highlights = [marked]
+
+        func isEmpty(_ spot: CGPoint) -> Bool {
+            reader.isEmptySpot(at: reader.convert(spot, from: page))
+        }
+
+        #expect(isEmpty(CGPoint(x: 300, y: 400)))
+        #expect(!isEmpty(CGPoint(x: word.midX, y: word.midY)))
+        #expect(!isEmpty(note.place.point))
+        #expect(!isEmpty(CGPoint(x: 320, y: 510)))
+        #expect(!reader.isEmptySpot(at: CGPoint(x: -50, y: -50)))
     }
 
     // MARK: Links

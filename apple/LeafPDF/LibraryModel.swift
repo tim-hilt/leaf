@@ -316,6 +316,49 @@ final class LibraryModel {
         await inStateOrder { try? core.removeHighlight(id: id, highlight: highlightID) }
     }
 
+    /// The page Notes of `document`, oldest first. Empty if there are none or
+    /// the Document was Removed.
+    func pageNotes(of document: LibraryDocument) async -> [PageNote] {
+        let core = core, id = document.id
+        let markup = await inStateOrder { try? core.markup(id: id) }
+        return markup?.pageNotes.map(PageNote.init) ?? []
+    }
+
+    /// Adds a page Note without text at `place` to `document`, `created` now. The
+    /// core writes off the main thread, in order, and this returns the stored
+    /// page Note when it has. It isn't listed by `pageNotes(of:)` until it has
+    /// text (`setText`). Nil for a Document that was Removed, or if the write failed.
+    func addPageNote(at place: Place, to document: LibraryDocument, at created: Date = .now) async -> PageNote? {
+        guard documents.contains(where: { $0.id == document.id }) else { return nil }
+        let core = core, id = document.id
+        let milliseconds = UInt64(max(0, created.timeIntervalSince1970 * 1000).rounded())
+        let stored = await inStateOrder {
+            try? core.addPageNote(
+                id: id, pageIndex: UInt32(place.pageIndex), x: place.point.x, y: place.point.y, created: milliseconds)
+        }
+        // Removed meanwhile: the core stored nothing.
+        guard documents.contains(where: { $0.id == id }) else { return nil }
+        return stored.map(PageNote.init)
+    }
+
+    /// Sets the text of `note` of `document` to `text`; empty removes the page
+    /// Note. The core writes off the main thread, in order, and this returns when
+    /// it has. Does nothing for a Document that was Removed.
+    func setText(_ text: String, of note: PageNote, in document: LibraryDocument) async {
+        guard documents.contains(where: { $0.id == document.id }) else { return }
+        let core = core, id = document.id, noteID = note.id
+        await inStateOrder { try? core.setPageNoteText(id: id, note: noteID, text: text) }
+    }
+
+    /// Removes the page Note `note` from `document`. The core writes off the main
+    /// thread, in order, and this returns when it has. Does nothing for a
+    /// Document that was Removed.
+    func removePageNote(_ note: PageNote, from document: LibraryDocument) async {
+        guard documents.contains(where: { $0.id == document.id }) else { return }
+        let core = core, id = document.id, noteID = note.id
+        await inStateOrder { try? core.removePageNote(id: id, note: noteID) }
+    }
+
     /// Makes `color`, one of `highlightColors`, the Default Highlight Color. It
     /// shows at once; the core writes off the main thread, in order, and this
     /// returns when it has.
@@ -431,6 +474,14 @@ extension Highlight {
                 },
                 quotedText: stored.quotedText),
             color: RGB(stored.color), note: stored.note)
+    }
+}
+
+extension PageNote {
+    fileprivate init(_ stored: LeafCore.PageNote) {
+        self.init(
+            id: stored.id, place: Place(pageIndex: Int(stored.pageIndex), point: CGPoint(x: stored.x, y: stored.y)),
+            text: stored.text)
     }
 }
 

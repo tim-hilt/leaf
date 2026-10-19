@@ -21,6 +21,11 @@ final class ReaderHandle {
 /// reports its anchor, and never changes the File. A single click or tap on a
 /// Highlight reports it (`onHighlightTap`); drags and long presses still select.
 ///
+/// Page Notes have a Note icon at their spot, centred on it. A right-click (macOS)
+/// or long press (iOS) on an empty spot offers "Add Note", and `addNoteInVisiblePage()`
+/// does the same in the middle of the viewport; both report the Place to
+/// `onAddNote`. A click or tap on a page Note's icon reports it (`onPageNoteTap`).
+///
 /// A Jump goes to a Place and remembers where the viewport was, so that Back
 /// can return there. Only the latest Jump is remembered, and only for as long
 /// as the view lives. Following a link to a place in the Document is a Jump;
@@ -67,6 +72,16 @@ final class ReaderPDFView: PDFView {
         }
     }
 
+    /// The page Notes, each with a Note icon above the pages.
+    var pageNotes: [PageNote] = [] {
+        didSet { if pageNotes != oldValue { noteIcons.refresh() } }
+    }
+
+    /// The color of page Notes' icons: the built-in yellow.
+    var pageNoteColor = RGB(1, 0.92, 0.24) {
+        didSet { if pageNoteColor != oldValue { noteIcons.refresh() } }
+    }
+
     /// The Note icons, above the pages. Hidden from hit-testing.
     private lazy var noteIcons = NoteIconsView(reader: self)
 
@@ -83,6 +98,11 @@ final class ReaderPDFView: PDFView {
     /// overlap) at a point, given in the view's coordinates with the origin at
     /// the top-left.
     var onHighlightTap: (Highlight, CGPoint) -> Void = { _, _ in }
+    /// Called when the reader asks for a page Note at a Place.
+    var onAddNote: (Place) -> Void = { _ in }
+    /// Called when the reader clicks or taps the icon of a page Note, with the
+    /// point as for `onHighlightTap`.
+    var onPageNoteTap: (PageNote, CGPoint) -> Void = { _, _ in }
     /// Called when the Back place appears, changes or goes, with its printed
     /// page number; nil when there is none.
     var onBackChange: (String?) -> Void = { _ in }
@@ -258,17 +278,86 @@ final class ReaderPDFView: PDFView {
         highlights.last { noteIconRect(of: $0)?.contains(point) == true }
     }
 
-    /// Reports the Note icon or Highlight at `point` to `onHighlightTap`. Returns
-    /// whether there was one.
+    /// Reports the page Note icon, Highlight Note icon or Highlight at `point`,
+    /// in that order, to `onPageNoteTap` or `onHighlightTap`. Returns whether
+    /// there was one.
     @discardableResult
-    func reportHighlightTap(at point: CGPoint) -> Bool {
-        guard let highlight = noteIcon(at: point) ?? highlight(at: point) else { return false }
-        #if os(iOS)
-            onHighlightTap(highlight, point)
-        #else
-            onHighlightTap(highlight, CGPoint(x: point.x, y: bounds.height - point.y))
-        #endif
+    func reportMarkupTap(at point: CGPoint) -> Bool {
+        if let note = pageNote(at: point) {
+            onPageNoteTap(note, fromTopLeft(point))
+        } else if let highlight = noteIcon(at: point) ?? highlight(at: point) {
+            onHighlightTap(highlight, fromTopLeft(point))
+        } else {
+            return false
+        }
         return true
+    }
+
+    /// `point`, given in the view's coordinates, with the origin at the top-left.
+    func fromTopLeft(_ point: CGPoint) -> CGPoint {
+        #if os(iOS)
+            point
+        #else
+            CGPoint(x: point.x, y: bounds.height - point.y)
+        #endif
+    }
+
+    // MARK: Page Notes
+
+    /// Where the Note icon of `note` is, in the view's coordinates: centred on
+    /// its spot, at the same size on screen at any zoom.
+    func noteIconRect(of note: PageNote) -> CGRect? {
+        guard let page = document?.page(at: note.place.pageIndex) else { return nil }
+        let spot = convert(note.place.point, from: page)
+        let side = NoteIconsView.size
+        return CGRect(x: spot.x - side / 2, y: spot.y - side / 2, width: side, height: side)
+    }
+
+    /// The page Note whose icon is at `point`, in the view's coordinates: the
+    /// newest where several overlap. Nil where there is none.
+    func pageNote(at point: CGPoint) -> PageNote? {
+        pageNotes.last { noteIconRect(of: $0)?.contains(point) == true }
+    }
+
+    /// Every Note icon to draw, in the view's coordinates, in its color.
+    var visibleNoteIcons: [(rect: CGRect, color: RGB)] {
+        highlights.compactMap { h in noteIconRect(of: h).map { ($0, h.color) } }
+            + pageNotes.compactMap { n in noteIconRect(of: n).map { ($0, pageNoteColor) } }
+    }
+
+    /// The Place at `point`, in the view's coordinates. Nil off the pages.
+    func place(at point: CGPoint) -> Place? {
+        guard let document, let page = page(for: point, nearest: false) else { return nil }
+        return Place(pageIndex: document.index(for: page), point: convert(point, to: page))
+    }
+
+    /// Whether nothing is at `point`, in the view's coordinates, but page: no
+    /// text, link, Highlight or Note icon.
+    func isEmptySpot(at point: CGPoint) -> Bool {
+        guard let page = page(for: point, nearest: false), !hasLink(at: point),
+            pageNote(at: point) == nil, noteIcon(at: point) == nil, highlight(at: point) == nil
+        else { return false }
+        return page.characterIndex(at: convert(point, to: page)) == NSNotFound
+    }
+
+    /// Reports the Place at `point`, in the view's coordinates, to `onAddNote`.
+    /// Does nothing off the pages.
+    func addNote(at point: CGPoint) {
+        if let place = place(at: point) { onAddNote(place) }
+    }
+
+    /// Reports the middle of the viewport, on its page, to `onAddNote`: the page
+    /// there, or the nearest, and a spot not outside it.
+    func addNoteInVisiblePage() {
+        let middle = CGPoint(x: viewportRect.midX, y: viewportRect.midY)
+        guard let document, let page = page(for: middle, nearest: true) else { return }
+        let bounds = page.bounds(for: .cropBox)
+        let spot = convert(middle, to: page)
+        onAddNote(
+            Place(
+                pageIndex: document.index(for: page),
+                point: CGPoint(
+                    x: min(max(spot.x, bounds.minX), bounds.maxX), y: min(max(spot.y, bounds.minY), bounds.maxY))))
     }
 
     // MARK: Links
@@ -348,6 +437,10 @@ final class ReaderPDFView: PDFView {
 
         private var scrollObservation: NSKeyValueObservation?
 
+        /// The edit menu offering "Add Note", and the spot it was asked at.
+        private lazy var addNoteMenu = UIEditMenuInteraction(delegate: self)
+        fileprivate var notePoint: CGPoint?
+
         private func observeScrolling() {
             scrollObservation = subviews.lazy.compactMap { $0 as? UIScrollView }.first?
                 .observe(\.contentOffset) { [weak self] _, _ in
@@ -422,6 +515,10 @@ final class ReaderPDFView: PDFView {
             singleTapFilter = filter
             singleTap.delegate = filter
             addGestureRecognizer(singleTap)
+            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(didLongPress))
+            longPress.delegate = filter
+            addGestureRecognizer(longPress)
+            addInteraction(addNoteMenu)
             NotificationCenter.default.addObserver(
                 self, selector: #selector(selectionDidChange), name: .PDFViewSelectionChanged, object: self)
             NotificationCenter.default.addObserver(
@@ -457,8 +554,16 @@ final class ReaderPDFView: PDFView {
         }
 
         @objc private func didSingleTap(_ tap: UITapGestureRecognizer) {
-            if reportHighlightTap(at: tap.location(in: self)) { return }
+            if reportMarkupTap(at: tap.location(in: self)) { return }
             onSingleTap()
+        }
+
+        /// Offers "Add Note" at an empty spot; elsewhere PDFKit's own long press selects.
+        @objc private func didLongPress(_ press: UILongPressGestureRecognizer) {
+            let point = press.location(in: self)
+            guard press.state == .began, isEmptySpot(at: point) else { return }
+            notePoint = point
+            addNoteMenu.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: point))
         }
 
         @objc private func didDoubleTap(_ tap: UITapGestureRecognizer) {
@@ -490,20 +595,35 @@ final class ReaderPDFView: PDFView {
             onScroll()
         }
 
-        /// Adds "Highlight" to the context menu of a selection.
+        /// Adds "Highlight" to the context menu of a selection, and "Add Note" to
+        /// that of an empty spot.
         override func menu(for event: NSEvent) -> NSMenu? {
-            let menu = super.menu(for: event)
-            guard let menu, selectionAnchor != nil,
-                !menu.items.contains(where: { $0.action == #selector(highlightFromMenu) })
-            else { return menu }
-            let item = NSMenuItem(title: "Highlight", action: #selector(highlightFromMenu), keyEquivalent: "")
-            item.target = self
-            menu.insertItem(item, at: 0)
-            menu.insertItem(.separator(), at: 1)
+            guard let menu = super.menu(for: event) else { return nil }
+            let point = convert(event.locationInWindow, from: nil)
+            if selectionAnchor != nil {
+                insert("Highlight", #selector(highlightFromMenu), into: menu)
+            } else if isEmptySpot(at: point) {
+                insert("Add Note", #selector(addNoteFromMenu), into: menu).representedObject = NSValue(point: point)
+            }
             return menu
         }
 
+        /// The item for `action` at the top of `menu`, new unless it already has one.
+        @discardableResult
+        private func insert(_ title: String, _ action: Selector, into menu: NSMenu) -> NSMenuItem {
+            if let existing = menu.items.first(where: { $0.action == action }) { return existing }
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            menu.insertItem(item, at: 0)
+            menu.insertItem(.separator(), at: 1)
+            return item
+        }
+
         @objc private func highlightFromMenu(_ sender: Any?) { highlightSelection() }
+
+        @objc private func addNoteFromMenu(_ sender: NSMenuItem) {
+            if let point = (sender.representedObject as? NSValue)?.pointValue { addNote(at: point) }
+        }
 
         /// Lets our click recognizers work alongside PDFKit's own mouse handling
         /// (selecting, links), and makes a single click wait for a possible double click.
@@ -553,7 +673,7 @@ final class ReaderPDFView: PDFView {
         required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
         @objc private func didClick(_ click: NSClickGestureRecognizer) {
-            _ = reportHighlightTap(at: click.location(in: self))
+            _ = reportMarkupTap(at: click.location(in: self))
         }
 
         override func setFrameSize(_ newSize: NSSize) {
@@ -578,3 +698,18 @@ extension Highlight {
 
     fileprivate var look: Look { Look(id: id, anchor: anchor, color: color) }
 }
+
+#if os(iOS)
+    extension ReaderPDFView: @MainActor UIEditMenuInteractionDelegate {
+        func editMenuInteraction(
+            _ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration,
+            suggestedActions: [UIMenuElement]
+        ) -> UIMenu? {
+            guard let point = notePoint else { return nil }
+            let add = UIAction(title: "Add Note", image: UIImage(systemName: "note.text.badge.plus")) { [weak self] _ in
+                self?.addNote(at: point)
+            }
+            return UIMenu(children: [add])
+        }
+    }
+#endif

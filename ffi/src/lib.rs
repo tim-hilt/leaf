@@ -121,10 +121,23 @@ pub struct Highlight {
     pub note: Option<String>,
 }
 
+/// See `leafpdf_core::markup::PageNote`. `created` is milliseconds since the
+/// Unix epoch.
+#[derive(uniffi::Record)]
+pub struct PageNote {
+    pub id: String,
+    pub page_index: u32,
+    pub x: f64,
+    pub y: f64,
+    pub created: u64,
+    pub text: String,
+}
+
 /// See `leafpdf_core::markup::Markup`.
 #[derive(uniffi::Record)]
 pub struct Markup {
     pub highlights: Vec<Highlight>,
+    pub page_notes: Vec<PageNote>,
 }
 
 impl From<leafpdf_core::markup::Rect> for Rect {
@@ -200,10 +213,24 @@ impl From<leafpdf_core::markup::Highlight> for Highlight {
     }
 }
 
+impl From<leafpdf_core::markup::PageNote> for PageNote {
+    fn from(n: leafpdf_core::markup::PageNote) -> Self {
+        Self {
+            id: n.id,
+            page_index: n.page_index,
+            x: n.x,
+            y: n.y,
+            created: n.created,
+            text: n.text,
+        }
+    }
+}
+
 impl From<leafpdf_core::markup::Markup> for Markup {
     fn from(m: leafpdf_core::markup::Markup) -> Self {
         Self {
             highlights: m.highlights.into_iter().map(Into::into).collect(),
+            page_notes: m.page_notes.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -321,6 +348,30 @@ impl Library {
 
     pub fn remove_highlight(&self, id: String, highlight: String) -> Result<(), LibraryError> {
         Ok(self.0.remove_highlight(&id, &highlight)?)
+    }
+
+    pub fn add_page_note(
+        &self,
+        id: String,
+        page_index: u32,
+        x: f64,
+        y: f64,
+        created: u64,
+    ) -> Result<PageNote, LibraryError> {
+        Ok(self.0.add_page_note(&id, page_index, x, y, created)?.into())
+    }
+
+    pub fn set_page_note_text(
+        &self,
+        id: String,
+        note: String,
+        text: String,
+    ) -> Result<(), LibraryError> {
+        Ok(self.0.set_page_note_text(&id, &note, &text)?)
+    }
+
+    pub fn remove_page_note(&self, id: String, note: String) -> Result<(), LibraryError> {
+        Ok(self.0.remove_page_note(&id, &note)?)
     }
 
     pub fn highlight_colors(&self) -> Vec<HighlightColor> {

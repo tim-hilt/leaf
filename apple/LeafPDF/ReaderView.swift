@@ -19,6 +19,11 @@ import SwiftUI
 /// Clicking or tapping a Highlight, or its Note icon, opens a popover (a sheet
 /// on iPhone) to recolor it, write its Note or remove it, all stored at once.
 ///
+/// A Note can also sit on an empty spot of a page: "Add Note" in the context menu
+/// (macOS) or after a long press (iOS), or the toolbar's "Add Note", which puts it
+/// in the middle of the viewport. Its popover opens in editing and also has "Remove
+/// Note"; emptying the Note removes it. Page Notes can't be moved.
+///
 /// Opens at the Document's Reading Progress at fit-to-width, or at page 1, and
 /// saves it (see `ReadingProgressSaver`) when opened, after scrolling stops,
 /// when it disappears and when the scene goes to the background.
@@ -55,7 +60,8 @@ struct ReaderView: View {
     @State private var results = SearchResults()
     @State private var highlights: [Highlight] = []
     @State private var isShowingResults = false
-    @State private var openHighlight: OpenHighlight?
+    @State private var pageNotes: [PageNote] = []
+    @State private var openMarkup: OpenMarkup?
     /// Printed page number of the Back place; nil when there is none.
     @State private var backPageNumber: String?
     #if os(iOS)
@@ -79,6 +85,7 @@ struct ReaderView: View {
             saver = ReadingProgressSaver(library: library, document: document, handle: handle)
             let opened = StyledDocument(url: document.file)
             highlights = await library.highlights(of: document)
+            pageNotes = await library.pageNotes(of: document)
             contents = opened.map(TableOfContents.init)
             pdf = opened
         }
@@ -103,6 +110,9 @@ struct ReaderView: View {
                         #if os(iOS)
                             .keyboardShortcut("f", modifiers: .command)
                         #endif
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Add Note", systemImage: "note.text.badge.plus") { handle.view?.addNoteInVisiblePage() }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Page Style", systemImage: "gearshape") { isShowingPageStyle = true }
@@ -147,8 +157,10 @@ struct ReaderView: View {
             if let pdf {
                 PDFKitView(
                     document: pdf, appearance: settings.pageAppearance(systemScheme: colorScheme), highlights: highlights,
+                    pageNotes: pageNotes, pageNoteColor: library.highlightColors[0].color,
                     handle: handle, results: results, place: document.place,
-                    onHighlight: highlight, onHighlightTap: { openHighlight = OpenHighlight(id: $0.id, point: $1) },
+                    onHighlight: highlight, onHighlightTap: { openMarkup = OpenMarkup(target: .highlight($0.id), point: $1) },
+                    onAddNote: addPageNote, onPageNoteTap: { openMarkup = OpenMarkup(target: .pageNote($0.id), point: $1) },
                     onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
                     onBackChange: { backPageNumber = $0 }, onShowResults: { isShowingResults = true })
             } else {
@@ -163,12 +175,27 @@ struct ReaderView: View {
             }
         }
         .animation(.default, value: backPageNumber)
-        .popover(item: $openHighlight, attachmentAnchor: .rect(.rect(CGRect(origin: openHighlight?.point ?? .zero, size: CGSize(width: 1, height: 1))))) { open in
-            if let highlight = highlights.first(where: { $0.id == open.id }) {
+        .popover(item: $openMarkup, attachmentAnchor: .rect(.rect(CGRect(origin: openMarkup?.point ?? .zero, size: CGSize(width: 1, height: 1))))) { open in
+            popover(for: open)
+        }
+    }
+
+    /// The popover of the Highlight or page Note `open`; nothing if it is gone.
+    @ViewBuilder private func popover(for open: OpenMarkup) -> some View {
+        switch open.target {
+        case .highlight(let id):
+            if let highlight = highlights.first(where: { $0.id == id }) {
                 HighlightPopover(
                     colors: library.highlightColors, color: highlight.color, note: highlight.note,
                     onColor: { recolor(highlight, to: $0) }, onNote: { setNote($0, of: highlight) },
                     onRemove: { remove(highlight) })
+                    .presentationCompactAdaptation(.sheet)
+            }
+        case .pageNote(let id):
+            if let note = pageNotes.first(where: { $0.id == id }) {
+                PageNotePopover(
+                    text: note.text, startsEditing: open.startsEditing, onText: { setText($0, of: note) },
+                    onRemove: { remove(note) })
                     .presentationCompactAdaptation(.sheet)
             }
         }
@@ -218,16 +245,53 @@ struct ReaderView: View {
 
     /// Sets the Note of `highlight`, empty to remove it; it shows at once, and the Library stores it.
     private func setNote(_ note: String, of highlight: Highlight) {
-        guard let index = highlights.firstIndex(where: { $0.id == highlight.id }) else { return }
+        guard let index = highlights.firstIndex(where: { $0.id == highlight.id }),
+            (highlights[index].note ?? "") != note
+        else { return }
         highlights[index].note = note.isEmpty ? nil : note
         Task { await library.setNote(note, of: highlight, in: document) }
     }
 
     /// Removes `highlight` and closes its popover; the Library stores the removal.
     private func remove(_ highlight: Highlight) {
-        openHighlight = nil
+        openMarkup = nil
         highlights.removeAll { $0.id == highlight.id }
         Task { await library.removeHighlight(highlight, from: document) }
+    }
+
+    /// Adds a page Note at `place`, empty, and opens its popover in editing; it
+    /// shows once the Library has stored it.
+    private func addPageNote(at place: Place) {
+        Task {
+            guard let added = await library.addPageNote(at: place, to: document), let view = handle.view,
+                let icon = view.noteIconRect(of: added)
+            else { return }
+            pageNotes.append(added)
+            let point = view.fromTopLeft(CGPoint(x: icon.midX, y: icon.midY))
+            openMarkup = OpenMarkup(target: .pageNote(added.id), point: point, startsEditing: true)
+        }
+    }
+
+    /// Sets the text of `note`; empty removes it and closes its popover. It shows
+    /// at once, and the Library stores it.
+    private func setText(_ text: String, of note: PageNote) {
+        guard let index = pageNotes.firstIndex(where: { $0.id == note.id }) else { return }
+        if text.isEmpty {
+            openMarkup = nil
+            pageNotes.remove(at: index)
+        } else if pageNotes[index].text != text {
+            pageNotes[index].text = text
+        } else {
+            return
+        }
+        Task { await library.setText(text, of: note, in: document) }
+    }
+
+    /// Removes the page Note `note` and closes its popover; the Library stores the removal.
+    private func remove(_ note: PageNote) {
+        openMarkup = nil
+        pageNotes.removeAll { $0.id == note.id }
+        Task { await library.removePageNote(note, from: document) }
     }
 
     private func toggleImmersive() {
@@ -237,11 +301,20 @@ struct ReaderView: View {
     }
 }
 
-/// The Highlight whose popover is open, and the spot it opened from, in the
-/// pages' coordinates with the origin at the top-left.
-private struct OpenHighlight: Identifiable {
-    let id: String
+/// The Highlight or page Note whose popover is open, and the spot it opened
+/// from, in the pages' coordinates with the origin at the top-left. A new page
+/// Note opens in editing.
+private struct OpenMarkup: Identifiable {
+    enum Target: Hashable {
+        case highlight(String)
+        case pageNote(String)
+    }
+
+    let target: Target
     let point: CGPoint
+    var startsEditing = false
+
+    var id: Target { target }
 }
 
 /// The floating "Back to p. 42" button, on a native material.
@@ -281,11 +354,15 @@ private struct PDFKitView {
     let document: StyledDocument
     let appearance: PageAppearance
     let highlights: [Highlight]
+    let pageNotes: [PageNote]
+    let pageNoteColor: RGB
     let handle: ReaderHandle
     let results: SearchResults
     let place: Place?
     let onHighlight: (HighlightAnchor) -> Void
     let onHighlightTap: (Highlight, CGPoint) -> Void
+    let onAddNote: (Place) -> Void
+    let onPageNoteTap: (PageNote, CGPoint) -> Void
     let onSingleTap: () -> Void
     let onOpen: () -> Void
     let onScroll: () -> Void
@@ -303,8 +380,12 @@ private struct PDFKitView {
         view.document = document
         view.pageAppearance = appearance
         view.highlights = highlights
+        view.pageNotes = pageNotes
+        view.pageNoteColor = pageNoteColor
         view.onHighlight = onHighlight
         view.onHighlightTap = onHighlightTap
+        view.onAddNote = onAddNote
+        view.onPageNoteTap = onPageNoteTap
         view.onSingleTap = onSingleTap
         view.onOpen = onOpen
         view.onScroll = onScroll
@@ -322,6 +403,8 @@ extension PDFKitView {
         guard let reader = view as? ReaderPDFView else { return }
         reader.pageAppearance = appearance
         reader.highlights = highlights
+        reader.pageNotes = pageNotes
+        reader.pageNoteColor = pageNoteColor
     }
 }
 

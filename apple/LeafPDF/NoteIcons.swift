@@ -6,7 +6,7 @@ import PDFKit
     typealias PlatformView = NSView
 #endif
 
-/// Draws the Note icons of a `ReaderPDFView`'s Highlights above its pages, never
+/// Draws the Note icons of a `ReaderPDFView`'s Highlights and page Notes above its pages, never
 /// reversed on Dark Pages. It takes no touches or clicks: the view reports them.
 final class NoteIconsView: PlatformView {
     /// Side of an icon on screen, at any zoom.
@@ -42,9 +42,7 @@ final class NoteIconsView: PlatformView {
 
     private func paint(in context: CGContext, dirty: CGRect) {
         guard let reader else { return }
-        for highlight in reader.highlights {
-            guard let rect = reader.noteIconRect(of: highlight), rect.intersects(dirty) else { continue }
-            let color = highlight.color
+        for (rect, color) in reader.visibleNoteIcons where rect.intersects(dirty) {
             let shape = CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil)
             context.setFillColor(CGColor(srgbRed: color.r, green: color.g, blue: color.b, alpha: 1))
             context.addPath(shape)
