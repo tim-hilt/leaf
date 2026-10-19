@@ -131,3 +131,23 @@ _Avoid_: User color
 **Default Highlight Color**:
 The Highlight Color every new Highlight gets. Yellow unless the user picks another.
 _Avoid_: Last used color, current color
+
+**Device**:
+One installation of LeafPDF.
+_Avoid_: Client, installation
+
+**Cloud Backing**:
+Keeping the Library in the user's cloud storage so all their Devices share it.
+_Avoid_: Cloud sync, backup
+
+**Cloud Provider**:
+The service that holds the Library for Cloud Backing, such as iCloud or Google Drive.
+_Avoid_: Backend, storage, service
+
+**Connect**:
+Starting Cloud Backing with a Cloud Provider. Its opposite is **Disconnect**, which stops it and keeps everything on the Device.
+_Avoid_: Sign in, link, log out
+
+**Sync**:
+Exchanging changes to the Library, Reading Progress, Markup and Highlight Colors with the Cloud Provider.
+_Avoid_: Backup, upload

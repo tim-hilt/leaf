@@ -63,18 +63,25 @@ Markup is never written into the File: it lives in the Document's synced state a
 - Annotations already in the File show as they are, read-only. Covers show no Markup.
 - Not included: other markup styles, undo, a Markup list, export, hiding Markup.
 
-## 8. Cloud Backing
+## 8. Cloud Backing (WebDAV)
 
-Only one cloud provider can be connected at a time. After successfully connecting a provider, the application searches for a directory with a special name in the cloud storage. This directory contains files, that are already synced. They are downloaded immediately along with their reading progress and markup. An updating progress bar shows the syncing progress. After the initial syncing, only markup and reading progress are synced.
+Cloud Backing is off until the user Connects a Cloud Provider in Settings; only one is Connected at a time. The first Cloud Provider is WebDAV, for self-hosting (e.g. `rclone serve webdav` on a Raspberry Pi behind a Cloudflare Tunnel, see `docs/self-hosting.md`): Server URL (https only), username and password. LeafPDF keeps everything in a `LeafPDF` folder inside that URL.
 
-Importing a file syncs it to the cloud immediately.
-
-Providers, in order:
-
-1. iCloud (only for iOS, iPadOS, MacOS): no OAuth, and Apple is the only client today
-2. Google Drive
-3. OneDrive: reuses the HTTP + OAuth groundwork from Google Drive
+- Connecting merges the Device's Library with the one in the cloud; nothing is lost. Files download right away, most recently read first; a Document appears once its File is there.
+- The Library, Reading Progress, Markup and Highlight Colors keep Syncing: a few seconds after a change, on launch and foreground, and every 10 seconds while in the foreground. Importing uploads the File.
+- A Remove wins over concurrent edits and frees the cloud storage. Importing the File again starts fresh.
+- An open Reader keeps its place; new Markup shows up live. A Document Removed elsewhere sends its Reader to the Gallery.
+- While Files transfer, the Gallery shows "Syncing 12 of 120 Documents". Settings shows the status; a blocked Sync (wrong password, LeafPDF needs an update) adds a warning icon to the Gallery.
+- Disconnect keeps everything and forgets the credentials. Switching Cloud Provider Disconnects first, after a confirmation.
 
 ## 9. File Import (external)
 
 Files can also be imported from outside via the "Share" function in mobile clients or the context menu + "Open With" menu entry on desktop clients. Reuses the in-app import pipeline; needs extra app extension targets.
+
+## 10. More Cloud Providers
+
+Same Cloud Backing as section 8, other storage, in order:
+
+1. Folder: a folder picked in Files or Finder, e.g. in iCloud Drive (no paid Apple Developer membership needed)
+2. Google Drive
+3. OneDrive: reuses the HTTP + OAuth groundwork from Google Drive

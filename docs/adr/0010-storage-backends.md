@@ -1,12 +1,11 @@
-# Cloud providers sit behind one storage interface in the core
+# Cloud Providers sit behind one storage interface in the core
 
-The core defines a small storage interface (put, get, list, changes since) and owns all sync logic. Google Drive and OneDrive are implemented in Rust over HTTP, so every platform gets them. iCloud is implemented in Swift through a UniFFI callback interface because CloudKit is only usable from Apple platforms. Sign-in (OAuth) runs natively on each platform, which then passes tokens to the core. Only one provider is active at a time; mirroring across providers would multiply sync edge cases for little benefit.
+The core defines a small storage interface (put, get, list, delete) and owns all sync logic. Every Cloud Provider is implemented in Rust in the core, so every platform gets them: WebDAV, Folder, Google Drive and OneDrive (ADR-0017). Sign-in (OAuth) runs natively on each platform, which then passes tokens to the core. Only one Cloud Provider is Connected at a time; mirroring across providers would multiply sync edge cases for little benefit.
 
 ## Considered Options
 
-- **iCloud Drive instead of CloudKit**: the OS decides which files to download, which breaks "download only what is missing" (ADR-0007).
+- **CloudKit through a Swift callback interface**: needs a paid Apple Developer membership (ADR-0017).
 
 ## Consequences
 
-- CloudKit has no "directory with a special name" (`docs/features.md`). The app's private CloudKit container fills that role.
-- iCloud will not be available on Linux, Android or Windows.
+- iCloud is reachable only as a Folder the user picks in iCloud Drive. The OS decides when its files download, so the Folder provider must request downloads itself.
