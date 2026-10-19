@@ -20,6 +20,8 @@ struct Highlight: Identifiable, Equatable {
     let id: String
     let anchor: HighlightAnchor
     var color: RGB
+    /// What the reader wrote about the passage; nil if nothing, never empty.
+    var note: String?
 }
 
 /// A color to highlight in: a built-in one, or a Custom Color of the user.

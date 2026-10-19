@@ -298,6 +298,15 @@ final class LibraryModel {
         await inStateOrder { try? core.setHighlightColor(id: id, highlight: highlightID, color: rgb) }
     }
 
+    /// Sets the Note of `highlight` of `document` to `note`; empty removes it. The
+    /// core writes off the main thread, in order, and this returns when it has.
+    /// Does nothing for a Document that was Removed.
+    func setNote(_ note: String, of highlight: Highlight, in document: LibraryDocument) async {
+        guard documents.contains(where: { $0.id == document.id }) else { return }
+        let core = core, id = document.id, highlightID = highlight.id
+        await inStateOrder { try? core.setHighlightNote(id: id, highlight: highlightID, note: note) }
+    }
+
     /// Removes `highlight` from `document`. The core writes off the main
     /// thread, in order, and this returns when it has. Does nothing for a
     /// Document that was Removed.
@@ -421,7 +430,7 @@ extension Highlight {
                         rects: page.rects.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) })
                 },
                 quotedText: stored.quotedText),
-            color: RGB(stored.color))
+            color: RGB(stored.color), note: stored.note)
     }
 }
 

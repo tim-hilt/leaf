@@ -118,6 +118,7 @@ pub struct Highlight {
     pub quoted_text: String,
     pub color: Rgb,
     pub created: u64,
+    pub note: Option<String>,
 }
 
 /// See `leafpdf_core::markup::Markup`.
@@ -194,6 +195,7 @@ impl From<leafpdf_core::markup::Highlight> for Highlight {
             quoted_text: h.quoted_text,
             color: h.color.into(),
             created: h.created,
+            note: h.note,
         }
     }
 }
@@ -306,6 +308,15 @@ impl Library {
         color: Rgb,
     ) -> Result<(), LibraryError> {
         Ok(self.0.set_highlight_color(&id, &highlight, color.into())?)
+    }
+
+    pub fn set_highlight_note(
+        &self,
+        id: String,
+        highlight: String,
+        note: String,
+    ) -> Result<(), LibraryError> {
+        Ok(self.0.set_highlight_note(&id, &highlight, &note)?)
     }
 
     pub fn remove_highlight(&self, id: String, highlight: String) -> Result<(), LibraryError> {

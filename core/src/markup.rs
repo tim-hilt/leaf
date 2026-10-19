@@ -4,7 +4,10 @@
 //! on several devices never conflict. Each Highlight is a map of separately
 //! written fields: `anchor` (a list of `{page_index, rects}`, where `rects`
 //! is a flat list of `x, y, width, height`), `quoted_text`, `color` (sRGB as
-//! `0xRRGGBB`) and `created`.
+//! `0xRRGGBB`) and `created`, and, only while it has a Note, `note`: Automerge
+//! text, so concurrent typing merges. A Note is updated by diffing, and emptying
+//! it deletes it. Devices that first write a Note to one Highlight
+//! concurrently each create their own text, and Automerge keeps one of them.
 //!
 //! Devices that first add a Highlight concurrently each create their own
 //! `highlights` map, and Automerge keeps one of them as the winner. Reading
@@ -103,6 +106,8 @@ pub struct Highlight {
     pub color: Rgb,
     /// When it was added, in milliseconds since the Unix epoch.
     pub created: u64,
+    /// What the user wrote about the passage. Never empty.
+    pub note: Option<String>,
 }
 
 /// Everything the user added on top of a Document.
@@ -142,6 +147,13 @@ pub(crate) fn set_color(existing: Option<&[u8]>, id: &str, color: Rgb) -> Vec<u8
     state::update(existing, |doc| put_color(doc, id, color))
 }
 
+/// The Automerge document `existing` with the Note of Highlight `id` set to
+/// `text`, compacted. Empty `text` removes the Note. Unknown Highlights are
+/// left alone.
+pub(crate) fn set_note(existing: Option<&[u8]>, id: &str, text: &str) -> Vec<u8> {
+    state::update(existing, |doc| put_note(doc, id, text))
+}
+
 /// The Automerge document `existing` without Highlight `id`, compacted. A
 /// removal wins over a concurrent change of the same Highlight.
 pub(crate) fn remove(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
@@ -163,6 +175,24 @@ fn put_color(doc: &mut AutoCommit, id: &str, color: Rgb) {
         doc.put(&entry, "color", ScalarValue::Uint(color.packed()))
             .expect("a map accepts new keys");
     }
+}
+
+fn put_note(doc: &mut AutoCommit, id: &str, text: &str) {
+    let Some((_, entry)) = find(doc, id) else {
+        return;
+    };
+    if text.is_empty() {
+        doc.delete(&entry, "note").expect("a map accepts deletions");
+        return;
+    }
+    let note = match doc.get(&entry, "note").expect("a map has readable keys") {
+        Some((Value::Object(ObjType::Text), note)) => note,
+        _ => doc
+            .put_object(&entry, "note", ObjType::Text)
+            .expect("a map accepts new keys"),
+    };
+    doc.update_text(&note, text)
+        .expect("a text accepts new content");
 }
 
 fn delete_highlight(doc: &mut AutoCommit, id: &str) {
@@ -191,8 +221,16 @@ fn read_highlight(doc: &AutoCommit, map: &ObjId, id: String) -> Option<Highlight
         quoted_text: field("quoted_text")?.into_string().ok()?,
         color: Rgb::unpacked(field("color")?.as_u64()?)?,
         created: field("created")?.as_u64()?,
+        note: read_note(doc, &entry),
         id,
     })
+}
+
+fn read_note(doc: &AutoCommit, entry: &ObjId) -> Option<String> {
+    let Some((Value::Object(ObjType::Text), note)) = doc.get(entry, "note").ok()? else {
+        return None;
+    };
+    doc.text(&note).ok().filter(|text| !text.is_empty())
 }
 
 fn read_page_rects(doc: &AutoCommit, anchor: &ObjId, index: usize) -> Option<PageRects> {
@@ -289,6 +327,7 @@ mod tests {
                 b: 128,
             },
             created,
+            note: None,
         }
     }
 
@@ -492,6 +531,135 @@ mod tests {
             }],
         };
         let merged = merged_edits(&base, |doc| put_color(doc, "a", GREEN), edit_quote);
+        assert_eq!(merged, [expected.clone(), expected]);
+    }
+
+    // Notes
+
+    fn with_note(mut highlight: Highlight, note: &str) -> Highlight {
+        highlight.note = Some(note.to_owned());
+        highlight
+    }
+
+    #[test]
+    fn a_note_reads_back_as_it_was_set() {
+        let base = add(None, &highlight("a", 5));
+        let noted = read(&set_note(Some(&base), "a", "my thought"));
+        assert_eq!(
+            noted.highlights,
+            vec![with_note(highlight("a", 5), "my thought")]
+        );
+    }
+
+    #[test]
+    fn a_new_note_replaces_the_old_one_and_touches_no_other_highlight() {
+        let base = add(Some(&add(None, &highlight("a", 5))), &highlight("b", 6));
+        let first = set_note(Some(&base), "a", "one");
+        let second = read(&set_note(Some(&first), "a", "two"));
+        assert_eq!(
+            second.highlights,
+            vec![with_note(highlight("a", 5), "two"), highlight("b", 6)]
+        );
+    }
+
+    #[test]
+    fn an_empty_note_removes_the_note() {
+        let base = add(None, &highlight("a", 5));
+        let noted = set_note(Some(&base), "a", "thought");
+        let emptied = read(&set_note(Some(&noted), "a", ""));
+        assert_eq!(emptied.highlights, vec![highlight("a", 5)]);
+    }
+
+    #[test]
+    fn an_empty_note_on_a_highlight_without_one_changes_nothing() {
+        let base = add(None, &highlight("a", 5));
+        let emptied = read(&set_note(Some(&base), "a", ""));
+        assert_eq!(emptied.highlights, vec![highlight("a", 5)]);
+    }
+
+    #[test]
+    fn a_note_can_be_written_again_after_it_was_removed() {
+        let base = add(None, &highlight("a", 5));
+        let emptied = set_note(Some(&set_note(Some(&base), "a", "x")), "a", "");
+        let again = read(&set_note(Some(&emptied), "a", "y"));
+        assert_eq!(again.highlights, vec![with_note(highlight("a", 5), "y")]);
+    }
+
+    #[test]
+    fn a_note_of_an_unknown_highlight_changes_nothing() {
+        let base = add(None, &highlight("a", 5));
+        let noted = read(&set_note(Some(&base), "nope", "x"));
+        assert_eq!(noted.highlights, vec![highlight("a", 5)]);
+    }
+
+    #[test]
+    fn removing_a_highlight_removes_its_note() {
+        let base = set_note(Some(&add(None, &highlight("a", 5))), "a", "x");
+        assert_eq!(read(&remove(Some(&base), "a")), Markup::default());
+    }
+
+    #[test]
+    fn notes_with_any_text_survive() {
+        for text in ["ünï 🌿 \n multi\nline", "  ", "https://example.com/a?b=c"] {
+            let base = add(None, &highlight("a", 5));
+            let noted = read(&set_note(Some(&base), "a", text));
+            assert_eq!(noted.highlights[0].note.as_deref(), Some(text));
+        }
+    }
+
+    #[test]
+    fn concurrent_typing_in_one_note_merges_character_by_character() {
+        let base = set_note(Some(&add(None, &highlight("a", 5))), "a", "the quick fox");
+        let merged = merged_edits(
+            &base,
+            |doc| put_note(doc, "a", "the quick brown fox"),
+            |doc| put_note(doc, "a", "the quick fox jumps"),
+        );
+        let expected = Markup {
+            highlights: vec![with_note(highlight("a", 5), "the quick brown fox jumps")],
+        };
+        assert_eq!(merged, [expected.clone(), expected]);
+    }
+
+    #[test]
+    fn a_note_edit_and_a_color_change_both_survive() {
+        let base = set_note(Some(&add(None, &highlight("a", 5))), "a", "old");
+        let expected = Markup {
+            highlights: vec![Highlight {
+                color: GREEN,
+                ..with_note(highlight("a", 5), "new")
+            }],
+        };
+        let merged = merged_edits(
+            &base,
+            |doc| put_note(doc, "a", "new"),
+            |doc| put_color(doc, "a", GREEN),
+        );
+        assert_eq!(merged, [expected.clone(), expected]);
+    }
+
+    #[test]
+    fn a_removal_wins_over_a_concurrent_note_edit() {
+        let base = set_note(Some(&add(None, &highlight("a", 5))), "a", "old");
+        let merged = merged_edits(
+            &base,
+            |doc| delete_highlight(doc, "a"),
+            |doc| put_note(doc, "a", "new"),
+        );
+        assert_eq!(merged, [Markup::default(), Markup::default()]);
+    }
+
+    #[test]
+    fn emptying_a_note_wins_over_a_concurrent_edit_of_it() {
+        let base = set_note(Some(&add(None, &highlight("a", 5))), "a", "old");
+        let merged = merged_edits(
+            &base,
+            |doc| put_note(doc, "a", ""),
+            |doc| put_note(doc, "a", "older"),
+        );
+        let expected = Markup {
+            highlights: vec![highlight("a", 5)],
+        };
         assert_eq!(merged, [expected.clone(), expected]);
     }
 

@@ -14,7 +14,9 @@ final class ReaderHandle {
 /// and a single tap, unless it is on a link, calls `onSingleTap`. It reports when it has opened and
 /// whenever it scrolls, so the Reader can save Reading Progress.
 ///
-/// Highlights are drawn into the pages (`StyledDocument`). The selection can be
+/// Highlights are drawn into the pages (`StyledDocument`); a Highlight with a
+/// Note has a Note icon at its end, drawn above the pages at a constant size
+/// (`NoteIconsView`), which opens the same popover when clicked or tapped. The selection can be
 /// highlighted (`highlightSelection()`, also from the selection menu), which
 /// reports its anchor, and never changes the File. A single click or tap on a
 /// Highlight reports it (`onHighlightTap`); drags and long presses still select.
@@ -56,11 +58,17 @@ final class ReaderPDFView: PDFView {
     /// keeping the viewport. Set it after the Document, which must be a `StyledDocument`.
     var highlights: [Highlight] = [] {
         didSet {
-            guard highlights != oldValue, let styled = document as? StyledDocument else { return }
+            guard highlights != oldValue else { return }
+            noteIcons.refresh()
+            // Notes aren't drawn into the pages.
+            guard highlights.map(\.look) != oldValue.map(\.look), let styled = document as? StyledDocument else { return }
             styled.highlights = highlights
             layoutDocumentView()
         }
     }
+
+    /// The Note icons, above the pages. Hidden from hit-testing.
+    private lazy var noteIcons = NoteIconsView(reader: self)
 
     /// Called on a single tap on the page (iOS only; macOS clicks never fire it).
     var onSingleTap: () -> Void = {}
@@ -232,9 +240,29 @@ final class ReaderPDFView: PDFView {
         }
     }
 
-    /// Reports the Highlight at `point` to `onHighlightTap`. Returns whether there was one.
-    private func reportHighlightTap(at point: CGPoint) -> Bool {
-        guard let highlight = highlight(at: point) else { return false }
+    /// Where the Note icon of `highlight` is, in the view's coordinates: at the
+    /// end of its last rectangle, vertically centred on it, at the same size on
+    /// screen at any zoom. Nil without a Note.
+    func noteIconRect(of highlight: Highlight) -> CGRect? {
+        guard highlight.note != nil, let last = highlight.anchor.pages.last, let rect = last.rects.last,
+            let page = document?.page(at: last.pageIndex)
+        else { return nil }
+        let end = convert(CGPoint(x: rect.maxX, y: rect.midY), from: page)
+        let side = NoteIconsView.size
+        return CGRect(x: end.x, y: end.y - side / 2, width: side, height: side)
+    }
+
+    /// The Highlight whose Note icon is at `point`, in the view's coordinates:
+    /// the newest where several overlap. Nil where there is none.
+    func noteIcon(at point: CGPoint) -> Highlight? {
+        highlights.last { noteIconRect(of: $0)?.contains(point) == true }
+    }
+
+    /// Reports the Note icon or Highlight at `point` to `onHighlightTap`. Returns
+    /// whether there was one.
+    @discardableResult
+    func reportHighlightTap(at point: CGPoint) -> Bool {
+        guard let highlight = noteIcon(at: point) ?? highlight(at: point) else { return false }
         #if os(iOS)
             onHighlightTap(highlight, point)
         #else
@@ -275,6 +303,8 @@ final class ReaderPDFView: PDFView {
         if minScaleFactor != range.minimum { minScaleFactor = range.minimum }
         if maxScaleFactor != range.maximum { maxScaleFactor = range.maximum }
         zoomRange = range
+        if noteIcons.superview == nil { addSubview(noteIcons) }
+        noteIcons.refresh()
         if !hasOpened {
             hasOpened = true
             if let place = openingPlace {
@@ -321,7 +351,10 @@ final class ReaderPDFView: PDFView {
         private func observeScrolling() {
             scrollObservation = subviews.lazy.compactMap { $0 as? UIScrollView }.first?
                 .observe(\.contentOffset) { [weak self] _, _ in
-                    MainActor.assumeIsolated { self?.onScroll() }
+                    MainActor.assumeIsolated {
+                        self?.noteIcons.refresh()
+                        self?.onScroll()
+                    }
                 }
         }
 
@@ -391,7 +424,11 @@ final class ReaderPDFView: PDFView {
             addGestureRecognizer(singleTap)
             NotificationCenter.default.addObserver(
                 self, selector: #selector(selectionDidChange), name: .PDFViewSelectionChanged, object: self)
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(scaleDidChange), name: .PDFViewScaleChanged, object: self)
         }
+
+        @objc private func scaleDidChange(_ notification: Notification) { noteIcons.refresh() }
 
         @available(*, unavailable)
         required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -448,7 +485,10 @@ final class ReaderPDFView: PDFView {
                 self, selector: #selector(didScroll), name: NSView.boundsDidChangeNotification, object: clip)
         }
 
-        @objc private func didScroll(_ notification: Notification) { onScroll() }
+        @objc private func didScroll(_ notification: Notification) {
+            noteIcons.refresh()
+            onScroll()
+        }
 
         /// Adds "Highlight" to the context menu of a selection.
         override func menu(for event: NSEvent) -> NSMenu? {
@@ -503,7 +543,11 @@ final class ReaderPDFView: PDFView {
             let click = NSClickGestureRecognizer(target: self, action: #selector(didClick))
             click.delegate = filter
             addGestureRecognizer(click)
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(scaleDidChange), name: .PDFViewScaleChanged, object: self)
         }
+
+        @objc private func scaleDidChange(_ notification: Notification) { noteIcons.refresh() }
 
         @available(*, unavailable)
         required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -522,4 +566,15 @@ final class ReaderPDFView: PDFView {
             layoutDidChange()
         }
     #endif
+}
+
+extension Highlight {
+    /// What is drawn into the pages: everything but the Note.
+    fileprivate struct Look: Equatable {
+        let id: String
+        let anchor: HighlightAnchor
+        let color: RGB
+    }
+
+    fileprivate var look: Look { Look(id: id, anchor: anchor, color: color) }
 }

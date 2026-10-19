@@ -632,6 +632,21 @@ import Testing
         #expect(await (try openLibrary()).highlights(of: document) == [recolored])
     }
 
+    @Test func aHighlightsNoteSurvivesReopeningTheLibraryAndEmptyingItRemovesIt() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        let added = try #require(await library.addHighlight(anchor, to: document))
+
+        await library.setNote("my thought", of: added, in: document)
+
+        var noted = added
+        noted.note = "my thought"
+        #expect(await (try openLibrary()).highlights(of: document) == [noted])
+
+        await library.setNote("", of: added, in: document)
+        #expect(await (try openLibrary()).highlights(of: document) == [added])
+    }
+
     @Test func aRemovedHighlightIsGoneAfterReopeningTheLibrary() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)

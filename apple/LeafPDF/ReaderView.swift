@@ -16,8 +16,8 @@ import SwiftUI
 /// Selecting text and choosing "Highlight" in the selection menu (⌃⌘H on macOS)
 /// adds a Highlight in the default color, stored in the Library, never in the
 /// File. Highlights are drawn into the pages, so Dark Pages reverse them.
-/// Clicking or tapping a Highlight opens a popover (a sheet on iPhone) to
-/// recolor or remove it, both stored at once.
+/// Clicking or tapping a Highlight, or its Note icon, opens a popover (a sheet
+/// on iPhone) to recolor it, write its Note or remove it, all stored at once.
 ///
 /// Opens at the Document's Reading Progress at fit-to-width, or at page 1, and
 /// saves it (see `ReadingProgressSaver`) when opened, after scrolling stops,
@@ -166,7 +166,8 @@ struct ReaderView: View {
         .popover(item: $openHighlight, attachmentAnchor: .rect(.rect(CGRect(origin: openHighlight?.point ?? .zero, size: CGSize(width: 1, height: 1))))) { open in
             if let highlight = highlights.first(where: { $0.id == open.id }) {
                 HighlightPopover(
-                    colors: library.highlightColors, color: highlight.color, onColor: { recolor(highlight, to: $0) },
+                    colors: library.highlightColors, color: highlight.color, note: highlight.note,
+                    onColor: { recolor(highlight, to: $0) }, onNote: { setNote($0, of: highlight) },
                     onRemove: { remove(highlight) })
                     .presentationCompactAdaptation(.sheet)
             }
@@ -213,6 +214,13 @@ struct ReaderView: View {
         guard let index = highlights.firstIndex(where: { $0.id == highlight.id }) else { return }
         highlights[index].color = color
         Task { await library.setHighlightColor(color, of: highlight, in: document) }
+    }
+
+    /// Sets the Note of `highlight`, empty to remove it; it shows at once, and the Library stores it.
+    private func setNote(_ note: String, of highlight: Highlight) {
+        guard let index = highlights.firstIndex(where: { $0.id == highlight.id }) else { return }
+        highlights[index].note = note.isEmpty ? nil : note
+        Task { await library.setNote(note, of: highlight, in: document) }
     }
 
     /// Removes `highlight` and closes its popover; the Library stores the removal.

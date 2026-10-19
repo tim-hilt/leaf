@@ -176,6 +176,7 @@ impl Library {
             quoted_text: quoted_text.to_owned(),
             color,
             created,
+            note: None,
         };
         self.update_state(id, |existing| markup::add(existing, &highlight))?;
         Ok(highlight)
@@ -186,6 +187,14 @@ impl Library {
     /// Library; a Highlight removed on another device stays removed.
     pub fn set_highlight_color(&self, id: &str, highlight: &str, color: Rgb) -> io::Result<()> {
         self.update_state(id, |existing| markup::set_color(existing, highlight, color))
+    }
+
+    /// Sets the Note of Highlight `highlight` of Document `id` to `note`, an
+    /// edit of the text that merges with concurrent typing. Empty `note`
+    /// removes the Note. Does nothing for a Highlight that isn't there, or a
+    /// Document that isn't in the Library.
+    pub fn set_highlight_note(&self, id: &str, highlight: &str, note: &str) -> io::Result<()> {
+        self.update_state(id, |existing| markup::set_note(existing, highlight, note))
     }
 
     /// Removes Highlight `highlight` from Document `id`, without a trace. Does
@@ -1034,6 +1043,45 @@ mod tests {
     }
 
     #[test]
+    fn a_note_survives_reopening_the_library_and_emptying_it_removes_it() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let added = highlight(&library, &document.id, "first", 1_000);
+
+        library
+            .set_highlight_note(&document.id, &added.id, "my thought")
+            .unwrap();
+
+        let reopened = scratch.library();
+        let markup = reopened.markup(&document.id).unwrap();
+        assert_eq!(markup.highlights[0].note.as_deref(), Some("my thought"));
+
+        reopened
+            .set_highlight_note(&document.id, &added.id, "")
+            .unwrap();
+        assert_eq!(
+            scratch.library().markup(&document.id).unwrap().highlights,
+            vec![added]
+        );
+    }
+
+    #[test]
+    fn removing_a_highlight_removes_its_note() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let added = highlight(&library, &document.id, "first", 1_000);
+        library
+            .set_highlight_note(&document.id, &added.id, "x")
+            .unwrap();
+
+        library.remove_highlight(&document.id, &added.id).unwrap();
+
+        assert_eq!(library.markup(&document.id).unwrap(), Markup::default());
+    }
+
+    #[test]
     fn a_removed_highlight_is_gone_after_reopening_the_library() {
         let scratch = Scratch::new();
         let library = scratch.library();
@@ -1060,6 +1108,9 @@ mod tests {
         library
             .set_highlight_color(&document.id, "nope", GREEN)
             .unwrap();
+        library
+            .set_highlight_note(&document.id, "nope", "x")
+            .unwrap();
         library.remove_highlight(&document.id, "nope").unwrap();
 
         assert_eq!(
@@ -1073,6 +1124,7 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
         library.set_highlight_color("0123", "a", GREEN).unwrap();
+        library.set_highlight_note("0123", "a", "x").unwrap();
         library.remove_highlight("0123", "a").unwrap();
         assert!(!scratch.0.join("library/0123").exists());
     }
@@ -1083,6 +1135,8 @@ mod tests {
         let library = scratch.library();
         for id in ["../x", "/tmp", "", ".staging"] {
             let err = library.set_highlight_color(id, "a", GREEN).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{id:?}");
+            let err = library.set_highlight_note(id, "a", "x").unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{id:?}");
             let err = library.remove_highlight(id, "a").unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{id:?}");

@@ -1,0 +1,80 @@
+import PDFKit
+
+#if os(iOS)
+    typealias PlatformView = UIView
+#else
+    typealias PlatformView = NSView
+#endif
+
+/// Draws the Note icons of a `ReaderPDFView`'s Highlights above its pages, never
+/// reversed on Dark Pages. It takes no touches or clicks: the view reports them.
+final class NoteIconsView: PlatformView {
+    /// Side of an icon on screen, at any zoom.
+    static let size: CGFloat = 18
+
+    private weak var reader: ReaderPDFView?
+
+    init(reader: ReaderPDFView) {
+        self.reader = reader
+        super.init(frame: reader.bounds)
+        #if os(iOS)
+            autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            isOpaque = false
+            backgroundColor = .clear
+            isUserInteractionEnabled = false
+            contentMode = .redraw
+        #else
+            autoresizingMask = [.width, .height]
+        #endif
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    /// Draws the icons again, after the pages moved or the Highlights changed.
+    func refresh() {
+        #if os(iOS)
+            setNeedsDisplay()
+        #else
+            needsDisplay = true
+        #endif
+    }
+
+    private func paint(in context: CGContext, dirty: CGRect) {
+        guard let reader else { return }
+        for highlight in reader.highlights {
+            guard let rect = reader.noteIconRect(of: highlight), rect.intersects(dirty) else { continue }
+            let color = highlight.color
+            let shape = CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil)
+            context.setFillColor(CGColor(srgbRed: color.r, green: color.g, blue: color.b, alpha: 1))
+            context.addPath(shape)
+            context.fillPath()
+            context.setStrokeColor(CGColor(gray: 0, alpha: 0.3))
+            context.setLineWidth(1)
+            context.addPath(shape)
+            context.strokePath()
+            // Lines of text.
+            context.setStrokeColor(CGColor(gray: 0, alpha: 0.6))
+            context.setLineWidth(1.5)
+            for offset in [-4.0, 0, 4] {
+                context.move(to: CGPoint(x: rect.minX + 4, y: rect.midY + offset))
+                context.addLine(to: CGPoint(x: rect.maxX - 4, y: rect.midY + offset))
+            }
+            context.strokePath()
+        }
+    }
+
+    #if os(iOS)
+        override func draw(_ rect: CGRect) {
+            guard let context = UIGraphicsGetCurrentContext() else { return }
+            paint(in: context, dirty: rect)
+        }
+    #else
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func draw(_ dirtyRect: NSRect) {
+            guard let context = NSGraphicsContext.current?.cgContext else { return }
+            paint(in: context, dirty: dirtyRect)
+        }
+    #endif
+}

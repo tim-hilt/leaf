@@ -389,6 +389,87 @@ import Testing
         #expect(reader.highlight(at: centre(ofRect: CGRect(x: 110, y: 700, width: 0, height: 0), onPage: 0, in: reader))?.id == "older")
     }
 
+    // MARK: Note icons
+
+    /// A Highlight over `rect` on page 1 with a Note.
+    func noted(_ id: String, _ rect: CGRect) -> Highlight {
+        var highlight = marked(id, rect)
+        highlight.note = "a thought"
+        return highlight
+    }
+
+    @Test func theNoteIconSitsAtTheEndOfTheLastRectOfItsHighlight() throws {
+        let reader = try readerWithText()
+        let rect = CGRect(x: 100, y: 690, width: 80, height: 20)
+        reader.highlights = [noted("a", rect)]
+
+        let icon = try #require(reader.noteIconRect(of: reader.highlights[0]))
+
+        let end = reader.convert(CGPoint(x: rect.maxX, y: rect.midY), from: try #require(reader.document?.page(at: 0)))
+        #expect(abs(icon.minX - end.x) < 0.001)
+        #expect(abs(icon.midY - end.y) < 0.001)
+        #expect(icon.width == icon.height && icon.width > 0)
+    }
+
+    @Test func theNoteIconIsAtTheEndOfTheLastPageOfAHighlightAcrossAPageBreak() throws {
+        let reader = try readerWithText()
+        let anchor = HighlightAnchor(
+            pages: [
+                .init(pageIndex: 0, rects: [CGRect(x: 100, y: 100, width: 80, height: 20)]),
+                .init(pageIndex: 1, rects: [CGRect(x: 72, y: 690, width: 50, height: 20)]),
+            ], quotedText: "a")
+        let highlight = Highlight(id: "a", anchor: anchor, color: .sampleYellow, note: "a thought")
+        reader.highlights = [highlight]
+
+        let icon = try #require(reader.noteIconRect(of: highlight))
+
+        let end = reader.convert(CGPoint(x: 122, y: 700), from: try #require(reader.document?.page(at: 1)))
+        #expect(abs(icon.minX - end.x) < 0.001 && abs(icon.midY - end.y) < 0.001)
+    }
+
+    @Test func aHighlightWithoutANoteHasNoNoteIcon() throws {
+        let reader = try readerWithText()
+        let plain = marked("a", CGRect(x: 100, y: 690, width: 80, height: 20))
+        reader.highlights = [plain]
+
+        #expect(reader.noteIconRect(of: plain) == nil)
+    }
+
+    @Test func theNoteIconKeepsItsOnScreenSizeAtAnyZoom() throws {
+        let reader = try readerWithText()
+        let highlight = noted("a", CGRect(x: 100, y: 690, width: 80, height: 20))
+        reader.highlights = [highlight]
+        let before = try #require(reader.noteIconRect(of: highlight))
+
+        reader.zoomIn()
+        reader.zoomIn()
+
+        #expect(reader.noteIconRect(of: highlight)?.size == before.size)
+    }
+
+    @Test func reportsTheNoteIconAtAViewPoint() throws {
+        let reader = try readerWithText()
+        let highlight = noted("a", CGRect(x: 100, y: 690, width: 80, height: 20))
+        reader.highlights = [highlight]
+        let icon = try #require(reader.noteIconRect(of: highlight))
+
+        #expect(reader.noteIcon(at: CGPoint(x: icon.midX, y: icon.midY))?.id == "a")
+        #expect(reader.noteIcon(at: CGPoint(x: icon.maxX + 40, y: icon.midY)) == nil)
+    }
+
+    @Test func clickingTheNoteIconReportsItsHighlightForThePopover() throws {
+        let reader = try readerWithText()
+        let highlight = noted("a", CGRect(x: 100, y: 690, width: 80, height: 20))
+        reader.highlights = [highlight]
+        let icon = try #require(reader.noteIconRect(of: highlight))
+        var reported: [String] = []
+        reader.onHighlightTap = { highlight, _ in reported.append(highlight.id) }
+
+        #expect(reader.reportHighlightTap(at: CGPoint(x: icon.midX, y: icon.midY)))
+
+        #expect(reported == ["a"])
+    }
+
     // MARK: Links
 
     /// A link on page 6 to `target`, and one to a web page just below it.
