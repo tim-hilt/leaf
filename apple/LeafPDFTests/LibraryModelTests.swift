@@ -100,16 +100,18 @@ import UniformTypeIdentifiers
     // MARK: Importing from outside
 
     @Test(arguments: [ImportOrigin.openWithOrShare, .drop, .picker])
-    func oneNewFileOpensTheReaderOnItsDocument(origin: ImportOrigin) async throws {
+    func oneNewFileOpensItsDocument(origin: ImportOrigin) async throws {
         let library = try openLibrary()
 
         let result = await library.importFiles([try writePDF(named: "a.pdf")], from: origin)
 
-        guard case .openReader(let document) = result else {
-            Issue.record("expected .openReader, got \(result)")
+        guard case .open(let documents, let problems) = result else {
+            Issue.record("expected .open, got \(result)")
             return
         }
-        #expect(library.documents == [document])
+        #expect(documents == library.documents)
+        #expect(documents.count == 1)
+        #expect(problems.isEmpty)
     }
 
     @Test(arguments: [ImportOrigin.openWithOrShare, .drop, .picker])
@@ -117,8 +119,8 @@ import UniformTypeIdentifiers
         let library = try openLibrary()
         let source = try writePDF(named: "a.pdf")
         let first = await library.importFiles([source], from: .picker)
-        guard case .openReader(let existing) = first else {
-            Issue.record("expected .openReader")
+        guard case .open(let opened, _) = first, let existing = opened.first else {
+            Issue.record("expected .open")
             return
         }
         let renamed = source.deletingLastPathComponent().appending(path: "renamed.pdf")
@@ -127,8 +129,10 @@ import UniformTypeIdentifiers
         let result = await library.importFiles([renamed], from: origin)
 
         switch (origin, result) {
-        case (.openWithOrShare, .openReader(let document)), (.drop, .alreadyInLibrary(let document)),
-            (.picker, .alreadyInLibrary(let document)):
+        case (.openWithOrShare, .open(let documents, let problems)):
+            #expect(documents == [existing])
+            #expect(problems.isEmpty)
+        case (.drop, .alreadyInLibrary(let document)), (.picker, .alreadyInLibrary(let document)):
             #expect(document == existing)
         default:
             Issue.record("unexpected \(result) for \(origin)")
@@ -169,53 +173,86 @@ import UniformTypeIdentifiers
         #expect(message.localizedCaseInsensitiveContains("no such file"))
     }
 
-    @Test func severalFilesStayInTheGalleryListingNewOnesAndProblems() async throws {
+    @Test func severalFilesOpenTheNewOnesInOrderAndListProblems() async throws {
         let library = try openLibrary()
         let good = try writePDF(named: "a.pdf")
         let garbage = try writeFile(named: "notes.pdf", bytes: Data("just some text".utf8))
+        let other = try writePDF(named: "b.pdf", metadataTitle: "Other")
 
-        let result = await library.importFiles([good, garbage], from: .drop)
+        let result = await library.importFiles([good, garbage, other], from: .drop)
 
-        guard case .problems(let problems) = result else {
-            Issue.record("expected .problems, got \(result)")
+        guard case .open(let documents, let problems) = result else {
+            Issue.record("expected .open, got \(result)")
             return
         }
+        #expect(documents.map(\.title) == ["a", "Other"])
         #expect(problems.map(\.file) == [garbage])
-        #expect(library.documents.count == 1)
+        #expect(library.documents.count == 2)
     }
 
-    @Test func severalNewFilesAreAllListedAndTheGalleryStays() async throws {
+    @Test func severalNewFilesAllOpenWithoutProblems() async throws {
         let library = try openLibrary()
         let files = try (1...3).map { try writePDF(named: "\($0).pdf", metadataTitle: "Book \($0)") }
 
         let result = await library.importFiles(files, from: .picker)
 
-        guard case .problems(let problems) = result else {
-            Issue.record("expected .problems, got \(result)")
+        guard case .open(let documents, let problems) = result else {
+            Issue.record("expected .open, got \(result)")
             return
         }
+        #expect(documents.map(\.title) == ["Book 1", "Book 2", "Book 3"])
         #expect(problems.isEmpty)
-        #expect(Set(library.documents.map(\.title)) == ["Book 1", "Book 2", "Book 3"])
     }
 
-    @Test func severalFilesListOnlyRejectedAndFailedOnes() async throws {
+    @Test(arguments: [ImportOrigin.openWithOrShare, .drop, .picker])
+    func severalFilesOpenADuplicateInsteadOfSkippingIt(origin: ImportOrigin) async throws {
         let library = try openLibrary()
         let existing = try writePDF(named: "a.pdf", metadataTitle: "Existing")
         _ = await library.importFiles([existing], from: .picker)
         let duplicate = existing.deletingLastPathComponent().appending(path: "copy.pdf")
         try FileManager.default.copyItem(at: existing, to: duplicate)
         let new = try writePDF(named: "b.pdf", metadataTitle: "New")
+
+        let result = await library.importFiles([new, duplicate], from: origin)
+
+        guard case .open(let documents, let problems) = result else {
+            Issue.record("expected .open, got \(result)")
+            return
+        }
+        #expect(documents.map(\.title) == ["New", "Existing"])
+        #expect(problems.isEmpty)
+        #expect(library.documents.count == 2)
+    }
+
+    @Test func severalFilesListOnlyRejectedAndFailedOnesAsProblems() async throws {
+        let library = try openLibrary()
+        let new = try writePDF(named: "b.pdf", metadataTitle: "New")
         let garbage = try writeFile(named: "notes.pdf", bytes: Data("just some text".utf8))
         let missing = root.appending(path: "missing.pdf")
 
-        let result = await library.importFiles([duplicate, new, garbage, missing], from: .openWithOrShare)
+        let result = await library.importFiles([garbage, new, missing], from: .openWithOrShare)
+
+        guard case .open(let documents, let problems) = result else {
+            Issue.record("expected .open, got \(result)")
+            return
+        }
+        #expect(documents.map(\.title) == ["New"])
+        #expect(problems.map(\.file) == [garbage, missing])
+    }
+
+    @Test func severalFilesThatAllFailOpenNothing() async throws {
+        let library = try openLibrary()
+        let garbage = try writeFile(named: "notes.pdf", bytes: Data("just some text".utf8))
+        let missing = root.appending(path: "missing.pdf")
+
+        let result = await library.importFiles([garbage, missing], from: .picker)
 
         guard case .problems(let problems) = result else {
             Issue.record("expected .problems, got \(result)")
             return
         }
         #expect(problems.map(\.file) == [garbage, missing])
-        #expect(Set(library.documents.map(\.title)) == ["Existing", "New"])
+        #expect(library.documents.isEmpty)
     }
 
     @Test func aCallWhileAnImportRunsWaitsForItAndBothFinish() async throws {

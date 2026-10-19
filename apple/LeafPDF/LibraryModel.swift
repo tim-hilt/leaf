@@ -35,6 +35,12 @@ struct LibraryDocument: Identifiable, Hashable {
         return min(100, 100 * (Int(progress.pageIndex) + 1) / pageCount)
     }
 
+    /// A Document with no details or progress.
+    init(id: String, file: URL) {
+        self.id = id
+        self.file = file
+    }
+
     fileprivate init(_ stored: LeafCore.Document, details: DocumentDetails?) {
         id = stored.id
         file = URL(fileURLWithPath: stored.path)
@@ -88,11 +94,11 @@ struct ImportProblem {
 
 /// What the window shows after Importing Files.
 enum ImportResult {
-    /// Open the Reader on this Document, replacing any open one.
-    case openReader(LibraryDocument)
+    /// Open these Documents in Tabs, in the order given, with the Files that weren't Imported.
+    case open([LibraryDocument], problems: [ImportProblem])
     /// Tell the user this Document already was in the Library, and offer to open it.
     case alreadyInLibrary(LibraryDocument)
-    /// Stay in the Gallery; alert if there are problems.
+    /// Nothing opens; alert if there are problems.
     case problems([ImportProblem])
 }
 
@@ -535,11 +541,12 @@ final class LibraryModel {
     }
 
     /// Imports `urls`, which came from `origin`, one after another, and says
-    /// what the window shows. One File opens the Reader on its Document; if the
-    /// Library already had it, that happens only for Open With/Share, else the
-    /// user is told. A File that isn't Imported is a problem. Temporary copies
-    /// in the Inbox are deleted afterwards, whatever the outcome. A call made
-    /// while an Import runs waits until it has finished.
+    /// what the window shows: every Document of the Files, new or already in
+    /// the Library, opens in a Tab. Only a single File already in the Library
+    /// from "+" or a drop is reported to the user instead. A File that isn't
+    /// Imported is a problem. Temporary copies in the Inbox are deleted
+    /// afterwards, whatever the outcome. A call made while an Import runs
+    /// waits until it has finished.
     func importFiles(_ urls: [URL], from origin: ImportOrigin) async -> ImportResult {
         let previous = lastImportFiles
         let running = Task { @MainActor in
@@ -551,20 +558,22 @@ final class LibraryModel {
     }
 
     private func importQueued(_ urls: [URL], from origin: ImportOrigin) async -> ImportResult {
-        var single: ImportResult?
+        var opening: [LibraryDocument] = []
+        var duplicate: LibraryDocument?
         var problems: [ImportProblem] = []
         for url in urls {
             switch await `import`(url) {
-            case .opened(let document): single = .openReader(document)
+            case .opened(let document): opening.append(document)
             case .duplicate(let document):
-                single = origin == .openWithOrShare ? .openReader(document) : .alreadyInLibrary(document)
+                opening.append(document)
+                duplicate = document
             case .rejected(let reason): problems.append(ImportProblem(file: url, failure: .rejected(reason)))
             case .failed(let message): problems.append(ImportProblem(file: url, failure: .failed(message)))
             }
             deleteIfTemporary(url)
         }
-        if urls.count == 1, let single { return single }
-        return .problems(problems)
+        if urls.count == 1, origin != .openWithOrShare, let duplicate { return .alreadyInLibrary(duplicate) }
+        return opening.isEmpty ? .problems(problems) : .open(opening, problems: problems)
     }
 
     private func deleteIfTemporary(_ file: URL) {
@@ -582,12 +591,6 @@ final class LibraryModel {
             core.localChange()
         }
         refresh()
-    }
-
-    /// The open Readers `readers` while all their Documents are still in the
-    /// Library; none once one was Removed, here or on another Device.
-    func readers(keeping readers: [LibraryDocument]) -> [LibraryDocument] {
-        readers.allSatisfy { open in documents.contains { $0.id == open.id } } ? readers : []
     }
 
     /// Saves `place` as Reading Progress of `document`, read `lastRead`. The

@@ -3,10 +3,13 @@ import SwiftUI
 
 /// Opens a Document's File and shows its pages in a single continuously
 /// scrolling vertical column, titled with the Document's Title. Must be pushed onto a
-/// `NavigationStack`, which provides the back chevron and iOS edge swipe.
+/// `NavigationStack`, which provides the back chevron and iOS edge swipe. The
+/// window makes a new one for each Tab, so only the active Tab's Document is
+/// loaded; under the toolbar, the `TabStrip` shows once a second Tab is open.
 ///
-/// Immersive Mode hides everything but the pages. On iOS a single tap toggles
-/// it; on macOS it is the native full screen, with the toolbar shown on hover.
+/// Immersive Mode hides everything but the pages, the Tab strip too. On iOS a
+/// single tap toggles it; on macOS it is the native full screen, with the toolbar
+/// shown on hover.
 /// Scrolling never changes it, and the Reader always opens with its UI showing.
 ///
 /// Pages are drawn per the Page Style in Settings, and redrawn live when it changes.
@@ -50,6 +53,7 @@ struct ReaderView: View {
     let document: LibraryDocument
     @Environment(LibraryModel.self) private var library
     @Environment(AppSettings.self) private var settings
+    @Environment(Tabs.self) private var tabs
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -66,19 +70,21 @@ struct ReaderView: View {
     @State private var openMarkup: OpenMarkup?
     /// Printed page number of the Back place; nil when there is none.
     @State private var backPageNumber: String?
-    #if os(iOS)
-        @State private var isImmersive = false
-    #endif
+    /// Immersive Mode; on macOS, whether the window is in full screen.
+    @State private var isImmersive = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            if showsResultsSidebar {
-                SearchResultsList(results: results)
-                    .frame(width: 320)
-                    .transition(.move(edge: .leading))
-                Divider()
+        VStack(spacing: 0) {
+            if tabs.openIDs.count > 1 && !isImmersive { TabStrip() }
+            HStack(spacing: 0) {
+                if showsResultsSidebar {
+                    SearchResultsList(results: results)
+                        .frame(width: 320)
+                        .transition(.move(edge: .leading))
+                    Divider()
+                }
+                pages
             }
-            pages
         }
         .animation(.default, value: showsResultsSidebar)
         .sheet(isPresented: $isShowingResults) { SearchResultsSheet(results: results) }
@@ -138,6 +144,13 @@ struct ReaderView: View {
             .animation(.default, value: isImmersive)
             .background(switchPageStyleShortcut)
         #else
+            .onAppear { isImmersive = NSApp.keyWindow?.styleMask.contains(.fullScreen) ?? false }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in
+                isImmersive = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
+                isImmersive = false
+            }
             .background(BackShortcut())
             .focusedSceneValue(\.reader, handle)
             .focusedSceneValue(\.backPageNumber, backPageNumber)
@@ -343,12 +356,12 @@ private struct BackCapsule: View {
 }
 
 #if os(macOS)
-    /// Invisible button that makes ⌘[ pop the Reader, as in other macOS apps.
+    /// Invisible button that makes ⌘[ Go to Gallery, as in other macOS apps.
     private struct BackShortcut: View {
-        @Environment(\.dismiss) private var dismiss
+        @Environment(Tabs.self) private var tabs
 
         var body: some View {
-            Button("Back", action: dismiss.callAsFunction)
+            Button("Back", action: tabs.goToGallery)
                 .keyboardShortcut("[", modifiers: .command)
                 .opacity(0)
                 .accessibilityHidden(true)

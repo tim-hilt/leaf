@@ -79,15 +79,17 @@ extension LibraryModelTests {
         #expect(try await eventually { b.documents.isEmpty })
     }
 
-    @Test func aDocumentRemovedOnAnotherDeviceSendsItsOpenReaderToTheGallery() async throws {
+    @Test func aDocumentRemovedOnAnotherDeviceClosesItsTab() async throws {
         let (a, b, _) = try await twoDevicesWithADocument()
-        // What the Gallery of B holds: the Readers it has open.
-        let open = [try #require(b.documents.first)]
-        #expect(b.readers(keeping: open) == open)
+        let tabs = Tabs(defaults: UserDefaults(suiteName: UUID().uuidString)!, library: b.documents)
+        tabs.open(b.documents)
 
         a.remove(try #require(a.documents.first))
 
-        #expect(try await eventually { b.readers(keeping: open).isEmpty })
+        #expect(try await eventually { b.documents.isEmpty })
+        tabs.keep(onlyIn: b.documents)
+        #expect(tabs.openIDs.isEmpty)
+        #expect(!tabs.isShowingReader)
     }
 
     @Test func connectingMergesTheLibrariesOfBothDevices() async throws {

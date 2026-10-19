@@ -6,9 +6,7 @@ extension FocusedValues {
     @Entry var isImporting: Binding<Bool>?
 }
 
-/// File > Import… (⌘O), after "New Window", which stays so that a second
-/// window can be opened. Acts on the focused window, whether it shows the
-/// Gallery or the Reader.
+/// File > Import… (⌘O). Acts on the window, whether it shows the Gallery or the Reader.
 struct ImportCommands: Commands {
     @FocusedBinding(\.isImporting) private var isImporting
 
