@@ -17,7 +17,8 @@
 //! is a snapshot of the whole document, which `push` follows by deleting the
 //! chunks it replaces (ADR-0009). The snapshot has a higher number, so the
 //! other Devices apply it like any chunk, and a Device with nothing yet
-//! converges from it alone.
+//! converges from it alone. A Device's first chunk in a storage is a snapshot
+//! too, so the storage gets what its changes depend on.
 
 use crate::storage::{Blob, Storage, get_bytes};
 use automerge::{AutoCommit, ChangeHash};
@@ -174,7 +175,9 @@ impl Cursor {
     /// The changes `doc` got from its Device since the last `push`, as a chunk
     /// named with `prefix`; none if it hasn't changed. If `pulled`, the
     /// listing `doc` was merged with, shows the Device at its limit of chunks,
-    /// the chunk is a snapshot replacing them.
+    /// the chunk is a snapshot replacing them. So is the Device's first chunk
+    /// in a storage: it may lack what the Device merged from others, on which
+    /// its own changes depend.
     pub fn outgoing(
         &self,
         doc: &mut AutoCommit,
@@ -194,7 +197,8 @@ impl Cursor {
             .collect();
         let device = device.to_hex_string();
         let mut replaces = Vec::new();
-        if !bytes.is_empty() && pulled.own.len() >= MAX_OWN_CHUNKS {
+        let first = self.sent_heads.is_empty();
+        if !bytes.is_empty() && (first || pulled.own.len() >= MAX_OWN_CHUNKS) {
             bytes = doc.save();
             replaces = (pulled.own.iter())
                 .map(|number| format!("{prefix}{device}-{number}"))
@@ -409,6 +413,25 @@ mod tests {
         b.exchange(&second);
 
         assert_eq!(b.get("a").as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn a_storage_that_lacks_a_devices_chunks_also_gets_what_it_merged_from_others() {
+        let (_one, first) = Scratch::new("merged-first");
+        let (_two, second) = Scratch::new("merged-second");
+        let (mut a, mut b, mut c) = (Replica::new(1), Replica::new(2), Replica::new(3));
+        b.set("b", "from b");
+        b.exchange(&first);
+        a.set("a", "from a");
+        a.exchange(&first);
+        a.set("a", "later");
+
+        // B never reaches the second storage.
+        a.exchange(&second);
+        c.exchange(&second);
+
+        assert_eq!(c.get("a").as_deref(), Some("later"));
+        assert_eq!(c.get("b").as_deref(), Some("from b"));
     }
 
     #[test]

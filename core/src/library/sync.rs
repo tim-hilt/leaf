@@ -1089,6 +1089,17 @@ mod tests {
         }
     }
 
+    fn highlight_value(id: &str) -> Highlight {
+        Highlight {
+            id: id.to_owned(),
+            anchor: vec![],
+            quoted_text: "quoted".to_owned(),
+            color: Rgb { r: 1, g: 2, b: 3 },
+            created: 1,
+            note: None,
+        }
+    }
+
     fn highlight(device: &Device, id: &str, text: &str) -> Highlight {
         let anchor = vec![PageRects {
             page_index: 0,
@@ -1375,6 +1386,45 @@ mod tests {
         b.library.sync(&recording).unwrap();
 
         assert!(recording.gets.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_library_from_before_device_ids_sends_its_progress_markup_and_colors() {
+        let mut cloud = Cloud::new();
+        // Stored the way an older LeafPDF did: every write by a random actor.
+        let home = cloud.dir.join("legacy");
+        let root = home.join("library");
+        let id = format!("{:x}", Sha256::digest(b"legacy bytes"));
+        fs::create_dir_all(root.join(&id)).unwrap();
+        fs::write(root.join(&id).join("Old.pdf"), b"legacy bytes").unwrap();
+        let mut state = state::update(None, &ActorId::random(), |doc| {
+            progress::put_progress(doc, &progress(3, 100));
+        });
+        state = state::update(Some(&state), &ActorId::random(), |doc| {
+            markup::put_highlight(doc, &highlight_value("h"));
+            markup::put_note(doc, "h", "a note");
+        });
+        fs::write(root.join(&id).join(LEGACY_STATE), state).unwrap();
+        let colors = preferences::update(None, &ActorId::random(), |doc| {
+            preferences::add_custom_color(doc, Rgb { r: 9, g: 9, b: 9 }, 1);
+        });
+        fs::write(root.join(PREFERENCES), colors).unwrap();
+        let a = Device {
+            library: Library::open(&root).unwrap(),
+            home,
+            storage: cloud.storage(),
+        };
+        let b = cloud.device();
+
+        a.sync();
+        b.sync();
+
+        assert_eq!(b.document(&id).progress, Some(progress(3, 100)));
+        let highlights = b.library.markup(&id).unwrap().highlights;
+        assert_eq!(highlights.len(), 1);
+        assert_eq!(highlights[0].note.as_deref(), Some("a note"));
+        assert_eq!(b.library.highlight_colors(), a.library.highlight_colors());
+        assert_eq!(b.library.highlight_colors().len(), 7);
     }
 
     #[test]

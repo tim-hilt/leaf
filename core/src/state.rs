@@ -48,6 +48,18 @@ pub(crate) fn update_versioned(
     doc.save()
 }
 
+/// The Automerge document stored as `bytes`, made anew by `actor`: the same
+/// content, without the history, as one change of `actor`. Of concurrent
+/// values, Automerge's winner stays. For a document written before Device IDs,
+/// whose changes no Device would send (see `chunks`). None if `bytes` is
+/// unreadable.
+pub(crate) fn remake(bytes: &[u8], actor: &ActorId) -> Option<Vec<u8>> {
+    let content = AutoCommit::load(bytes).ok()?.hydrate(ROOT, None).ok()?;
+    let mut doc = AutoCommit::new().with_actor(actor.clone());
+    doc.update_object(ROOT, &content).ok()?;
+    Some(doc.save())
+}
+
 /// The schema version stamped in `doc`: the highest one if Devices stamped it
 /// concurrently, 0 if none.
 pub(crate) fn version(doc: &AutoCommit) -> u64 {
@@ -158,6 +170,31 @@ mod tests {
             check_schema(&doc, 2).unwrap_err().kind(),
             io::ErrorKind::Unsupported
         );
+    }
+
+    #[test]
+    fn a_remade_document_holds_the_same_content_as_changes_of_the_actor_alone() {
+        let mut bytes = update(None, &ActorId::random(), |doc| {
+            doc.put(ROOT, "a", 1_u64).unwrap();
+            let text = doc.put_object(ROOT, "t", ObjType::Text).unwrap();
+            doc.splice_text(&text, 0, 0, "note").unwrap();
+        });
+        bytes = update(Some(&bytes), &ActorId::random(), |doc| {
+            let list = doc.put_object(ROOT, "l", ObjType::List).unwrap();
+            doc.insert(&list, 0, 2.5).unwrap();
+        });
+        let old = AutoCommit::load(&bytes).unwrap();
+
+        let mut remade = AutoCommit::load(&remake(&bytes, &actor()).unwrap()).unwrap();
+
+        assert_eq!(remade.hydrate(ROOT, None), old.hydrate(ROOT, None));
+        assert!(
+            remade
+                .get_changes(&[])
+                .iter()
+                .all(|c| c.actor_id() == &actor())
+        );
+        assert!(remake(b"garbage", &actor()).is_none());
     }
 
     #[test]

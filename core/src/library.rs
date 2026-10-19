@@ -134,7 +134,8 @@ impl Library {
     ///
     /// A Library without a Library document migrates: each folder becomes an
     /// Import dated by the folder, and its state becomes the state of that
-    /// Import.
+    /// Import. That state and the Preferences are remade as this Device, so
+    /// Sync sends them.
     pub fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
         let root = root.into();
         for dir in [root.join(STAGING), root.join(REMOVING)] {
@@ -224,12 +225,25 @@ impl Library {
         }
         // Only now, so a crash in between doesn't strand a state.
         for (folder, import) in first_imports {
-            match fs::rename(folder.join(LEGACY_STATE), folder.join(state_name(&import))) {
-                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-                _ => {}
-            }
+            self.adopt_legacy_state(&folder, &import)?;
         }
         Ok(())
+    }
+
+    /// Makes the state an older LeafPDF left in the Document `folder`, if any,
+    /// the state of Import `import`. It is remade as this Device, which Sync
+    /// sends; its changes by random actors no Device would.
+    fn adopt_legacy_state(&self, folder: &Path, import: &str) -> io::Result<()> {
+        let legacy = folder.join(LEGACY_STATE);
+        let bytes = match fs::read(&legacy) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            result => result?,
+        };
+        // An unreadable one is dropped, as a corrupt state is replaced.
+        if let Some(remade) = state::remake(&bytes, &self.device_id) {
+            write_atomically(&self.staging(), &folder.join(state_name(import)), &remade)?;
+        }
+        fs::remove_file(legacy)
     }
 
     /// Copies the File at `source` into the Library, unchanged. Importing a
@@ -723,7 +737,8 @@ fn unique_name() -> String {
 }
 
 /// The Device ID stored in the Library folder `root`, generated first if there
-/// is none.
+/// is none. Preferences from before Device IDs are then remade as it, see
+/// `state::remake`; before it is stored, so a crash doesn't skip that.
 fn load_device_id(root: &Path) -> io::Result<ActorId> {
     let path = root.join(DEVICE);
     let stored = fs::read_to_string(&path)
@@ -733,6 +748,13 @@ fn load_device_id(root: &Path) -> io::Result<ActorId> {
         return Ok(id);
     }
     let id = ActorId::random();
+    let preferences = root.join(PREFERENCES);
+    if let Some(remade) = fs::read(&preferences)
+        .ok()
+        .and_then(|bytes| state::remake(&bytes, &id))
+    {
+        write_atomically(&root.join(STAGING), &preferences, &remade)?;
+    }
     write_atomically(&root.join(STAGING), &path, id.to_hex_string().as_bytes())?;
     Ok(id)
 }
