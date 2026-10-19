@@ -2,7 +2,9 @@
 //! directory (ADR-0009).
 //!
 //! Each Device writes its own changes as immutable chunks named
-//! `<device>-<number>` and never touches another Device's chunks. Chunk
+//! `<prefix><device>-<number>` and never touches another Device's chunks. The
+//! prefix lets several documents share one directory, so one listing serves
+//! them all (`""` for a directory of one document). Chunk
 //! numbers only go up, so a Device's `Cursor` tells which chunks of the others
 //! it has applied by remembering one number each, and a Sync step with nothing
 //! new costs one listing.
@@ -11,7 +13,7 @@
 //! `pull` fetches new chunks, `Cursor::apply` merges them and `Cursor::outgoing`
 //! collects the Device's own new changes, which `push` writes.
 
-use crate::storage::{Storage, get_bytes};
+use crate::storage::{Blob, Storage, get_bytes};
 use automerge::{AutoCommit, ChangeHash};
 use std::collections::BTreeMap;
 use std::io;
@@ -59,20 +61,23 @@ pub(crate) struct Outgoing {
     heads: Vec<ChangeHash>,
 }
 
-/// Fetches the chunks in `dir` of Devices other than `device` that `cursor`
-/// hasn't applied.
+/// Fetches the chunks named `<prefix><device>-<number>` among `listing`, the
+/// blobs of `dir`, of Devices other than `device` that `cursor` hasn't applied.
 pub(crate) fn pull(
     storage: &dyn Storage,
     dir: &str,
+    listing: &[Blob],
+    prefix: &str,
     device: &str,
     cursor: &Cursor,
 ) -> io::Result<Pulled> {
     let mut wanted = Vec::new();
     let mut own_latest = 0;
-    for blob in storage.list(dir)? {
+    for blob in listing {
         let Some((from, number)) = blob
             .name
-            .rsplit_once('-')
+            .strip_prefix(prefix)
+            .and_then(|name| name.rsplit_once('-'))
             .and_then(|(from, number)| Some((from.to_owned(), number.parse::<u64>().ok()?)))
         else {
             continue;
@@ -88,7 +93,7 @@ pub(crate) fn pull(
     for (from, number) in wanted {
         // A chunk replaced by its Device's snapshot meanwhile is skipped: the
         // snapshot is the next one.
-        if let Some(bytes) = get_bytes(storage, &format!("{dir}/{from}-{number}"))? {
+        if let Some(bytes) = get_bytes(storage, &format!("{dir}/{prefix}{from}-{number}"))? {
             chunks.push(Chunk {
                 device: from,
                 number,
@@ -118,6 +123,12 @@ pub(crate) fn push(
 }
 
 impl Cursor {
+    /// Whether `pulled` calls for loading the document: there are new chunks, or
+    /// the storage lost this Device's, which `apply` then sends again.
+    pub fn wants(&self, pulled: &Pulled) -> bool {
+        !pulled.chunks.is_empty() || pulled.own_latest < self.sent
+    }
+
     /// Merges `pulled` into `doc`; true if that changed it. A chunk that isn't
     /// an Automerge document is skipped for good.
     pub fn apply(&mut self, doc: &mut AutoCommit, pulled: Pulled) -> bool {
@@ -136,9 +147,9 @@ impl Cursor {
         doc.get_heads() != before
     }
 
-    /// The changes `doc` got from its Device since the last `push`; none if
-    /// it hasn't changed.
-    pub fn outgoing(&self, doc: &mut AutoCommit) -> Option<Outgoing> {
+    /// The changes `doc` got from its Device since the last `push`, as a chunk
+    /// named with `prefix`; none if it hasn't changed.
+    pub fn outgoing(&self, doc: &mut AutoCommit, prefix: &str) -> Option<Outgoing> {
         let heads = doc.get_heads();
         if heads == self.sent_heads {
             return None;
@@ -152,7 +163,7 @@ impl Cursor {
             .collect();
         let number = self.sent + 1;
         Some(Outgoing {
-            name: format!("{}-{number}", device.to_hex_string()),
+            name: format!("{prefix}{}-{number}", device.to_hex_string()),
             number,
             bytes,
             heads,
@@ -231,9 +242,10 @@ mod tests {
 
         /// One full exchange.
         fn exchange(&mut self, storage: &dyn Storage) {
-            let pulled = pull(storage, "doc", &self.device(), &self.cursor).unwrap();
+            let listing = storage.list("doc").unwrap();
+            let pulled = pull(storage, "doc", &listing, "", &self.device(), &self.cursor).unwrap();
             self.cursor.apply(&mut self.doc, pulled);
-            if let Some(outgoing) = self.cursor.outgoing(&mut self.doc) {
+            if let Some(outgoing) = self.cursor.outgoing(&mut self.doc, "") {
                 push(storage, "doc", &mut self.cursor, outgoing).unwrap();
             }
         }
@@ -373,6 +385,39 @@ mod tests {
 
         assert_eq!(b.get("a").as_deref(), Some("x"));
         assert_eq!(b.get("c").as_deref(), Some("z"));
+    }
+
+    #[test]
+    fn documents_with_different_prefixes_share_one_directory_without_mixing() {
+        let (_alive, storage) = Scratch::new("prefix");
+        let (mut a, b) = (Replica::new(1), Replica::new(2));
+        a.set("a", "x");
+        let outgoing = a.cursor.outgoing(&mut a.doc, "one.").unwrap();
+        push(&storage, "doc", &mut a.cursor, outgoing).unwrap();
+        let listing = storage.list("doc").unwrap();
+
+        let pull_as_b =
+            |prefix: &str| pull(&storage, "doc", &listing, prefix, &b.device(), &b.cursor).unwrap();
+
+        assert!(b.cursor.wants(&pull_as_b("one.")));
+        assert!(!b.cursor.wants(&pull_as_b("two.")));
+    }
+
+    #[test]
+    fn a_device_wants_to_load_a_document_only_for_new_chunks_or_lost_own_ones() {
+        let (_one, first) = Scratch::new("wants-first");
+        let (_two, empty) = Scratch::new("wants-empty");
+        let mut a = Replica::new(1);
+        a.set("a", "x");
+        a.exchange(&first);
+        let wants = |storage: &dyn Storage| {
+            let listing = storage.list("doc").unwrap();
+            let pulled = pull(storage, "doc", &listing, "", &a.device(), &a.cursor).unwrap();
+            a.cursor.wants(&pulled)
+        };
+
+        assert!(!wants(&first));
+        assert!(wants(&empty));
     }
 
     #[test]

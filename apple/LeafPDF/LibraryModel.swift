@@ -125,13 +125,16 @@ extension ConnectError {
 private final class SyncRelay: SyncObserver {
     private let onStatus: @Sendable @MainActor (SyncState) -> Void
     private let onLibraryChanged: @Sendable @MainActor () -> Void
+    private let onMarkupChanged: @Sendable @MainActor (String) -> Void
 
     init(
         status: @escaping @Sendable @MainActor (SyncState) -> Void,
-        libraryChanged: @escaping @Sendable @MainActor () -> Void
+        libraryChanged: @escaping @Sendable @MainActor () -> Void,
+        markupChanged: @escaping @Sendable @MainActor (String) -> Void
     ) {
         onStatus = status
         onLibraryChanged = libraryChanged
+        onMarkupChanged = markupChanged
     }
 
     func statusChanged(status: SyncStatus) {
@@ -146,6 +149,10 @@ private final class SyncRelay: SyncObserver {
 
     func libraryChanged() {
         Task { @MainActor [onLibraryChanged] in onLibraryChanged() }
+    }
+
+    func markupChanged(id: String) {
+        Task { @MainActor [onMarkupChanged] in onMarkupChanged(id) }
     }
 }
 
@@ -180,6 +187,9 @@ final class LibraryModel {
     private(set) var connection: CloudConnection?
     /// Where Sync stands. Only meaningful while `connection` isn't nil.
     private(set) var syncState = SyncState.syncing
+    /// How often Sync changed the Markup of each Document that it changed. A
+    /// Reader that sees its Document's number change reads the Markup again.
+    private var markupRevisions: [String: Int] = [:]
     @ObservationIgnored private let core: LeafCore.Library
     @ObservationIgnored private let saved: DetailsStore
     @ObservationIgnored private let covers: CoverStore
@@ -305,7 +315,26 @@ final class LibraryModel {
                 guard let self, connectionID == id else { return }
                 refresh()
                 readMissingDetails()
+                Task { await self.reloadHighlightColors() }
+            },
+            markupChanged: { [weak self] document in
+                guard let self, connectionID == id else { return }
+                markupRevisions[document, default: 0] += 1
             })
+    }
+
+    /// How often Sync changed the Markup of `document`; it changes whenever
+    /// `highlights(of:)` and `pageNotes(of:)` have news.
+    func markupRevision(of document: LibraryDocument) -> Int { markupRevisions[document.id, default: 0] }
+
+    /// Reads the Highlight Colors again, after every write to the Preferences
+    /// already queued, as Sync may have changed them.
+    private func reloadHighlightColors() async {
+        let core = core
+        let (colors, chosen) = await inStateOrder { (core.highlightColors(), core.defaultHighlightColor()) }
+        let all = colors.map(HighlightColor.init), defaultColor = HighlightColor(chosen)
+        if highlightColors != all { highlightColors = all }
+        if defaultHighlightColor != defaultColor { defaultHighlightColor = defaultColor }
     }
 
     /// The Documents a Gallery shows for Library Search `searchText`: those
@@ -413,7 +442,7 @@ final class LibraryModel {
         documents[index].progress = progress
 
         let core = core, id = document.id
-        await inStateOrder { try? core.saveProgress(id: id, progress: progress) }
+        await writing { try? core.saveProgress(id: id, progress: progress) }
     }
 
     /// The Highlights of `document`, oldest first. Empty if there are none or
@@ -439,7 +468,7 @@ final class LibraryModel {
                 rects: page.rects.map { Rect(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height) })
         }
         let rgb = Rgb(defaultHighlightColor.color), milliseconds = created.millisecondsSince1970
-        let stored = await inStateOrder {
+        let stored = await writing {
             try? core.addHighlight(
                 id: id, anchor: pages, quotedText: anchor.quotedText, color: rgb, created: milliseconds)
         }
@@ -455,7 +484,7 @@ final class LibraryModel {
         guard documents.contains(where: { $0.id == document.id }) else { return }
         let core = core, id = document.id, highlightID = highlight.id
         let rgb = Rgb(color)
-        await inStateOrder { try? core.setHighlightColor(id: id, highlight: highlightID, color: rgb) }
+        await writing { try? core.setHighlightColor(id: id, highlight: highlightID, color: rgb) }
     }
 
     /// Sets the Note of `highlight` of `document` to `note`; empty removes it. The
@@ -464,7 +493,7 @@ final class LibraryModel {
     func setNote(_ note: String, of highlight: Highlight, in document: LibraryDocument) async {
         guard documents.contains(where: { $0.id == document.id }) else { return }
         let core = core, id = document.id, highlightID = highlight.id
-        await inStateOrder { try? core.setHighlightNote(id: id, highlight: highlightID, note: note) }
+        await writing { try? core.setHighlightNote(id: id, highlight: highlightID, note: note) }
     }
 
     /// Removes `highlight` from `document`. The core writes off the main
@@ -473,7 +502,7 @@ final class LibraryModel {
     func removeHighlight(_ highlight: Highlight, from document: LibraryDocument) async {
         guard documents.contains(where: { $0.id == document.id }) else { return }
         let core = core, id = document.id, highlightID = highlight.id
-        await inStateOrder { try? core.removeHighlight(id: id, highlight: highlightID) }
+        await writing { try? core.removeHighlight(id: id, highlight: highlightID) }
     }
 
     /// The page Notes of `document`, oldest first. Empty if there are none or
@@ -491,7 +520,7 @@ final class LibraryModel {
     func addPageNote(at place: Place, to document: LibraryDocument, at created: Date = .now) async -> PageNote? {
         guard documents.contains(where: { $0.id == document.id }) else { return nil }
         let core = core, id = document.id, milliseconds = created.millisecondsSince1970
-        let stored = await inStateOrder {
+        let stored = await writing {
             try? core.addPageNote(
                 id: id, pageIndex: UInt32(place.pageIndex), x: place.point.x, y: place.point.y, created: milliseconds)
         }
@@ -506,7 +535,7 @@ final class LibraryModel {
     func setText(_ text: String, of note: PageNote, in document: LibraryDocument) async {
         guard documents.contains(where: { $0.id == document.id }) else { return }
         let core = core, id = document.id, noteID = note.id
-        await inStateOrder { try? core.setPageNoteText(id: id, note: noteID, text: text) }
+        await writing { try? core.setPageNoteText(id: id, note: noteID, text: text) }
     }
 
     /// Removes the page Note `note` from `document`. The core writes off the main
@@ -515,7 +544,7 @@ final class LibraryModel {
     func removePageNote(_ note: PageNote, from document: LibraryDocument) async {
         guard documents.contains(where: { $0.id == document.id }) else { return }
         let core = core, id = document.id, noteID = note.id
-        await inStateOrder { try? core.removePageNote(id: id, note: noteID) }
+        await writing { try? core.removePageNote(id: id, note: noteID) }
     }
 
     /// Makes `color`, one of `highlightColors`, the Default Highlight Color. It
@@ -524,7 +553,7 @@ final class LibraryModel {
     func setDefaultHighlightColor(_ color: HighlightColor) async {
         defaultHighlightColor = color
         let core = core, id = color.id
-        await inStateOrder { try? core.setDefaultHighlightColor(id: id) }
+        await writing { try? core.setDefaultHighlightColor(id: id) }
     }
 
     /// Adds `color` as a Custom Color after the others, `added` now. It shows at
@@ -533,7 +562,7 @@ final class LibraryModel {
     @discardableResult
     func addCustomColor(_ color: RGB, at added: Date = .now) async -> HighlightColor? {
         let core = core, rgb = Rgb(color), milliseconds = added.millisecondsSince1970
-        guard let stored = await inStateOrder({ try? core.addCustomColor(rgb: rgb, added: milliseconds) })
+        guard let stored = await writing({ try? core.addCustomColor(rgb: rgb, added: milliseconds) })
         else { return nil }
         let custom = HighlightColor(stored)
         highlightColors.append(custom)
@@ -549,7 +578,7 @@ final class LibraryModel {
         highlightColors.removeAll { $0 == color }
         if defaultHighlightColor == color { defaultHighlightColor = highlightColors[0] }
         let core = core, id = color.id
-        await inStateOrder { try? core.removeCustomColor(id: id) }
+        await writing { try? core.removeCustomColor(id: id) }
     }
 
     /// Runs `access` off the main thread, after every earlier access to the
@@ -563,6 +592,14 @@ final class LibraryModel {
         }
         lastStateAccess = Task { _ = await running.value }
         return await running.value
+    }
+
+    /// `inStateOrder` for a write: tells the core, which sends it to the cloud
+    /// soon, once it is stored.
+    private func writing<T: Sendable>(_ access: @escaping @Sendable () -> T) async -> T {
+        let result = await inStateOrder(access)
+        core.localChange()
+        return result
     }
 
     /// What Import reads from the PDF it opened to check the File.

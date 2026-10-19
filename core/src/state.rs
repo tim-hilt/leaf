@@ -16,7 +16,7 @@ use automerge::{
 const SCHEMA_VERSION: u64 = 2;
 
 /// The Automerge document `existing` with `change` made as `actor`, stamped
-/// with the current schema version and compacted. A missing or unreadable
+/// with the current schema version (never lowering a newer one) and compacted. A missing or unreadable
 /// `existing` starts a new document.
 pub(crate) fn update(
     existing: Option<&[u8]>,
@@ -39,8 +39,12 @@ pub(crate) fn update_versioned(
         .unwrap_or_default()
         .with_actor(actor.clone());
     change(&mut doc);
-    doc.put(ROOT, "version", version)
-        .expect("a root map accepts new keys");
+    // Never lowers the version, and adds no change if it is stamped already.
+    let stored = scalar(&doc, &ROOT, "version").and_then(|v| v.as_u64());
+    if stored.is_none_or(|stored| stored < version) {
+        doc.put(ROOT, "version", version)
+            .expect("a root map accepts new keys");
+    }
     doc.save()
 }
 
@@ -93,6 +97,19 @@ mod tests {
     fn an_update_stamps_the_schema_version() {
         let doc = AutoCommit::load(&update(None, &actor(), |_| {})).unwrap();
         assert_eq!(scalar(&doc, &ROOT, "version"), Some(ScalarValue::Uint(2)));
+    }
+
+    #[test]
+    fn an_update_never_lowers_the_version_and_adds_no_change_for_a_stamped_one() {
+        let first = update(None, &actor(), |_| {});
+        let second = update(Some(&first), &actor(), |_| {});
+        let mut doc = AutoCommit::load(&second).unwrap();
+        assert_eq!(doc.get_changes(&[]).len(), 1);
+
+        let newer = update_versioned(Some(&second), &actor(), 9, |_| {});
+        let older = update(Some(&newer), &actor(), |_| {});
+        let doc = AutoCommit::load(&older).unwrap();
+        assert_eq!(scalar(&doc, &ROOT, "version"), Some(ScalarValue::Uint(9)));
     }
 
     #[test]

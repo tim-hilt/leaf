@@ -26,7 +26,9 @@ import SwiftUI
 ///
 /// Opens at the Document's Reading Progress at fit-to-width, or at page 1, and
 /// saves it (see `ReadingProgressSaver`) when opened, after scrolling stops,
-/// when it disappears and when the scene goes to the background.
+/// when it disappears and when the scene goes to the background. Reading
+/// Progress from another Device never moves it; Markup from another Device
+/// shows up live.
 ///
 /// A trailing toolbar button opens the Table of Contents, in a popover (a sheet
 /// on iPhone), unless the Document has none. It shows where the top of the
@@ -88,6 +90,13 @@ struct ReaderView: View {
             pageNotes = await library.pageNotes(of: document)
             contents = opened.map(TableOfContents.init)
             pdf = opened
+        }
+        // Markup from another Device shows live. Reading Progress never moves the Reader.
+        .onChange(of: library.markupRevision(of: document)) {
+            Task {
+                highlights = await library.highlights(of: document)
+                pageNotes = await library.pageNotes(of: document)
+            }
         }
         .onDisappear { saver?.saveIfMoved() }
         .onChange(of: scenePhase) { if scenePhase == .background { saver?.saveIfMoved() } }

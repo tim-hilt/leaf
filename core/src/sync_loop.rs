@@ -35,8 +35,11 @@ pub enum Status {
 /// loop is held, never after the `SyncLoop` is dropped.
 pub trait Observer: Send + Sync {
     fn status(&self, status: Status);
-    /// A step changed the Documents: they are worth listing again.
+    /// A step changed the Documents (Reading Progress included) or the
+    /// Highlight Colors: they are worth listing again.
     fn library_changed(&self);
+    /// A step changed the Markup of Document `id`: it is worth reading again.
+    fn markup_changed(&self, id: &str);
 }
 
 /// When steps run.
@@ -231,6 +234,9 @@ impl Shared {
         if library.sync_changes() != changes {
             observer.library_changed();
         }
+        for id in library.take_markup_changes() {
+            observer.markup_changed(&id);
+        }
         observer.status(match result {
             Ok(()) => Status::Synced { at: now() },
             Err(_) => Status::Offline,
@@ -385,6 +391,7 @@ mod tests {
     struct Events {
         statuses: Mutex<Vec<Status>>,
         library_changed: AtomicUsize,
+        markup_changed: Mutex<Vec<String>>,
     }
 
     impl Events {
@@ -408,6 +415,9 @@ mod tests {
         }
         fn library_changed(&self) {
             self.library_changed.fetch_add(1, Relaxed);
+        }
+        fn markup_changed(&self, id: &str) {
+            self.markup_changed.lock().unwrap().push(id.to_owned());
         }
     }
 
@@ -435,6 +445,44 @@ mod tests {
         assert!(matches!(events.last(), Some(Status::Synced { at }) if at > 0));
         // Sending what is local changes no Document.
         assert_eq!(events.library_changed.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn markup_and_progress_from_another_device_are_reported_and_sent_after_a_local_change() {
+        let home = Home::new();
+        let (a, b) = (home.device("a"), home.device("b"));
+        let id = home.import(&a, b"on a");
+        a.sync(&*home.cloud()).unwrap();
+        b.sync(&*home.cloud()).unwrap();
+        let (_a_loop, a_events) = start(&a, home.cloud(), intervals(HOUR, 20 * MS));
+        let (b_loop, b_events) = start(&b, home.cloud(), intervals(10 * MS, HOUR));
+        eventually("the first steps", || {
+            a_events.steps() >= 1 && b_events.steps() >= 1
+        });
+
+        let color = crate::markup::Rgb { r: 1, g: 2, b: 3 };
+        b.add_highlight(&id, vec![], "quoted", color, 1).unwrap();
+        b.save_progress(
+            &id,
+            &crate::progress::ReadingProgress {
+                page_index: 2,
+                x: 0.0,
+                y: 0.0,
+                last_read: 7,
+            },
+        )
+        .unwrap();
+        b_loop.local_change();
+
+        eventually("the report on A", || {
+            !a_events.markup_changed.lock().unwrap().is_empty()
+        });
+        assert_eq!(
+            *a_events.markup_changed.lock().unwrap(),
+            std::slice::from_ref(&id)
+        );
+        assert!(a_events.library_changed.load(Relaxed) >= 1);
+        assert_eq!(a.documents().unwrap()[0].progress.unwrap().last_read, 7);
     }
 
     #[test]
@@ -471,7 +519,9 @@ mod tests {
 
         sync_loop.foreground();
 
-        eventually("the other Device's Import", || ids(&a) == [id.clone()]);
+        eventually("the other Device's Import", || {
+            ids(&a) == std::slice::from_ref(&id)
+        });
     }
 
     #[test]
@@ -484,7 +534,9 @@ mod tests {
         let id = home.import(&b, b"on b");
         b.sync(&*home.cloud()).unwrap();
 
-        eventually("the other Device's Import", || ids(&a) == [id.clone()]);
+        eventually("the other Device's Import", || {
+            ids(&a) == std::slice::from_ref(&id)
+        });
         assert!(events.library_changed.load(Relaxed) >= 1);
     }
 

@@ -85,14 +85,22 @@ const INCOMING: &str = ".incoming";
 
 impl DirStorage {
     /// The storage in directory `root`, created if missing. Leftovers of
-    /// `put`s that never finished are deleted.
+    /// `put`s that never finished are deleted, except those of this process:
+    /// they belong to another storage in the same directory that is writing.
     pub fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
         let root = root.into();
-        match fs::remove_dir_all(root.join(INCOMING)) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-            _ => {}
+        let incoming = root.join(INCOMING);
+        fs::create_dir_all(&incoming)?;
+        let own = format!("{}-", std::process::id());
+        for entry in fs::read_dir(&incoming)? {
+            let entry = entry?;
+            if !entry.file_name().to_string_lossy().starts_with(&own) {
+                match fs::remove_file(entry.path()) {
+                    Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                    _ => {}
+                }
+            }
         }
-        fs::create_dir_all(root.join(INCOMING))?;
         Ok(Self { root })
     }
 
@@ -381,5 +389,19 @@ mod tests {
                 .is_none()
         );
         assert!(storage.list("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn opening_keeps_the_puts_this_process_is_writing() {
+        let (alive, _first) = scratch_storage();
+        let writing = alive
+            .0
+            .join(INCOMING)
+            .join(format!("{}-7", std::process::id()));
+        fs::write(&writing, b"half").unwrap();
+
+        let _second = DirStorage::open(&alive.0).unwrap();
+
+        assert!(writing.exists());
     }
 }

@@ -19,8 +19,10 @@
 //! Every local change to an Automerge document is made as the Device ID, which
 //! is generated once and kept in `DEVICE`.
 //!
-//! `sync` exchanges the Library and its Files with a storage, see `sync`. What
-//! this Device knows of that exchange is kept in `LIBRARY_CURSOR`.
+//! `sync` exchanges the Library, the states, the Preferences and the Files with
+//! a storage, see `sync`. What this Device knows of the exchange of each
+//! document is kept in a cursor file: `LIBRARY_CURSOR`, `PREFERENCES_CURSOR`
+//! and, next to a state, `cursor_name`.
 
 use crate::chunks::Cursor;
 use crate::library_doc::{Import, LibraryDoc};
@@ -46,6 +48,9 @@ const LIBRARY: &str = ".library.automerge";
 const LIBRARY_CURSOR: &str = ".library.cursor";
 const DEVICE: &str = ".device";
 const PREFERENCES: &str = ".preferences.automerge";
+const PREFERENCES_CURSOR: &str = ".preferences.cursor";
+/// What `Dirty` calls the Preferences. No Import ID, which is hex.
+const PREFERENCES_KEY: &str = "preferences";
 /// The state of a Document before Imports had their own, see `open`.
 const LEGACY_STATE: &str = ".state.automerge";
 
@@ -79,12 +84,38 @@ pub struct Library {
     /// The Library document. Imports and Removes change it and the folders
     /// under this lock, so they never interleave.
     doc: Mutex<LibraryDoc>,
-    /// What this Device knows of its exchange of the Library document with a
-    /// storage. Held for a whole `sync`, so only one runs at a time. Taken
-    /// before `doc`.
-    cursor: Mutex<Cursor>,
+    /// What this Device knows of its exchange of its documents with a storage.
+    /// Held for a whole `sync`, so only one runs at a time. Taken first.
+    exchanges: Mutex<Exchanges>,
+    /// Which documents changed locally since `sync` last sent them.
+    dirty: Mutex<Dirty>,
+    /// Held while a state or the Preferences is read, changed and written, so
+    /// local edits and merged chunks never overwrite each other. Taken after
+    /// `exchanges`, before `doc`.
+    writing: Mutex<()>,
     /// How often a `sync` changed the Documents, see `sync_changes`.
     sync_changes: AtomicU64,
+    /// The Documents whose Markup a `sync` changed, see `take_markup_changes`.
+    markup_changes: Mutex<Vec<String>>,
+}
+
+/// The cursors of the documents `sync` exchanges.
+#[derive(Debug, Default)]
+struct Exchanges {
+    library: Cursor,
+    /// By Import ID, or `PREFERENCES_KEY`; read from disk when first needed.
+    docs: HashMap<String, Cursor>,
+}
+
+/// The documents with local changes `sync` hasn't sent, so a step with nothing
+/// new loads none of them.
+#[derive(Debug)]
+struct Dirty {
+    /// Every document might have: changes may have been made before the Library
+    /// was opened. Cleared by the first `sync` that succeeds.
+    everything: bool,
+    /// By Import ID, or `PREFERENCES_KEY`.
+    keys: HashSet<String>,
 }
 
 /// What `documents` needs of one Document, read from the Library document.
@@ -120,8 +151,17 @@ impl Library {
             root,
             device_id,
             doc: Mutex::new(doc),
-            cursor: Mutex::new(Cursor::decode(&cursor)),
+            exchanges: Mutex::new(Exchanges {
+                library: Cursor::decode(&cursor),
+                docs: HashMap::new(),
+            }),
+            dirty: Mutex::new(Dirty {
+                everything: true,
+                keys: HashSet::new(),
+            }),
+            writing: Mutex::new(()),
             sync_changes: AtomicU64::new(0),
+            markup_changes: Mutex::new(Vec::new()),
         };
         library.reconcile()?;
         Ok(library)
@@ -138,6 +178,17 @@ impl Library {
     /// later. A caller that sees it grow reloads `documents`.
     pub fn sync_changes(&self) -> u64 {
         self.sync_changes.load(Relaxed)
+    }
+
+    /// The IDs of the Documents whose Markup a `sync` changed since the last
+    /// call, each once. A caller that gets one reloads its `markup`.
+    pub fn take_markup_changes(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .markup_changes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
     }
 
     /// Brings the folders and the Library document in line after a crash, an
@@ -235,23 +286,31 @@ impl Library {
     fn admit(&self, staged: &Path, id: &str, name: &str) -> io::Result<bool> {
         let folder = self.root.join(id);
         let mut doc = self.catalog();
-        if folder.exists() {
+        // A folder without a File holds just a state, which a Sync got before
+        // the File.
+        if folder.exists() && stored_file(&folder)?.is_some() {
             return Ok(false);
         }
         // The Library may list the File already, e.g. after an interrupted
         // Import: it keeps its Import, and its name.
         let listed = doc.live(id).next().map(|i| i.name.clone());
-        match listed {
+        let name = match listed {
             Some(listed) if is_file_name(&listed) => {
-                fs::rename(staged.join(name), staged.join(listed))?;
+                fs::rename(staged.join(name), staged.join(&listed))?;
+                listed
             }
-            Some(_) => {}
+            Some(_) => name.to_owned(),
             None => {
                 doc.add_import(id, name, now());
                 self.save_catalog(&mut doc)?;
+                name.to_owned()
             }
+        };
+        if folder.exists() {
+            fs::rename(staged.join(&name), folder.join(&name))?;
+        } else {
+            fs::rename(staged, folder)?;
         }
-        fs::rename(staged, folder)?;
         Ok(true)
     }
 
@@ -476,15 +535,18 @@ impl Library {
     fn edit_preferences(&self, change: impl FnOnce(&mut AutoCommit)) -> io::Result<()> {
         self.replace_file(&self.preferences(), |existing| {
             preferences::update(existing, &self.device_id, change)
-        })
+        })?;
+        self.mark_dirty(PREFERENCES_KEY);
+        Ok(())
     }
 
     /// Makes `change` to the state of every Import of Document `id`. It does
     /// nothing in a state that holds nothing it changes. Nothing happens if the
     /// Document isn't in the Library.
     fn edit_states(&self, id: &str, change: impl Fn(&mut AutoCommit)) -> io::Result<()> {
-        for path in self.state_paths(id)? {
-            self.update_state(&path, &change)?;
+        let folder = self.folder(id)?;
+        for import in self.import_ids(id) {
+            self.update_state(&folder, &import, &change)?;
         }
         Ok(())
     }
@@ -493,24 +555,32 @@ impl Library {
     /// holds what is added. Nothing happens if the Document isn't in the
     /// Library.
     fn add_to_state(&self, id: &str, change: impl FnOnce(&mut AutoCommit)) -> io::Result<()> {
-        match self.state_paths(id)?.first() {
-            Some(path) => self.update_state(path, change),
+        let folder = self.folder(id)?;
+        match self.import_ids(id).first() {
+            Some(import) => self.update_state(&folder, import, change),
             None => Ok(()),
         }
     }
 
-    fn update_state(&self, path: &Path, change: impl FnOnce(&mut AutoCommit)) -> io::Result<()> {
-        self.replace_file(path, |existing| {
+    fn update_state(
+        &self,
+        folder: &Path,
+        import: &str,
+        change: impl FnOnce(&mut AutoCommit),
+    ) -> io::Result<()> {
+        self.replace_file(&folder.join(state_name(import)), |existing| {
             state::update(existing, &self.device_id, change)
-        })
+        })?;
+        self.mark_dirty(import);
+        Ok(())
     }
 
-    /// The paths of the states of Document `id`, first Import first. Not every
-    /// state is stored. An `id` that isn't a Document ID is `InvalidInput`.
-    fn state_paths(&self, id: &str) -> io::Result<Vec<PathBuf>> {
-        let folder = self.folder(id)?;
-        let imports = self.import_ids(id);
-        Ok(imports.iter().map(|i| folder.join(state_name(i))).collect())
+    /// Notes that the document `key` has local changes for `sync` to send.
+    /// Called after the change is stored, so a `sync` that clears the note
+    /// first finds the change at the next one.
+    fn mark_dirty(&self, key: &str) {
+        let mut dirty = self.dirty.lock().unwrap_or_else(PoisonError::into_inner);
+        dirty.keys.insert(key.to_owned());
     }
 
     /// The IDs of the Imports of Document `id`, first Import first.
@@ -535,12 +605,17 @@ impl Library {
         path: &Path,
         write: impl FnOnce(Option<&[u8]>) -> Vec<u8>,
     ) -> io::Result<()> {
+        let _writing = self.writing();
         let existing = fs::read(path).ok();
         match write_atomically(&self.staging(), path, &write(existing.as_deref())) {
             // The folder is gone: the Document was never there or was Removed.
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             result => result,
         }
+    }
+
+    fn writing(&self) -> MutexGuard<'_, ()> {
+        self.writing.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The Library document, locked.
@@ -625,6 +700,12 @@ impl Entry {
 /// File stays the folder's only non-hidden entry.
 fn state_name(import: &str) -> String {
     format!(".state-{import}.automerge")
+}
+
+/// The name of the file holding what this Device knows of the exchange of the
+/// state of Import `import` with a storage.
+fn cursor_name(import: &str) -> String {
+    format!(".cursor-{import}")
 }
 
 /// Whether `name` is a plain file name, not a path.
@@ -1002,9 +1083,15 @@ mod tests {
         assert_eq!(library.documents().unwrap(), vec![]);
     }
 
+    /// The path of the state of the first Import of Document `id`.
+    fn first_state_path(library: &Library, id: &str) -> PathBuf {
+        let import = library.import_ids(id).remove(0);
+        library.folder(id).unwrap().join(state_name(&import))
+    }
+
     /// The path of the state of `document`'s first Import.
     fn state_path(library: &Library, document: &Document) -> PathBuf {
-        library.state_paths(&document.id).unwrap().remove(0)
+        first_state_path(library, &document.id)
     }
 
     /// A state holding only `progress`, as any Device would write it.
@@ -1978,7 +2065,7 @@ mod tests {
         // The Import was recorded, but the state wasn't moved yet.
         let folder = scratch.0.join("library/old");
         fs::rename(
-            library.state_paths("old").unwrap().remove(0),
+            first_state_path(&library, "old"),
             folder.join(".state.automerge"),
         )
         .unwrap();

@@ -32,6 +32,15 @@ extension LibraryModelTests {
         return condition()
     }
 
+    /// `eventually` for a condition that needs to wait for the core.
+    private func eventuallyAsync(_ condition: @MainActor () async -> Bool) async throws -> Bool {
+        for _ in 0..<500 {
+            if await condition() { return true }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return await condition()
+    }
+
     private func importedID(_ library: LibraryModel, titled title: String) async throws -> String {
         guard case .opened(let document) = await library.import(try writePDF(named: "\(title).pdf", metadataTitle: title))
         else { throw ImportFailure() }
@@ -182,5 +191,77 @@ extension LibraryModelTests {
         #expect(SyncState.synced(now.addingTimeInterval(-5)).line(now: now) == "Synced just now")
         #expect(SyncState.synced(now.addingTimeInterval(-300)).line(now: now).hasPrefix("Synced "))
         #expect(SyncState.synced(now.addingTimeInterval(-300)).line(now: now) != "Synced just now")
+    }
+
+    /// Two connected Devices that both hold one Document, imported on the first.
+    private func twoDevicesWithADocument() async throws -> (LibraryModel, LibraryModel, String) {
+        let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())
+        try await a.connect(directory: cloud)
+        try await b.connect(directory: cloud)
+        let id = try await importedID(a, titled: "Paper")
+        #expect(try await eventually { ids(b) == [id] })
+        return (a, b, id)
+    }
+
+    @Test func aHighlightAddedOnOneDeviceAppearsOnTheOtherAndTheReaderIsTold() async throws {
+        let (a, b, id) = try await twoDevicesWithADocument()
+        let onB = try #require(b.documents.first)
+        let before = b.markupRevision(of: onB)
+
+        let onA = try #require(a.documents.first)
+        let added = try #require(await a.addHighlight(anchor, to: onA))
+
+        #expect(try await eventually { b.markupRevision(of: onB) > before })
+        #expect(await b.highlights(of: onB) == [added])
+        #expect(onB.id == id)
+    }
+
+    @Test func aNoteAndAPageNoteAddedOnOneDeviceAppearOnTheOther() async throws {
+        let (a, b, _) = try await twoDevicesWithADocument()
+        let onA = try #require(a.documents.first), onB = try #require(b.documents.first)
+        let highlight = try #require(await a.addHighlight(anchor, to: onA))
+        await a.setNote("worth a note", of: highlight, in: onA)
+        let pageNote = try #require(await a.addPageNote(at: place, to: onA))
+        await a.setText("page note", of: pageNote, in: onA)
+
+        #expect(
+            try await eventuallyAsync {
+                let note = await b.highlights(of: onB).first?.note
+                let pageNotes = await b.pageNotes(of: onB)
+                return note == "worth a note" && pageNotes.count == 1
+            })
+    }
+
+    @Test func incomingReadingProgressShowsInTheGalleryButNeverMovesAnOpenReader() async throws {
+        let (a, b, _) = try await twoDevicesWithADocument()
+        // What the Reader of B holds: the Document as it was opened.
+        let open = try #require(b.documents.first)
+        await b.saveProgress(place, of: open, at: lastRead)
+        let opened = try #require(b.documents.first)
+
+        await a.saveProgress(
+            Place(pageIndex: 3, point: .zero), of: try #require(a.documents.first),
+            at: lastRead.addingTimeInterval(60))
+
+        #expect(try await eventually { b.documents.first?.place?.pageIndex == 3 })
+        #expect(opened.place == place)
+        // Its next save carries the newer Last Read, so it wins everywhere.
+        let later = lastRead.addingTimeInterval(120)
+        await b.saveProgress(place, of: opened, at: later)
+        #expect(try await eventually { a.documents.first?.lastRead == later })
+        #expect(a.documents.first?.place == place)
+    }
+
+    @Test func customColorsAndTheDefaultHighlightColorSyncBetweenDevices() async throws {
+        let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())
+        try await a.connect(directory: cloud)
+        try await b.connect(directory: cloud)
+
+        let custom = try #require(await a.addCustomColor(RGB(0.2, 0.4, 0.6)))
+        await a.setDefaultHighlightColor(custom)
+
+        #expect(try await eventually { b.highlightColors.contains(custom) && b.defaultHighlightColor == custom })
+        await b.removeCustomColor(custom)
+        #expect(try await eventually { !a.highlightColors.contains(custom) && a.defaultHighlightColor.id == "Yellow" })
     }
 }

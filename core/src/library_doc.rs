@@ -130,7 +130,7 @@ impl LibraryDoc {
 
     /// This Device's changes that `cursor` doesn't count as sent.
     pub fn outgoing(&mut self, cursor: &Cursor) -> Option<Outgoing> {
-        cursor.outgoing(&mut self.doc)
+        cursor.outgoing(&mut self.doc, "")
     }
 
     /// The document as stored bytes.

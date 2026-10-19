@@ -325,8 +325,11 @@ pub enum SyncStatus {
 #[uniffi::export(with_foreign)]
 pub trait SyncObserver: Send + Sync {
     fn status_changed(&self, status: SyncStatus);
-    /// The Documents changed: list them again.
+    /// The Documents (Reading Progress included) or the Highlight Colors
+    /// changed: read them again.
     fn library_changed(&self);
+    /// The Markup of Document `id` changed: read it again.
+    fn markup_changed(&self, id: String);
 }
 
 /// When Sync steps run, see `leafpdf_core::sync_loop::Intervals`.
@@ -360,6 +363,10 @@ impl sync_loop::Observer for Observer {
 
     fn library_changed(&self) {
         self.0.library_changed();
+    }
+
+    fn markup_changed(&self, id: &str) {
+        self.0.markup_changed(id.to_owned());
     }
 }
 
@@ -456,7 +463,8 @@ impl Library {
         drop(stopped);
     }
 
-    /// Something changed locally (an Import, a Remove): sends it soon.
+    /// Something changed locally (an Import, a Remove, Reading Progress, Markup,
+    /// Highlight Colors): sends it soon.
     pub fn local_change(&self) {
         if let Some(sync) = &*self.sync() {
             sync.local_change();
