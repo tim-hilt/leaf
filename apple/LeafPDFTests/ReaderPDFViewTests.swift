@@ -346,6 +346,49 @@ import Testing
         #expect(reported == 0)
     }
 
+    // MARK: Highlight hit-testing
+
+    /// A Highlight on page 1 over `rect` (page space).
+    func marked(_ id: String, _ rect: CGRect, onPage pageIndex: Int = 0) -> Highlight {
+        Highlight(
+            id: id, anchor: HighlightAnchor(pages: [.init(pageIndex: pageIndex, rects: [rect])], quotedText: id),
+            color: Highlight.defaultColor)
+    }
+
+    /// The centre of `rect` on page `pageIndex` + 1, in the view's coordinates.
+    func centre(ofRect rect: CGRect, onPage pageIndex: Int, in reader: ReaderPDFView) -> CGPoint {
+        reader.convert(CGPoint(x: rect.midX, y: rect.midY), from: reader.document!.page(at: pageIndex)!)
+    }
+
+    @Test func reportsTheHighlightAtAViewPoint() throws {
+        let reader = try readerWithText()
+        let rect = CGRect(x: 100, y: 690, width: 80, height: 20)
+        reader.highlights = [marked("a", rect)]
+
+        #expect(reader.highlight(at: centre(ofRect: rect, onPage: 0, in: reader))?.id == "a")
+        let outside = CGRect(x: 300, y: 400, width: 10, height: 10)
+        #expect(reader.highlight(at: centre(ofRect: outside, onPage: 0, in: reader)) == nil)
+    }
+
+    @Test func reportsNoHighlightOnAnotherPageThanTheirs() throws {
+        let reader = try readerWithText()
+        let rect = CGRect(x: 100, y: 690, width: 80, height: 20)
+        reader.highlights = [marked("a", rect, onPage: 1)]
+
+        #expect(reader.highlight(at: centre(ofRect: rect, onPage: 0, in: reader)) == nil)
+        #expect(reader.highlight(at: centre(ofRect: rect, onPage: 1, in: reader))?.id == "a")
+    }
+
+    @Test func whereHighlightsOverlapTheNewestIsReported() throws {
+        let reader = try readerWithText()
+        let older = CGRect(x: 100, y: 690, width: 80, height: 20)
+        let newer = CGRect(x: 150, y: 690, width: 80, height: 20)
+        reader.highlights = [marked("older", older), marked("newer", newer)]
+
+        #expect(reader.highlight(at: centre(ofRect: CGRect(x: 165, y: 700, width: 0, height: 0), onPage: 0, in: reader))?.id == "newer")
+        #expect(reader.highlight(at: centre(ofRect: CGRect(x: 110, y: 700, width: 0, height: 0), onPage: 0, in: reader))?.id == "older")
+    }
+
     // MARK: Links
 
     /// A link on page 6 to `target`, and one to a web page just below it.

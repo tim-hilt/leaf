@@ -16,6 +16,8 @@ import SwiftUI
 /// Selecting text and choosing "Highlight" in the selection menu (⌃⌘H on macOS)
 /// adds a Highlight in the default color, stored in the Library, never in the
 /// File. Highlights are drawn into the pages, so Dark Pages reverse them.
+/// Clicking or tapping a Highlight opens a popover (a sheet on iPhone) to
+/// recolor or remove it, both stored at once.
 ///
 /// Opens at the Document's Reading Progress at fit-to-width, or at page 1, and
 /// saves it (see `ReadingProgressSaver`) when opened, after scrolling stops,
@@ -53,6 +55,7 @@ struct ReaderView: View {
     @State private var results = SearchResults()
     @State private var highlights: [Highlight] = []
     @State private var isShowingResults = false
+    @State private var openHighlight: OpenHighlight?
     /// Printed page number of the Back place; nil when there is none.
     @State private var backPageNumber: String?
     #if os(iOS)
@@ -145,7 +148,8 @@ struct ReaderView: View {
                 PDFKitView(
                     document: pdf, appearance: settings.pageAppearance(systemScheme: colorScheme), highlights: highlights,
                     handle: handle, results: results, place: document.place,
-                    onHighlight: highlight, onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
+                    onHighlight: highlight, onHighlightTap: { openHighlight = OpenHighlight(id: $0.id, point: $1) },
+                    onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
                     onBackChange: { backPageNumber = $0 }, onShowResults: { isShowingResults = true })
             } else {
                 Color.clear
@@ -159,6 +163,14 @@ struct ReaderView: View {
             }
         }
         .animation(.default, value: backPageNumber)
+        .popover(item: $openHighlight, attachmentAnchor: .rect(.rect(CGRect(origin: openHighlight?.point ?? .zero, size: CGSize(width: 1, height: 1))))) { open in
+            if let highlight = highlights.first(where: { $0.id == open.id }) {
+                HighlightPopover(
+                    color: highlight.color, onColor: { recolor(highlight, to: $0) },
+                    onRemove: { remove(highlight) })
+                    .presentationCompactAdaptation(.sheet)
+            }
+        }
     }
 
     /// Whether the matches are listed in a sidebar: while the find bar is open
@@ -196,11 +208,32 @@ struct ReaderView: View {
         }
     }
 
+    /// Recolors `highlight`; it shows at once, and the Library stores it.
+    private func recolor(_ highlight: Highlight, to color: RGB) {
+        guard let index = highlights.firstIndex(where: { $0.id == highlight.id }) else { return }
+        highlights[index].color = color
+        Task { await library.setHighlightColor(color, of: highlight, in: document) }
+    }
+
+    /// Removes `highlight` and closes its popover; the Library stores the removal.
+    private func remove(_ highlight: Highlight) {
+        openHighlight = nil
+        highlights.removeAll { $0.id == highlight.id }
+        Task { await library.removeHighlight(highlight, from: document) }
+    }
+
     private func toggleImmersive() {
         #if os(iOS)
             isImmersive.toggle()
         #endif
     }
+}
+
+/// The Highlight whose popover is open, and the spot it opened from, in the
+/// pages' coordinates with the origin at the top-left.
+private struct OpenHighlight: Identifiable {
+    let id: String
+    let point: CGPoint
 }
 
 /// The floating "Back to p. 42" button, on a native material.
@@ -244,6 +277,7 @@ private struct PDFKitView {
     let results: SearchResults
     let place: Place?
     let onHighlight: (HighlightAnchor) -> Void
+    let onHighlightTap: (Highlight, CGPoint) -> Void
     let onSingleTap: () -> Void
     let onOpen: () -> Void
     let onScroll: () -> Void
@@ -262,6 +296,7 @@ private struct PDFKitView {
         view.pageAppearance = appearance
         view.highlights = highlights
         view.onHighlight = onHighlight
+        view.onHighlightTap = onHighlightTap
         view.onSingleTap = onSingleTap
         view.onOpen = onOpen
         view.onScroll = onScroll

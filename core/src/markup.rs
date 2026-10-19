@@ -57,6 +57,30 @@ impl Rgb {
     }
 }
 
+/// One of the Highlight Colors that always exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltInColor {
+    pub name: &'static str,
+    pub rgb: Rgb,
+}
+
+const fn built_in(name: &'static str, r: u8, g: u8, b: u8) -> BuiltInColor {
+    BuiltInColor {
+        name,
+        rgb: Rgb { r, g, b },
+    }
+}
+
+/// The built-in Highlight Colors, yellow (the default) first.
+pub const BUILT_IN_COLORS: [BuiltInColor; 6] = [
+    built_in("Yellow", 255, 235, 60),
+    built_in("Green", 126, 217, 87),
+    built_in("Blue", 102, 178, 255),
+    built_in("Pink", 255, 128, 191),
+    built_in("Purple", 178, 140, 255),
+    built_in("Red", 255, 99, 99),
+];
+
 /// A passage of a Document's text marked in a color. It may run across pages.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Highlight {
@@ -100,6 +124,41 @@ pub(crate) fn read(bytes: &[u8]) -> Markup {
 /// The Automerge document `existing` with `highlight` added, compacted.
 pub(crate) fn add(existing: Option<&[u8]>, highlight: &Highlight) -> Vec<u8> {
     state::update(existing, |doc| put_highlight(doc, highlight))
+}
+
+/// The Automerge document `existing` with the color of Highlight `id` set to
+/// `color`, compacted. Unknown Highlights are left alone.
+pub(crate) fn set_color(existing: Option<&[u8]>, id: &str, color: Rgb) -> Vec<u8> {
+    state::update(existing, |doc| put_color(doc, id, color))
+}
+
+/// The Automerge document `existing` without Highlight `id`, compacted. A
+/// removal wins over a concurrent change of the same Highlight.
+pub(crate) fn remove(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
+    state::update(existing, |doc| delete_highlight(doc, id))
+}
+
+/// The `highlights` map holding Highlight `id`, and its entry.
+fn find(doc: &AutoCommit, id: &str) -> Option<(ObjId, ObjId)> {
+    highlight_maps(doc)
+        .into_iter()
+        .find_map(|map| match doc.get(&map, id).ok()? {
+            Some((Value::Object(ObjType::Map), entry)) => Some((map, entry)),
+            _ => None,
+        })
+}
+
+fn put_color(doc: &mut AutoCommit, id: &str, color: Rgb) {
+    if let Some((_, entry)) = find(doc, id) {
+        doc.put(&entry, "color", ScalarValue::Uint(color.packed()))
+            .expect("a map accepts new keys");
+    }
+}
+
+fn delete_highlight(doc: &mut AutoCommit, id: &str) {
+    if let Some((map, _)) = find(doc, id) {
+        doc.delete(&map, id).expect("a map accepts deletions");
+    }
 }
 
 /// Every `highlights` map in `doc`, the one Automerge picks as winner last.
@@ -336,6 +395,112 @@ mod tests {
         let (_, entry) = doc.get(&map, "a").unwrap().unwrap();
         doc.delete(&entry, "color").unwrap();
         assert_eq!(read(&doc.save()), Markup::default());
+    }
+
+    const GREEN: Rgb = Rgb { r: 0, g: 200, b: 0 };
+
+    /// Two devices, with actor IDs 1 and 2, start from `base` and each edit it
+    /// offline, then merge. Returns what `read` makes of the merge in both
+    /// directions.
+    fn merged_edits(
+        base: &[u8],
+        one: impl Fn(&mut AutoCommit),
+        two: impl Fn(&mut AutoCommit),
+    ) -> [Markup; 2] {
+        let device = |actor: u8, edit: &dyn Fn(&mut AutoCommit)| {
+            let mut doc = AutoCommit::load(base)
+                .unwrap()
+                .with_actor(ActorId::from([actor; 16]));
+            edit(&mut doc);
+            doc
+        };
+        let merge = |first: (u8, &dyn Fn(&mut AutoCommit)),
+                     second: (u8, &dyn Fn(&mut AutoCommit))| {
+            let mut a = device(first.0, first.1);
+            a.merge(&mut device(second.0, second.1)).unwrap();
+            read(&a.save())
+        };
+        [merge((1, &one), (2, &two)), merge((2, &two), (1, &one))]
+    }
+
+    #[test]
+    fn a_color_change_replaces_the_color_and_nothing_else() {
+        let base = add(None, &highlight("a", 5));
+        let other = highlight("b", 6);
+        let base = add(Some(&base), &other);
+
+        let changed = read(&set_color(Some(&base), "a", GREEN));
+
+        let recolored = Highlight {
+            color: GREEN,
+            ..highlight("a", 5)
+        };
+        assert_eq!(changed.highlights, vec![recolored, other]);
+    }
+
+    #[test]
+    fn a_color_change_of_an_unknown_highlight_changes_nothing() {
+        let base = add(None, &highlight("a", 5));
+        assert_eq!(
+            read(&set_color(Some(&base), "nope", GREEN)).highlights,
+            vec![highlight("a", 5)]
+        );
+    }
+
+    #[test]
+    fn removing_deletes_only_that_highlight() {
+        let base = add(Some(&add(None, &highlight("a", 5))), &highlight("b", 6));
+        let removed = read(&remove(Some(&base), "a"));
+        assert_eq!(removed.highlights, vec![highlight("b", 6)]);
+    }
+
+    #[test]
+    fn removing_an_unknown_highlight_changes_nothing() {
+        let base = add(None, &highlight("a", 5));
+        assert_eq!(
+            read(&remove(Some(&base), "nope")).highlights,
+            vec![highlight("a", 5)]
+        );
+    }
+
+    #[test]
+    fn a_removal_wins_over_a_concurrent_color_change() {
+        let base = add(None, &highlight("a", 5));
+        let merged = merged_edits(
+            &base,
+            |doc| delete_highlight(doc, "a"),
+            |doc| put_color(doc, "a", GREEN),
+        );
+        assert_eq!(merged, [Markup::default(), Markup::default()]);
+    }
+
+    #[test]
+    fn a_color_change_and_an_edit_of_another_field_both_survive() {
+        let base = add(None, &highlight("a", 5));
+        // Stands in for any other field, like the Note.
+        let edit_quote = |doc: &mut AutoCommit| {
+            let map = highlight_maps(doc).pop().unwrap();
+            let (_, entry) = doc.get(&map, "a").unwrap().unwrap();
+            doc.put(&entry, "quoted_text", "edited").unwrap();
+        };
+        let expected = Markup {
+            highlights: vec![Highlight {
+                color: GREEN,
+                quoted_text: "edited".to_owned(),
+                ..highlight("a", 5)
+            }],
+        };
+        let merged = merged_edits(&base, |doc| put_color(doc, "a", GREEN), edit_quote);
+        assert_eq!(merged, [expected.clone(), expected]);
+    }
+
+    #[test]
+    fn the_built_in_colors_start_with_yellow_and_are_distinct() {
+        assert_eq!(BUILT_IN_COLORS.len(), 6);
+        assert_eq!(BUILT_IN_COLORS[0].name, "Yellow");
+        for (i, a) in BUILT_IN_COLORS.iter().enumerate() {
+            assert!(BUILT_IN_COLORS[i + 1..].iter().all(|b| a.rgb != b.rgb));
+        }
     }
 
     #[test]

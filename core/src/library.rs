@@ -179,6 +179,20 @@ impl Library {
         Ok(highlight)
     }
 
+    /// Sets the color of Highlight `highlight` of Document `id`. Does nothing
+    /// for a Highlight that isn't there, or a Document that isn't in the
+    /// Library; a Highlight removed on another device stays removed.
+    pub fn set_highlight_color(&self, id: &str, highlight: &str, color: Rgb) -> io::Result<()> {
+        self.update_state(id, |existing| markup::set_color(existing, highlight, color))
+    }
+
+    /// Removes Highlight `highlight` from Document `id`, without a trace. Does
+    /// nothing for a Highlight that isn't there, or a Document that isn't in the
+    /// Library.
+    pub fn remove_highlight(&self, id: &str, highlight: &str) -> io::Result<()> {
+        self.update_state(id, |existing| markup::remove(existing, highlight))
+    }
+
     /// Replaces the state of Document `id` with what `write` makes of the
     /// stored one (none if missing). Nothing happens if the Document isn't in
     /// the Library. The state is staged and renamed into place, so it is never
@@ -923,6 +937,88 @@ mod tests {
         import_new(&library, &source);
 
         assert_eq!(library.markup(&document.id).unwrap(), Markup::default());
+    }
+
+    const GREEN: Rgb = Rgb { r: 0, g: 200, b: 0 };
+
+    #[test]
+    fn a_recolored_highlight_keeps_its_color_after_reopening_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let first = highlight(&library, &document.id, "first", 1_000);
+        let second = highlight(&library, &document.id, "second", 2_000);
+
+        library
+            .set_highlight_color(&document.id, &first.id, GREEN)
+            .unwrap();
+
+        let expected = vec![
+            Highlight {
+                color: GREEN,
+                ..first
+            },
+            second,
+        ];
+        assert_eq!(library.markup(&document.id).unwrap().highlights, expected);
+        let reopened = scratch.library();
+        assert_eq!(reopened.markup(&document.id).unwrap().highlights, expected);
+    }
+
+    #[test]
+    fn a_removed_highlight_is_gone_after_reopening_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let first = highlight(&library, &document.id, "first", 1_000);
+        let second = highlight(&library, &document.id, "second", 2_000);
+
+        library.remove_highlight(&document.id, &first.id).unwrap();
+
+        let reopened = scratch.library();
+        assert_eq!(
+            reopened.markup(&document.id).unwrap().highlights,
+            vec![second]
+        );
+    }
+
+    #[test]
+    fn changing_or_removing_an_unknown_highlight_does_nothing() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let added = highlight(&library, &document.id, "first", 1_000);
+
+        library
+            .set_highlight_color(&document.id, "nope", GREEN)
+            .unwrap();
+        library.remove_highlight(&document.id, "nope").unwrap();
+
+        assert_eq!(
+            library.markup(&document.id).unwrap().highlights,
+            vec![added]
+        );
+    }
+
+    #[test]
+    fn editing_highlights_of_a_document_that_is_not_there_does_nothing() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        library.set_highlight_color("0123", "a", GREEN).unwrap();
+        library.remove_highlight("0123", "a").unwrap();
+        assert!(!scratch.0.join("library/0123").exists());
+    }
+
+    #[test]
+    fn editing_highlights_refuses_an_id_that_points_outside_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        for id in ["../x", "/tmp", "", ".staging"] {
+            let err = library.set_highlight_color(id, "a", GREEN).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{id:?}");
+            let err = library.remove_highlight(id, "a").unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{id:?}");
+        }
     }
 
     #[test]

@@ -16,7 +16,8 @@ final class ReaderHandle {
 ///
 /// Highlights are drawn into the pages (`StyledDocument`). The selection can be
 /// highlighted (`highlightSelection()`, also from the selection menu), which
-/// reports its anchor, and never changes the File.
+/// reports its anchor, and never changes the File. A single click or tap on a
+/// Highlight reports it (`onHighlightTap`); drags and long presses still select.
 ///
 /// A Jump goes to a Place and remembers where the viewport was, so that Back
 /// can return there. Only the latest Jump is remembered, and only for as long
@@ -51,7 +52,7 @@ final class ReaderPDFView: PDFView {
         }
     }
 
-    /// The Highlights drawn into the pages. Changing them redraws the pages,
+    /// The Highlights drawn into the pages, oldest first. Changing them redraws the pages,
     /// keeping the viewport. Set it after the Document, which must be a `StyledDocument`.
     var highlights: [Highlight] = [] {
         didSet {
@@ -70,6 +71,10 @@ final class ReaderPDFView: PDFView {
     var onScroll: () -> Void = {}
     /// Called with the anchor of the selection when the reader highlights it.
     var onHighlight: (HighlightAnchor) -> Void = { _ in }
+    /// Called when the reader clicks or taps a Highlight (the newest, where they
+    /// overlap) at a point, given in the view's coordinates with the origin at
+    /// the top-left.
+    var onHighlightTap: (Highlight, CGPoint) -> Void = { _, _ in }
     /// Called when the Back place appears, changes or goes, with its printed
     /// page number; nil when there is none.
     var onBackChange: (String?) -> Void = { _ in }
@@ -214,6 +219,28 @@ final class ReaderPDFView: PDFView {
         guard let anchor = selectionAnchor else { return }
         clearSelection()
         onHighlight(anchor)
+    }
+
+    /// The Highlight at `point`, in the view's coordinates: the newest one
+    /// where several overlap. Nil where there is none.
+    func highlight(at point: CGPoint) -> Highlight? {
+        guard let document, let page = page(for: point, nearest: false) else { return nil }
+        let index = document.index(for: page)
+        let spot = convert(point, to: page)
+        return highlights.last { highlight in
+            highlight.anchor.pages.contains { $0.pageIndex == index && $0.rects.contains { $0.contains(spot) } }
+        }
+    }
+
+    /// Reports the Highlight at `point` to `onHighlightTap`. Returns whether there was one.
+    private func reportHighlightTap(at point: CGPoint) -> Bool {
+        guard let highlight = highlight(at: point) else { return false }
+        #if os(iOS)
+            onHighlightTap(highlight, point)
+        #else
+            onHighlightTap(highlight, CGPoint(x: point.x, y: bounds.height - point.y))
+        #endif
+        return true
     }
 
     // MARK: Links
@@ -393,6 +420,7 @@ final class ReaderPDFView: PDFView {
         }
 
         @objc private func didSingleTap(_ tap: UITapGestureRecognizer) {
+            if reportHighlightTap(at: tap.location(in: self)) { return }
             onSingleTap()
         }
 
@@ -436,6 +464,53 @@ final class ReaderPDFView: PDFView {
         }
 
         @objc private func highlightFromMenu(_ sender: Any?) { highlightSelection() }
+
+        /// Lets our click recognizers work alongside PDFKit's own mouse handling
+        /// (selecting, links), and makes a single click wait for a possible double click.
+        private final class ClickFilter: NSObject, NSGestureRecognizerDelegate {
+            private weak var view: ReaderPDFView?
+            var doubleClick: NSClickGestureRecognizer?
+
+            init(view: ReaderPDFView) { self.view = view }
+
+            func gestureRecognizer(
+                _ gestureRecognizer: NSGestureRecognizer, shouldRecognizeSimultaneouslyWith other: NSGestureRecognizer
+            ) -> Bool { true }
+
+            func gestureRecognizer(
+                _ gestureRecognizer: NSGestureRecognizer, shouldRequireFailureOf other: NSGestureRecognizer
+            ) -> Bool { other === doubleClick }
+
+            /// Not on a link: PDFKit follows those.
+            func gestureRecognizerShouldBegin(_ gestureRecognizer: NSGestureRecognizer) -> Bool {
+                guard let view else { return false }
+                return !view.hasLink(at: gestureRecognizer.location(in: view))
+            }
+        }
+
+        // Recognizers hold their delegate weakly.
+        private var clickFilter: ClickFilter?
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            let filter = ClickFilter(view: self)
+            clickFilter = filter
+            let doubleClick = NSClickGestureRecognizer()
+            doubleClick.numberOfClicksRequired = 2
+            doubleClick.delegate = filter
+            filter.doubleClick = doubleClick
+            addGestureRecognizer(doubleClick)
+            let click = NSClickGestureRecognizer(target: self, action: #selector(didClick))
+            click.delegate = filter
+            addGestureRecognizer(click)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+        @objc private func didClick(_ click: NSClickGestureRecognizer) {
+            _ = reportHighlightTap(at: click.location(in: self))
+        }
 
         override func setFrameSize(_ newSize: NSSize) {
             sizeWillChange(to: newSize, from: frame.size)

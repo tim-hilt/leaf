@@ -280,6 +280,25 @@ final class LibraryModel {
         return stored.map(Highlight.init)
     }
 
+    /// Sets the color of `highlight` of `document`. The core writes off the
+    /// main thread, in order, and this returns when it has. Does nothing for a
+    /// Document that was Removed.
+    func setHighlightColor(_ color: RGB, of highlight: Highlight, in document: LibraryDocument) async {
+        guard documents.contains(where: { $0.id == document.id }) else { return }
+        let core = core, id = document.id, highlightID = highlight.id
+        let rgb = Rgb(r: color.r.byte, g: color.g.byte, b: color.b.byte)
+        await inStateOrder { try? core.setHighlightColor(id: id, highlight: highlightID, color: rgb) }
+    }
+
+    /// Removes `highlight` from `document`. The core writes off the main
+    /// thread, in order, and this returns when it has. Does nothing for a
+    /// Document that was Removed.
+    func removeHighlight(_ highlight: Highlight, from document: LibraryDocument) async {
+        guard documents.contains(where: { $0.id == document.id }) else { return }
+        let core = core, id = document.id, highlightID = highlight.id
+        await inStateOrder { try? core.removeHighlight(id: id, highlight: highlightID) }
+    }
+
     /// Runs `access` off the main thread, after every earlier access to the
     /// core's Document state has finished, so reads and writes never overlap.
     private func inStateOrder<T: Sendable>(_ access: @escaping @Sendable () -> T) async -> T {
@@ -358,7 +377,7 @@ extension Highlight {
                         rects: page.rects.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) })
                 },
                 quotedText: stored.quotedText),
-            color: RGB(Double(stored.color.r) / 255, Double(stored.color.g) / 255, Double(stored.color.b) / 255))
+            color: RGB(stored.color))
     }
 }
 

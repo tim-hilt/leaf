@@ -91,6 +91,25 @@ pub struct Rgb {
     pub b: u8,
 }
 
+/// See `leafpdf_core::markup::BuiltInColor`.
+#[derive(uniffi::Record)]
+pub struct BuiltInColor {
+    pub name: String,
+    pub rgb: Rgb,
+}
+
+/// The built-in Highlight Colors, yellow (the default) first.
+#[uniffi::export]
+pub fn built_in_colors() -> Vec<BuiltInColor> {
+    leafpdf_core::markup::BUILT_IN_COLORS
+        .iter()
+        .map(|c| BuiltInColor {
+            name: c.name.to_owned(),
+            rgb: c.rgb.into(),
+        })
+        .collect()
+}
+
 /// See `leafpdf_core::markup::Highlight`. `created` is milliseconds since the
 /// Unix epoch.
 #[derive(uniffi::Record)]
@@ -279,6 +298,19 @@ impl Library {
             .0
             .add_highlight(&id, anchor, &quoted_text, color.into(), created)?;
         Ok(highlight.into())
+    }
+
+    pub fn set_highlight_color(
+        &self,
+        id: String,
+        highlight: String,
+        color: Rgb,
+    ) -> Result<(), LibraryError> {
+        Ok(self.0.set_highlight_color(&id, &highlight, color.into())?)
+    }
+
+    pub fn remove_highlight(&self, id: String, highlight: String) -> Result<(), LibraryError> {
+        Ok(self.0.remove_highlight(&id, &highlight)?)
     }
 
     pub fn documents(&self) -> Result<Vec<Document>, LibraryError> {
