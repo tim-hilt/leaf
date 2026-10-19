@@ -13,3 +13,4 @@ xcuserdata/
 
 *.log
 
+/apple/Config/Info.plist

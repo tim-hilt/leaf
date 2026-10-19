@@ -21,6 +21,16 @@ targets:
       Release: Config/Signing.xcconfig
     dependencies:
       - package: LeafCore
+    # The formats LeafPDF opens from outside (share sheet, Open With, Dock).
+    # Alternate: never the default handler. Add EPUB or MOBI here.
+    info:
+      path: Config/Info.plist
+      properties:
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: PDF Document
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [com.adobe.pdf]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.timhilt.leafpdf

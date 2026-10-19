@@ -130,9 +130,12 @@ struct FileGalleryView: View {
         .fileImporter(
             isPresented: $isImporting, allowedContentTypes: [.pdf], allowsMultipleSelection: false
         ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                Task { await importFile(url) }
-            }
+            if case .success(let urls) = result { Task { await importFiles(urls, from: .picker) } }
+        }
+        // Files other apps hand over: the share sheet, Open With, the Dock icon.
+        .onOpenURL { url in
+            closeSheetsAndPopovers()
+            Task { await importFiles([url], from: .openWithOrShare) }
         }
         .alert(
             rejection?.title ?? "", isPresented: Binding(get: { rejection != nil }, set: { _ in rejection = nil }),
@@ -200,12 +203,21 @@ struct FileGalleryView: View {
         return true
     }
 
-    private func importFile(_ url: URL) async {
-        switch await library.import(url) {
-        case .opened(let document): path = [document]
-        case .duplicate(let document): duplicate = document
-        case .rejected(let reason): rejection = ImportAlert(rejected: url, reason: reason)
-        case .failed(let message): rejection = ImportAlert(failed: url, message: message)
+    /// Dismisses whatever covers the Gallery, so that an incoming File's result shows.
+    /// An open Reader, with its popovers, is replaced by that result.
+    private func closeSheetsAndPopovers() {
+        isShowingSettings = false
+        isImporting = false
+        removal = nil
+        duplicate = nil
+        rejection = nil
+    }
+
+    private func importFiles(_ urls: [URL], from origin: ImportOrigin) async {
+        switch await library.importFiles(urls, from: origin) {
+        case .openReader(let document): path = [document]
+        case .alreadyInLibrary(let document): duplicate = document
+        case .problems(let problems): rejection = ImportAlert(problems)
         }
     }
 }
@@ -245,7 +257,16 @@ private struct ImportAlert {
     let title: String
     let message: String
 
-    init(rejected url: URL, reason: ImportRejection) {
+    /// The alert for the problem of the one File Imported; nil if there is none.
+    init?(_ problems: [ImportProblem]) {
+        guard let problem = problems.first else { return nil }
+        switch problem.failure {
+        case .rejected(let reason): self.init(rejected: problem.file, reason: reason)
+        case .failed(let message): self.init(failed: problem.file, message: message)
+        }
+    }
+
+    private init(rejected url: URL, reason: ImportRejection) {
         let name = url.lastPathComponent
         switch reason {
         case .notPDF:
@@ -260,7 +281,7 @@ private struct ImportAlert {
         }
     }
 
-    init(failed url: URL, message: String) {
+    private init(failed url: URL, message: String) {
         title = "Couldn't import “\(url.lastPathComponent)”"
         self.message = message
     }

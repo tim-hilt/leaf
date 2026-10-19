@@ -21,10 +21,12 @@ import Testing
     /// Opens the Library at `root`, keeping its saved Titles and Authors in
     /// `detailsFile`, its Covers in `coversFolder`, its sort choice in `defaults`
     /// and its Cloud Backing credentials in `credentials`.
-    func openLibrary(syncIntervals: SyncIntervals = SyncIntervals(debounceMs: 3000, pollMs: 10000)) throws -> LibraryModel {
+    func openLibrary(
+        syncIntervals: SyncIntervals = SyncIntervals(debounceMs: 3000, pollMs: 10000), inbox: URL? = nil
+    ) throws -> LibraryModel {
         try LibraryModel(
             root: root, detailsFile: detailsFile, coversFolder: coversFolder, defaults: defaults,
-            credentials: credentials, syncIntervals: syncIntervals)
+            credentials: credentials, syncIntervals: syncIntervals, inbox: inbox)
     }
 
     /// Imports a PDF with the given Title, oldest first when called in sequence.
@@ -92,6 +94,127 @@ import Testing
         }
         #expect(existing == first)
         #expect(library.documents == [first])
+    }
+
+    // MARK: Importing from outside
+
+    @Test(arguments: [ImportOrigin.openWithOrShare, .drop, .picker])
+    func oneNewFileOpensTheReaderOnItsDocument(origin: ImportOrigin) async throws {
+        let library = try openLibrary()
+
+        let result = await library.importFiles([try writePDF(named: "a.pdf")], from: origin)
+
+        guard case .openReader(let document) = result else {
+            Issue.record("expected .openReader, got \(result)")
+            return
+        }
+        #expect(library.documents == [document])
+    }
+
+    @Test(arguments: [ImportOrigin.openWithOrShare, .drop, .picker])
+    func oneDuplicateFileIsHandledPerOrigin(origin: ImportOrigin) async throws {
+        let library = try openLibrary()
+        let source = try writePDF(named: "a.pdf")
+        let first = await library.importFiles([source], from: .picker)
+        guard case .openReader(let existing) = first else {
+            Issue.record("expected .openReader")
+            return
+        }
+        let renamed = source.deletingLastPathComponent().appending(path: "renamed.pdf")
+        try FileManager.default.copyItem(at: source, to: renamed)
+
+        let result = await library.importFiles([renamed], from: origin)
+
+        switch (origin, result) {
+        case (.openWithOrShare, .openReader(let document)), (.drop, .alreadyInLibrary(let document)),
+            (.picker, .alreadyInLibrary(let document)):
+            #expect(document == existing)
+        default:
+            Issue.record("unexpected \(result) for \(origin)")
+        }
+        #expect(library.documents == [existing])
+    }
+
+    @Test func oneRejectedFileIsReportedAsAProblemAndNothingIsCopied() async throws {
+        let library = try openLibrary()
+        let garbage = try writeFile(named: "notes.pdf", bytes: Data("just some text".utf8))
+
+        let result = await library.importFiles([garbage], from: .openWithOrShare)
+
+        guard case .problems(let problems) = result, problems.count == 1 else {
+            Issue.record("expected one problem, got \(result)")
+            return
+        }
+        #expect(problems[0].file == garbage)
+        guard case .rejected(.notPDF) = problems[0].failure else {
+            Issue.record("expected .rejected(.notPDF), got \(problems[0].failure)")
+            return
+        }
+        #expect(library.documents.isEmpty)
+    }
+
+    @Test func oneFailedFileIsReportedAsAProblemWithTheSystemsReason() async throws {
+        let library = try openLibrary()
+        let missing = root.appending(path: "missing.pdf")
+
+        let result = await library.importFiles([missing], from: .drop)
+
+        guard case .problems(let problems) = result, problems.count == 1,
+            case .failed(let message) = problems[0].failure
+        else {
+            Issue.record("expected one failed problem, got \(result)")
+            return
+        }
+        #expect(message.localizedCaseInsensitiveContains("no such file"))
+    }
+
+    @Test func severalFilesStayInTheGalleryListingNewOnesAndProblems() async throws {
+        let library = try openLibrary()
+        let good = try writePDF(named: "a.pdf")
+        let garbage = try writeFile(named: "notes.pdf", bytes: Data("just some text".utf8))
+
+        let result = await library.importFiles([good, garbage], from: .drop)
+
+        guard case .problems(let problems) = result else {
+            Issue.record("expected .problems, got \(result)")
+            return
+        }
+        #expect(problems.map(\.file) == [garbage])
+        #expect(library.documents.count == 1)
+    }
+
+    @Test func aFileInTheInboxIsDeletedAfterItsImportWhateverTheOutcome() async throws {
+        let inbox = root.appending(path: "Inbox", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        let library = try openLibrary(inbox: inbox)
+        let good = inbox.appending(path: "a.pdf"), garbage = inbox.appending(path: "notes.pdf")
+        try FileManager.default.copyItem(at: try writePDF(named: "a.pdf"), to: good)
+        try Data("just some text".utf8).write(to: garbage)
+
+        _ = await library.importFiles([good], from: .openWithOrShare)
+        _ = await library.importFiles([garbage], from: .openWithOrShare)
+
+        #expect(!FileManager.default.fileExists(atPath: good.path))
+        #expect(!FileManager.default.fileExists(atPath: garbage.path))
+        #expect(library.documents.count == 1)
+    }
+
+    @Test func aFileOutsideTheInboxIsLeftUntouched() async throws {
+        let library = try openLibrary(inbox: root.appending(path: "Inbox", directoryHint: .isDirectory))
+        let source = try writePDF(named: "a.pdf")
+
+        _ = await library.importFiles([source], from: .openWithOrShare)
+
+        #expect(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    @Test func declaresPDFAsTheOnlyDocumentTypeWithAlternateRank() throws {
+        let types = Bundle(for: LibraryModel.self).infoDictionary?["CFBundleDocumentTypes"] as? [[String: Any]]
+
+        #expect(types?.count == 1)
+        #expect(types?.first?["LSItemContentTypes"] as? [String] == ["com.adobe.pdf"])
+        #expect(types?.first?["CFBundleTypeRole"] as? String == "Viewer")
+        #expect(types?.first?["LSHandlerRank"] as? String == "Alternate")
     }
 
     @Test func importingAMissingFileFailsWithTheSystemsReason() async throws {

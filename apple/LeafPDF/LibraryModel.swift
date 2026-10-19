@@ -64,6 +64,38 @@ enum ImportOutcome {
     case failed(String)
 }
 
+/// Where Files to Import came from.
+enum ImportOrigin {
+    /// Another app handed them over: the share sheet, "Open With", the Dock icon.
+    case openWithOrShare
+    /// Dropped onto the Gallery.
+    case drop
+    /// Chosen with the Gallery's "+".
+    case picker
+}
+
+/// A File that wasn't Imported, and why.
+struct ImportProblem {
+    enum Failure {
+        case rejected(ImportRejection)
+        /// The system's reason.
+        case failed(String)
+    }
+
+    let file: URL
+    let failure: Failure
+}
+
+/// What the window shows after Importing Files.
+enum ImportResult {
+    /// Open the Reader on this Document, replacing any open one.
+    case openReader(LibraryDocument)
+    /// Tell the user this Document already was in the Library, and offer to open it.
+    case alreadyInLibrary(LibraryDocument)
+    /// Stay in the Gallery; alert if there are problems.
+    case problems([ImportProblem])
+}
+
 /// An Import in progress: what the progress modal shows.
 struct RunningImport: Equatable {
     /// The file name until PDFKit has read the File, then its Title.
@@ -240,6 +272,9 @@ final class LibraryModel {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let credentials: CloudCredentials
     @ObservationIgnored private let syncIntervals: SyncIntervals
+    /// Where the system hands over temporary copies of Files; they are deleted
+    /// after their Import. Nil where the system hands over the Files themselves.
+    @ObservationIgnored private let inbox: URL?
     /// Names the current Connection, so reports of a finished one are ignored.
     @ObservationIgnored private var connectionID: UUID?
     /// Document IDs whose details are being read from their PDFs.
@@ -253,10 +288,11 @@ final class LibraryModel {
     /// listed by file name; a low-priority background pass then reads them
     /// from the PDFs, one at a time. A WebDAV server saved in `credentials` is
     /// Connected again, without contacting it, so launching offline works;
-    /// Sync steps run `syncIntervals` apart.
+    /// Sync steps run `syncIntervals` apart. Files in `inbox` are temporary
+    /// copies, deleted after `importFiles`.
     init(
         root: URL, detailsFile: URL, coversFolder: URL, defaults: UserDefaults, credentials: CloudCredentials,
-        syncIntervals: SyncIntervals = SyncIntervals(debounceMs: 3000, pollMs: 10000)
+        syncIntervals: SyncIntervals = SyncIntervals(debounceMs: 3000, pollMs: 10000), inbox: URL? = nil
     ) throws {
         core = try LeafCore.Library.open(root: root.path)
         saved = DetailsStore(file: detailsFile)
@@ -264,6 +300,7 @@ final class LibraryModel {
         self.defaults = defaults
         self.credentials = credentials
         self.syncIntervals = syncIntervals
+        self.inbox = inbox
         sort = LibrarySort(from: defaults)
         highlightColors = core.highlightColors().map(HighlightColor.init)
         defaultHighlightColor = HighlightColor(core.defaultHighlightColor())
@@ -283,7 +320,8 @@ final class LibraryModel {
     }
 
     /// The Library in a hidden folder in Application Support, with Covers in
-    /// the system Caches folder.
+    /// the system Caches folder. On iOS, the system hands over Files from other
+    /// apps as copies in `Documents/Inbox`.
     static func inApplicationSupport() throws -> LibraryModel {
         let files = FileManager.default
         let support = try files.url(
@@ -294,7 +332,16 @@ final class LibraryModel {
             detailsFile: support.appending(path: "Details.json"),
             coversFolder: caches.appending(path: "Covers", directoryHint: .isDirectory),
             defaults: .standard,
-            credentials: CloudCredentials(defaults: .standard, service: "com.timhilt.leafpdf.cloud"))
+            credentials: CloudCredentials(defaults: .standard, service: "com.timhilt.leafpdf.cloud"),
+            inbox: Self.systemInbox)
+    }
+
+    private static var systemInbox: URL? {
+        #if os(iOS)
+            URL.documentsDirectory.appending(path: "Inbox", directoryHint: .isDirectory)
+        #else
+            nil
+        #endif
     }
 
     /// Connects to the WebDAV server at `url` and starts syncing, which first
@@ -483,6 +530,34 @@ final class LibraryModel {
         } catch {
             return .failed(error.localizedDescription)
         }
+    }
+
+    /// Imports `urls`, which came from `origin`, one after another, and says
+    /// what the window shows. One File opens the Reader on its Document; if the
+    /// Library already had it, that happens only for Open With/Share, else the
+    /// user is told. A File that isn't Imported is a problem. Temporary copies
+    /// in the Inbox are deleted afterwards, whatever the outcome.
+    func importFiles(_ urls: [URL], from origin: ImportOrigin) async -> ImportResult {
+        var single: ImportResult?
+        var problems: [ImportProblem] = []
+        for url in urls {
+            switch await `import`(url) {
+            case .opened(let document): single = .openReader(document)
+            case .duplicate(let document):
+                single = origin == .openWithOrShare ? .openReader(document) : .alreadyInLibrary(document)
+            case .rejected(let reason): problems.append(ImportProblem(file: url, failure: .rejected(reason)))
+            case .failed(let message): problems.append(ImportProblem(file: url, failure: .failed(message)))
+            }
+            deleteIfTemporary(url)
+        }
+        if urls.count == 1, let single { return single }
+        return .problems(problems)
+    }
+
+    private func deleteIfTemporary(_ file: URL) {
+        guard let inbox, file.resolvingSymlinksInPath().path.hasPrefix(inbox.resolvingSymlinksInPath().path + "/")
+        else { return }
+        try? FileManager.default.removeItem(at: file)
     }
 
     /// Deletes the Document, its File and its saved Title, Author and Cover. If that

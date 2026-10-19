@@ -23,6 +23,8 @@ struct LeafPDFApp: App {
                     }
                 }
         }
+        // Incoming Files go to an existing window, a new one only if none is open.
+        .handlesExternalEvents(matching: ["*"])
         .commands {
             ImportCommands()
             #if os(macOS)
