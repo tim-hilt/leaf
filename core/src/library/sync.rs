@@ -4,13 +4,14 @@
 //!
 //! The remote layout, versioned so it can change later:
 //!
-//! - `v1/library/<device>-<number>`: chunks of the Library document, see
+//! Everything is in the one directory `v1`, so one listing tells what is new:
+//!
+//! - `library.<device>-<number>`: chunks of the Library document, see
 //!   `chunks`.
-//! - `v1/state/<import>.<device>-<number>`: chunks of the state of each Import
-//!   (Reading Progress and Markup). One directory for all of them, so one
-//!   listing tells which have news.
-//! - `v1/preferences/<device>-<number>`: chunks of the Preferences.
-//! - `v1/files/<sha256>`: each File once, whichever Device uploaded it first.
+//! - `state.<import>.<device>-<number>`: chunks of the state of each Import
+//!   (Reading Progress and Markup).
+//! - `preferences.<device>-<number>`: chunks of the Preferences.
+//! - `file.<sha256>`: each File once, whichever Device uploaded it first.
 //!
 //! A Document is listed only once its File is stored here, so a Sync that
 //! learns of a Document lists it when its File has arrived. Its state may
@@ -21,10 +22,11 @@ use super::*;
 use crate::chunks::{self, Outgoing};
 use crate::storage::{Blob, Storage};
 
-const LIBRARY_DIR: &str = "v1/library";
-const STATE_DIR: &str = "v1/state";
-const PREFERENCES_DIR: &str = "v1/preferences";
-const FILES_DIR: &str = "v1/files";
+const REMOTE_DIR: &str = "v1";
+const LIBRARY_PREFIX: &str = "library.";
+const STATE_PREFIX: &str = "state.";
+const PREFERENCES_PREFIX: &str = "preferences.";
+const FILE_PREFIX: &str = "file.";
 /// What `Exchanges` calls the Library document, as `PREFERENCES_KEY` does for
 /// the Preferences.
 const LIBRARY_KEY: &str = "library";
@@ -78,8 +80,6 @@ struct Target {
     key: String,
     /// The schema version this app knows of it.
     schema: u64,
-    /// The remote directory of its chunks.
-    dir: &'static str,
     /// What its chunks' names start with.
     prefix: String,
     path: PathBuf,
@@ -99,7 +99,6 @@ struct Pending {
 
 /// This Device's changes to one document, to be written.
 struct Outbound {
-    dir: &'static str,
     /// The document's key in `Exchanges` and `Dirty`.
     key: String,
     cursor_path: PathBuf,
@@ -119,10 +118,10 @@ impl Library {
     /// storage lacks and downloads the ones this Device lacks, those Read last
     /// first, then those Imported last first. Files of Removed Documents are
     /// deleted from the storage, and so are this Device's chunks of the states
-    /// of Removed Imports.
+    /// of Removed Imports. A Device that has many chunks of a document replaces
+    /// its own with a snapshot, see `chunks`.
     ///
-    /// A step with nothing new costs one listing per directory and loads no
-    /// document. A File whose bytes don't match its hash is not stored. The
+    /// A step with nothing new costs one listing and loads no document. A File whose bytes don't match its hash is not stored. The
     /// Library is tied to no storage: it sends everything to one that lacks it.
     ///
     /// Two failures are not being offline, see `sync_loop::Status`: rejected
@@ -149,9 +148,11 @@ impl Library {
             .unwrap_or_else(PoisonError::into_inner);
         let everything = std::mem::take(&mut self.dirty().everything);
         let mut pending = Pending::default();
-        let result = self
-            .merge_documents(storage, &mut exchanges, everything, &mut pending)
-            .and_then(|()| self.send(storage, &mut exchanges, &mut pending));
+        let result = storage.list(REMOTE_DIR).and_then(|listing| {
+            self.merge_documents(storage, &listing, &mut exchanges, everything, &mut pending)?;
+            self.send(storage, &mut exchanges, &mut pending)?;
+            Ok(listing)
+        });
         if result.is_err() {
             self.dirty().everything |= everything;
             // What wasn't sent is found again by the next step.
@@ -159,11 +160,9 @@ impl Library {
                 self.mark_dirty(&send.key);
             }
         }
-        result?;
-        let remote_files: HashSet<String> = storage
-            .list(FILES_DIR)?
+        let remote_files: HashSet<String> = result?
             .into_iter()
-            .map(|blob| blob.name)
+            .filter_map(|blob| Some(blob.name.strip_prefix(FILE_PREFIX)?.to_owned()))
             .collect();
         self.delete_removed_files(storage, &remote_files)?;
         let uploads = self.files_to_upload(&remote_files)?;
@@ -179,23 +178,24 @@ impl Library {
     }
 
     /// Merges the other Devices' chunks of the Library document, the
-    /// Preferences and the states, and collects what to send in `pending`.
-    /// Fails with `Unsupported` if one has a newer schema version than this app
+    /// Preferences and the states, found in `listing` of the remote directory,
+    /// and collects what to send in `pending`. Fails with `Unsupported` if one has a newer schema version than this app
     /// knows.
     fn merge_documents(
         &self,
         storage: &dyn Storage,
+        listing: &[Blob],
         exchanges: &mut Exchanges,
         everything: bool,
         pending: &mut Pending,
     ) -> io::Result<()> {
-        if self.exchange_library(storage, exchanges, pending)? {
+        if self.exchange_library(storage, listing, exchanges, pending)? {
             // Removes and names of other Devices.
             self.sync_changes.fetch_add(1, Relaxed);
             self.reconcile()?;
         }
-        self.exchange_preferences(storage, exchanges, everything, pending)?;
-        self.exchange_states(storage, exchanges, everything, pending)
+        self.exchange_preferences(storage, listing, exchanges, everything, pending)?;
+        self.exchange_states(storage, listing, exchanges, everything, pending)
     }
 
     /// Does what `pending` holds. The cursor of a document is stored after its
@@ -229,7 +229,7 @@ impl Library {
     ) -> io::Result<()> {
         let cursor = exchanges.cursor(&send.key, &send.cursor_path);
         let before = cursor.clone();
-        let sent = chunks::push(storage, send.dir, cursor, send.outgoing);
+        let sent = chunks::push(storage, REMOTE_DIR, cursor, send.outgoing);
         if *cursor != before {
             self.store_cursor(&send.cursor_path, cursor)?;
         }
@@ -250,29 +250,29 @@ impl Library {
     fn exchange_library(
         &self,
         storage: &dyn Storage,
+        listing: &[Blob],
         exchanges: &mut Exchanges,
         pending: &mut Pending,
     ) -> io::Result<bool> {
         let cursor_path = self.root.join(LIBRARY_CURSOR);
         let cursor = exchanges.cursor(LIBRARY_KEY, &cursor_path);
         let before = cursor.clone();
-        let listing = storage.list(LIBRARY_DIR)?;
         let pulled = chunks::pull(
             storage,
-            LIBRARY_DIR,
-            &listing,
-            "",
+            REMOTE_DIR,
+            listing,
+            LIBRARY_PREFIX,
             &self.device_id(),
             cursor,
         )?;
         let (merged, outgoing) = {
             let mut doc = self.catalog();
-            let merged = doc.merge(cursor, pulled)?;
+            let merged = doc.merge(cursor, &pulled)?;
             if merged && let Err(e) = self.save_catalog(&mut doc) {
                 *cursor = before;
                 return Err(e);
             }
-            (merged, doc.outgoing(cursor))
+            (merged, doc.outgoing(cursor, LIBRARY_PREFIX, &pulled))
         };
         // The cursor is stored after the document, so it never counts
         // something as applied that was lost.
@@ -280,7 +280,6 @@ impl Library {
             self.store_cursor(&cursor_path, cursor)?;
         }
         pending.sends.extend(outgoing.map(|outgoing| Outbound {
-            dir: LIBRARY_DIR,
             key: LIBRARY_KEY.to_owned(),
             cursor_path,
             outgoing,
@@ -293,6 +292,7 @@ impl Library {
     fn exchange_preferences(
         &self,
         storage: &dyn Storage,
+        listing: &[Blob],
         exchanges: &mut Exchanges,
         everything: bool,
         pending: &mut Pending,
@@ -300,16 +300,14 @@ impl Library {
         let target = Target {
             key: PREFERENCES_KEY.to_owned(),
             schema: preferences::SCHEMA_VERSION,
-            dir: PREFERENCES_DIR,
-            prefix: String::new(),
+            prefix: PREFERENCES_PREFIX.to_owned(),
             path: self.preferences(),
             cursor_path: self.root.join(PREFERENCES_CURSOR),
         };
-        let blobs = storage.list(PREFERENCES_DIR)?;
         let dirty = everything || self.dirty().keys.remove(PREFERENCES_KEY);
         let cursor = exchanges.cursor(PREFERENCES_KEY, &target.cursor_path);
         let merged = self
-            .exchange_doc(storage, &target, &blobs, cursor, dirty, pending, |bytes| {
+            .exchange_doc(storage, &target, listing, cursor, dirty, pending, |bytes| {
                 write_atomically(&self.staging(), &target.path, bytes).map(|()| true)
             })
             .inspect_err(|_| self.mark_dirty(PREFERENCES_KEY))?;
@@ -333,14 +331,18 @@ impl Library {
     fn exchange_states(
         &self,
         storage: &dyn Storage,
+        listing: &[Blob],
         exchanges: &mut Exchanges,
         everything: bool,
         pending: &mut Pending,
     ) -> io::Result<()> {
-        let listing = storage.list(STATE_DIR)?;
         let mut remote: HashMap<&str, Vec<Blob>> = HashMap::new();
-        for blob in &listing {
-            if let Some((import, _)) = blob.name.split_once('.') {
+        for blob in listing {
+            if let Some((import, _)) = blob
+                .name
+                .strip_prefix(STATE_PREFIX)
+                .and_then(|n| n.split_once('.'))
+            {
                 remote.entry(import).or_default().push(blob.clone());
             }
         }
@@ -356,14 +358,13 @@ impl Library {
         exchanges.docs.retain(|import, _| !removed.contains(import));
         pending
             .deletions
-            .extend(self.own_chunks_of(&listing, &removed));
+            .extend(self.own_chunks_of(listing, &removed));
         for (import, hash) in imports {
             let folder = self.root.join(&hash);
             let target = Target {
                 key: import.clone(),
                 schema: state::SCHEMA_VERSION,
-                dir: STATE_DIR,
-                prefix: format!("{import}."),
+                prefix: format!("{STATE_PREFIX}{import}."),
                 path: folder.join(state_name(&import)),
                 cursor_path: folder.join(cursor_name(&import)),
             };
@@ -383,7 +384,7 @@ impl Library {
     }
 
     /// The names of this Device's chunks among `listing`, the blobs of the
-    /// state directory, of the Imports `removed`. Other Devices delete theirs.
+    /// remote directory, of the Imports `removed`. Other Devices delete theirs.
     fn own_chunks_of<'a>(
         &'a self,
         listing: &'a [Blob],
@@ -391,9 +392,9 @@ impl Library {
     ) -> impl Iterator<Item = String> + 'a {
         let device = self.device_id();
         listing.iter().filter_map(move |blob| {
-            let (import, chunk) = blob.name.split_once('.')?;
+            let (import, chunk) = blob.name.strip_prefix(STATE_PREFIX)?.split_once('.')?;
             let own = chunk.rsplit_once('-')?.0 == device;
-            (own && removed.contains(import)).then(|| format!("{STATE_DIR}/{}", blob.name))
+            (own && removed.contains(import)).then(|| format!("{REMOTE_DIR}/{}", blob.name))
         })
     }
 
@@ -415,7 +416,7 @@ impl Library {
                 .collect()
         };
         for hash in doomed {
-            storage.delete(&format!("{FILES_DIR}/{hash}"))?;
+            storage.delete(&format!("{REMOTE_DIR}/{FILE_PREFIX}{hash}"))?;
         }
         Ok(())
     }
@@ -480,7 +481,7 @@ impl Library {
     ) -> io::Result<Option<Merged>> {
         let before = cursor.clone();
         let device = self.device_id();
-        let pulled = chunks::pull(storage, target.dir, blobs, &target.prefix, &device, cursor)?;
+        let pulled = chunks::pull(storage, REMOTE_DIR, blobs, &target.prefix, &device, cursor)?;
         if !dirty && !cursor.wants(&pulled) {
             return Ok(None);
         }
@@ -493,7 +494,7 @@ impl Library {
                 .unwrap_or_default()
                 .with_actor(self.device_id.clone());
             let mut merged = None;
-            let changed = cursor.apply(&mut doc, pulled);
+            let changed = cursor.apply(&mut doc, &pulled);
             if let Err(e) = state::check_schema(&doc, target.schema) {
                 *cursor = before;
                 return Err(e);
@@ -511,7 +512,7 @@ impl Library {
                     after,
                 });
             }
-            (merged, cursor.outgoing(&mut doc, &target.prefix))
+            (merged, cursor.outgoing(&mut doc, &target.prefix, &pulled))
         };
         // The cursor is stored after the document, so it never counts
         // something as applied that was lost.
@@ -519,7 +520,6 @@ impl Library {
             self.store_cursor(&target.cursor_path, cursor)?;
         }
         pending.sends.extend(outgoing.map(|outgoing| Outbound {
-            dir: target.dir,
             key: target.key.clone(),
             cursor_path: target.cursor_path.clone(),
             outgoing,
@@ -548,7 +548,7 @@ impl Library {
             match File::open(path) {
                 // Removed meanwhile.
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                file => storage.put(&format!("{FILES_DIR}/{id}"), &mut file?)?,
+                file => storage.put(&format!("{REMOTE_DIR}/{FILE_PREFIX}{id}"), &mut file?)?,
             }
             transfers.done();
         }
@@ -597,7 +597,8 @@ impl Library {
     /// Downloads the File of `entry` into its folder, unless the Document was
     /// Removed or got its File meanwhile.
     fn download_file(&self, storage: &dyn Storage, entry: &Entry) -> io::Result<()> {
-        let Some(mut data) = storage.get(&format!("{FILES_DIR}/{}", entry.id))? else {
+        let Some(mut data) = storage.get(&format!("{REMOTE_DIR}/{FILE_PREFIX}{}", entry.id))?
+        else {
             return Ok(());
         };
         let staged = self.staging().join(unique_name());
@@ -637,6 +638,7 @@ mod tests {
     use crate::markup::{Highlight, PageRects, Rgb};
     use crate::storage::DirStorage;
     use automerge::transaction::Transactable;
+    use std::sync::atomic::AtomicUsize;
     use std::thread::sleep;
     use std::time::Duration;
 
@@ -749,10 +751,22 @@ mod tests {
         }
     }
 
-    /// Wraps a storage and records the names of the blobs read.
+    /// Wraps a storage and records the names of the blobs read and the number of
+    /// listings.
     struct Recording {
         inner: DirStorage,
         gets: Mutex<Vec<String>>,
+        lists: AtomicUsize,
+    }
+
+    impl Recording {
+        fn new(inner: DirStorage) -> Self {
+            Self {
+                inner,
+                gets: Mutex::new(Vec::new()),
+                lists: AtomicUsize::new(0),
+            }
+        }
     }
 
     impl Storage for Recording {
@@ -764,6 +778,7 @@ mod tests {
             self.inner.get(name)
         }
         fn list(&self, dir: &str) -> io::Result<Vec<crate::storage::Blob>> {
+            self.lists.fetch_add(1, Relaxed);
             self.inner.list(dir)
         }
         fn delete(&self, name: &str) -> io::Result<()> {
@@ -881,10 +896,7 @@ mod tests {
             fs::remove_file(&document.path).unwrap();
         }
 
-        let recording = Recording {
-            inner: cloud.storage(),
-            gets: Mutex::new(Vec::new()),
-        };
+        let recording = Recording::new(cloud.storage());
         b.library.sync(&recording).unwrap();
 
         let downloads: Vec<_> = recording
@@ -993,10 +1005,7 @@ mod tests {
         a.sync();
         b.sync();
 
-        let recording = Recording {
-            inner: cloud.storage(),
-            gets: Mutex::new(Vec::new()),
-        };
+        let recording = Recording::new(cloud.storage());
         a.library.sync(&recording).unwrap();
         b.library.sync(&recording).unwrap();
 
@@ -1014,10 +1023,7 @@ mod tests {
         drop(b);
 
         let library = Library::open(&root).unwrap();
-        let recording = Recording {
-            inner: cloud.storage(),
-            gets: Mutex::new(Vec::new()),
-        };
+        let recording = Recording::new(cloud.storage());
         library.sync(&recording).unwrap();
 
         assert!(recording.gets.lock().unwrap().is_empty());
@@ -1336,10 +1342,7 @@ mod tests {
             .unwrap();
         a.sync();
 
-        let recording = Recording {
-            inner: cloud.storage(),
-            gets: Mutex::new(Vec::new()),
-        };
+        let recording = Recording::new(cloud.storage());
         b.library.sync(&recording).unwrap();
 
         let downloads: Vec<_> = recording
@@ -1367,10 +1370,7 @@ mod tests {
         settle(&a, &b);
         b.sync();
 
-        let recording = Recording {
-            inner: cloud.storage(),
-            gets: Mutex::new(Vec::new()),
-        };
+        let recording = Recording::new(cloud.storage());
         a.library.sync(&recording).unwrap();
         b.library.sync(&recording).unwrap();
 
@@ -1423,6 +1423,12 @@ mod tests {
         assert!(cloud.blobs_with(b"shared document").is_empty());
     }
 
+    fn state_chunks(cloud: &Cloud) -> Vec<Blob> {
+        let mut blobs = cloud.storage().list(REMOTE_DIR).unwrap();
+        blobs.retain(|blob| blob.name.starts_with(STATE_PREFIX));
+        blobs
+    }
+
     #[test]
     fn each_device_deletes_its_own_chunks_of_a_removed_document() {
         let mut cloud = Cloud::new();
@@ -1431,13 +1437,13 @@ mod tests {
         highlight(&b, &id, "on b");
         settle(&a, &b);
         b.sync();
-        assert!(!cloud.storage().list(STATE_DIR).unwrap().is_empty());
+        assert!(!state_chunks(&cloud).is_empty());
 
         a.library.remove(&id).unwrap();
         settle(&a, &b);
         b.sync();
 
-        assert!(cloud.storage().list(STATE_DIR).unwrap().is_empty());
+        assert!(state_chunks(&cloud).is_empty());
     }
 
     #[test]
@@ -1554,9 +1560,9 @@ mod tests {
         found
     }
 
-    /// Makes another Device store a chunk `name` in `dir` of a document with
-    /// schema version `version`, which this app doesn't know.
-    fn plant_schema_version(cloud: &Cloud, dir: &str, name: &str, version: u64) {
+    /// Makes another Device store a chunk `name` of a document with schema
+    /// version `version`, which this app doesn't know.
+    fn plant_schema_version(cloud: &Cloud, name: &str, version: u64) {
         let mut doc = AutoCommit::new().with_actor(ActorId::random());
         doc.put(automerge::ROOT, "version", version).unwrap();
         let bytes: Vec<u8> = doc
@@ -1566,7 +1572,7 @@ mod tests {
             .collect();
         cloud
             .storage()
-            .put(&format!("{dir}/{name}"), &mut bytes.as_slice())
+            .put(&format!("{REMOTE_DIR}/{name}"), &mut bytes.as_slice())
             .unwrap();
     }
 
@@ -1576,15 +1582,13 @@ mod tests {
             let mut cloud = Cloud::new();
             let (a, b, id) = two_devices_with_a_document(&mut cloud);
             let import = a.library.import_ids(&id)[0].clone();
-            let (dir, name) = match case {
-                "library" => ("v1/library".to_owned(), "f".repeat(32) + "-1"),
-                "preferences" => ("v1/preferences".to_owned(), "f".repeat(32) + "-1"),
-                _ => (
-                    "v1/state".to_owned(),
-                    format!("{import}.{}-1", "f".repeat(32)),
-                ),
+            let device = "f".repeat(32);
+            let name = match case {
+                "library" => format!("{LIBRARY_PREFIX}{device}-1"),
+                "preferences" => format!("{PREFERENCES_PREFIX}{device}-1"),
+                _ => format!("{STATE_PREFIX}{import}.{device}-1"),
             };
-            plant_schema_version(&cloud, &dir, &name, 99);
+            plant_schema_version(&cloud, &name, 99);
             let before = cloud_contents(&cloud);
 
             // Local changes in every kind of document, ready to be sent.
@@ -1606,7 +1610,7 @@ mod tests {
             assert_eq!(b.document(&id).progress, None);
 
             // Once the newer state is gone, nothing was lost.
-            fs::remove_file(cloud.dir.join("cloud").join(&dir).join(&name)).unwrap();
+            fs::remove_file(cloud.dir.join("cloud").join(REMOTE_DIR).join(&name)).unwrap();
             a.sync();
             b.sync();
             assert_eq!(b.ids().len(), 2, "{case}");
@@ -1636,5 +1640,83 @@ mod tests {
         let error = a.library.sync(&a.storage).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         assert_eq!(cloud_contents(&cloud), before);
+    }
+
+    /// The names in the cloud of the chunks of `device`.
+    fn chunks_of(cloud: &Cloud, device: &Device) -> Vec<String> {
+        let id = device.library.device_id();
+        let mut blobs = cloud.storage().list(REMOTE_DIR).unwrap();
+        blobs.retain(|blob| blob.name.contains(&id) && !blob.name.starts_with(FILE_PREFIX));
+        blobs.into_iter().map(|blob| blob.name).collect()
+    }
+
+    #[test]
+    fn a_devices_chunks_stay_few_and_every_device_still_converges_from_them() {
+        let mut cloud = Cloud::new();
+        let (a, b, id) = two_devices_with_a_document(&mut cloud);
+        let mut most = 0;
+        for n in 0..60 {
+            a.library
+                .save_progress(&id, &progress(n, 100 + u64::from(n)))
+                .unwrap();
+            if n % 10 == 0 {
+                highlight(&a, &id, &format!("passage {n}"));
+                a.import(&format!("{n}.pdf"), format!("document {n}").as_bytes());
+            }
+            a.sync();
+            most = most.max(chunks_of(&cloud, &a).len());
+            if n % 25 == 0 {
+                b.sync();
+            }
+        }
+        // Library, Preferences and one state at most.
+        assert!(most <= 3 * chunks::MAX_OWN_CHUNKS, "{most} chunks");
+        let fresh = cloud.device();
+
+        b.sync();
+        fresh.sync();
+
+        for device in [&b, &fresh] {
+            assert_eq!(device.document(&id).progress, Some(progress(59, 159)));
+            assert_eq!(device.library.markup(&id).unwrap().highlights.len(), 6);
+            assert_eq!(device.ids().len(), 7);
+        }
+    }
+
+    /// Two Devices with `count` Documents with Reading Progress, in sync, then
+    /// a step on each with nothing new: it must do one listing and read no
+    /// blob.
+    fn assert_idle_steps_are_cheap(count: u32) {
+        let mut cloud = Cloud::new();
+        let (a, b) = (cloud.device(), cloud.device());
+        for n in 0..count {
+            let document = a.import(&format!("{n}.pdf"), format!("document {n}").as_bytes());
+            let read = progress(n, 1 + u64::from(n));
+            a.library.save_progress(&document.id, &read).unwrap();
+        }
+        a.sync();
+        b.sync();
+        a.sync();
+        assert_eq!(b.ids().len(), count as usize);
+
+        let recording = Recording::new(cloud.storage());
+        a.library.sync(&recording).unwrap();
+        b.library.sync(&recording).unwrap();
+
+        assert_eq!(recording.lists.load(Relaxed), 2, "one listing per step");
+        assert!(recording.gets.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_step_with_nothing_new_does_one_listing_and_loads_no_document() {
+        assert_idle_steps_are_cheap(20);
+    }
+
+    /// Setting up 1000 Documents takes a minute: run with
+    /// `cargo test -- --ignored 1000_documents`.
+    #[test]
+    #[ignore = "takes a minute; run it explicitly"]
+    fn a_step_with_nothing_new_does_one_listing_and_loads_no_document_for_1000_documents() {
+        assert_idle_steps_are_cheap(1_000);
     }
 }

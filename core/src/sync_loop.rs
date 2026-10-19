@@ -727,7 +727,7 @@ mod tests {
 
     impl Storage for Slow {
         fn put(&self, name: &str, data: &mut dyn Read) -> io::Result<()> {
-            if !name.starts_with("v1/files/") {
+            if !name.starts_with("v1/file.") {
                 return self.inner.put(name, data);
             }
             let mut all = Vec::new();
@@ -774,8 +774,12 @@ mod tests {
         sleep(50 * MS);
         assert_eq!(events.statuses.lock().unwrap().len(), steps);
         // The cancelled upload left no File behind.
-        let uploaded = home.cloud().list("v1/files").unwrap();
-        assert!(uploaded.iter().all(|blob| blob.name != id));
+        let uploaded = home.cloud().list("v1").unwrap();
+        assert!(
+            uploaded
+                .iter()
+                .all(|blob| blob.name != format!("file.{id}"))
+        );
     }
 
     /// A storage that counts its requests and fails each with `error`.

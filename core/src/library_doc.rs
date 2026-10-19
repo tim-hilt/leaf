@@ -139,7 +139,7 @@ impl LibraryDoc {
     /// Merges what `pulled` fetched into the document; true if that changed it.
     /// Fails with `Unsupported`, merging nothing, if that makes the document
     /// one of a newer schema version than this app knows.
-    pub fn merge(&mut self, cursor: &mut Cursor, pulled: Pulled) -> io::Result<bool> {
+    pub fn merge(&mut self, cursor: &mut Cursor, pulled: &Pulled) -> io::Result<bool> {
         let heads = self.doc.get_heads();
         let before = cursor.clone();
         let merged = cursor.apply(&mut self.doc, pulled);
@@ -161,8 +161,8 @@ impl LibraryDoc {
     }
 
     /// This Device's changes that `cursor` doesn't count as sent.
-    pub fn outgoing(&mut self, cursor: &Cursor) -> Option<Outgoing> {
-        cursor.outgoing(&mut self.doc, "")
+    pub fn outgoing(&mut self, cursor: &Cursor, prefix: &str, pulled: &Pulled) -> Option<Outgoing> {
+        cursor.outgoing(&mut self.doc, prefix, pulled)
     }
 
     /// The document as stored bytes.

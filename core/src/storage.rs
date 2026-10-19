@@ -20,7 +20,7 @@ pub struct Blob {
     pub size: u64,
 }
 
-/// Named blobs in `/`-separated directories, e.g. `v1/files/abc`.
+/// Named blobs in `/`-separated directories, e.g. `v1/file.abc`.
 ///
 /// Names are plain: every part is non-empty, isn't `.` or `..`, and doesn't
 /// start with a dot. Anything else is `InvalidInput`. Directories exist as soon

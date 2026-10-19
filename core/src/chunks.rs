@@ -12,11 +12,21 @@
 //! A step is split so the network never runs while the document is locked:
 //! `pull` fetches new chunks, `Cursor::apply` merges them and `Cursor::outgoing`
 //! collects the Device's own new changes, which `push` writes.
+//!
+//! A Device keeps its chunks few: once it has `MAX_OWN_CHUNKS`, its next chunk
+//! is a snapshot of the whole document, which `push` follows by deleting the
+//! chunks it replaces (ADR-0009). The snapshot has a higher number, so the
+//! other Devices apply it like any chunk, and a Device with nothing yet
+//! converges from it alone.
 
 use crate::storage::{Blob, Storage, get_bytes};
 use automerge::{AutoCommit, ChangeHash};
 use std::collections::BTreeMap;
 use std::io;
+
+/// How many chunks of one document a Device leaves in the storage before it
+/// replaces them with a snapshot.
+pub(crate) const MAX_OWN_CHUNKS: usize = 8;
 
 /// What a Device knows of its exchange with one storage directory. Losing it
 /// is harmless: chunks apply twice without harm, and the Device sends its
@@ -38,8 +48,8 @@ pub(crate) struct Cursor {
 pub(crate) struct Pulled {
     /// In the order of Device, then number.
     chunks: Vec<Chunk>,
-    /// The number of the Device's own latest chunk in the storage, 0 if none.
-    own_latest: u64,
+    /// The numbers of the Device's own chunks in the storage.
+    own: Vec<u64>,
 }
 
 #[derive(Debug)]
@@ -59,6 +69,9 @@ pub(crate) struct Outgoing {
     /// send themselves.
     bytes: Vec<u8>,
     heads: Vec<ChangeHash>,
+    /// The names of the Device's chunks this one is a snapshot of, to delete
+    /// once it is written. Empty for a chunk of new changes.
+    replaces: Vec<String>,
 }
 
 /// Fetches the chunks named `<prefix><device>-<number>` among `listing`, the
@@ -72,7 +85,7 @@ pub(crate) fn pull(
     cursor: &Cursor,
 ) -> io::Result<Pulled> {
     let mut wanted = Vec::new();
-    let mut own_latest = 0;
+    let mut own = Vec::new();
     for blob in listing {
         let Some((from, number)) = blob
             .name
@@ -83,7 +96,7 @@ pub(crate) fn pull(
             continue;
         };
         if from == device {
-            own_latest = own_latest.max(number);
+            own.push(number);
         } else if number > cursor.seen.get(&from).copied().unwrap_or(0) {
             wanted.push((from, number));
         }
@@ -101,10 +114,11 @@ pub(crate) fn pull(
             });
         }
     }
-    Ok(Pulled { chunks, own_latest })
+    Ok(Pulled { chunks, own })
 }
 
-/// Writes `outgoing` to `dir`, which the Device's `cursor` then counts as sent.
+/// Writes `outgoing` to `dir`, which the Device's `cursor` then counts as sent,
+/// and deletes the chunks it replaces.
 pub(crate) fn push(
     storage: &dyn Storage,
     dir: &str,
@@ -119,54 +133,80 @@ pub(crate) fn push(
         cursor.sent = outgoing.number;
     }
     cursor.sent_heads = outgoing.heads;
+    for name in &outgoing.replaces {
+        storage.delete(&format!("{dir}/{name}"))?;
+    }
     Ok(())
+}
+
+impl Pulled {
+    /// The number of the Device's own latest chunk in the storage, 0 if none.
+    fn own_latest(&self) -> u64 {
+        self.own.iter().copied().max().unwrap_or(0)
+    }
 }
 
 impl Cursor {
     /// Whether `pulled` calls for loading the document: there are new chunks, or
     /// the storage lost this Device's, which `apply` then sends again.
     pub fn wants(&self, pulled: &Pulled) -> bool {
-        !pulled.chunks.is_empty() || pulled.own_latest < self.sent
+        !pulled.chunks.is_empty() || pulled.own_latest() < self.sent
     }
 
     /// Merges `pulled` into `doc`; true if that changed it. A chunk that isn't
     /// an Automerge document is skipped for good.
-    pub fn apply(&mut self, doc: &mut AutoCommit, pulled: Pulled) -> bool {
+    pub fn apply(&mut self, doc: &mut AutoCommit, pulled: &Pulled) -> bool {
         // The storage lost our chunks, e.g. because it is another one: send
         // everything again.
-        if pulled.own_latest < self.sent {
+        if pulled.own_latest() < self.sent {
             self.sent_heads.clear();
         }
-        self.sent = self.sent.max(pulled.own_latest);
+        self.sent = self.sent.max(pulled.own_latest());
         let before = doc.get_heads();
-        for chunk in pulled.chunks {
+        for chunk in &pulled.chunks {
             let _ = doc.load_incremental(&chunk.bytes);
-            let seen = self.seen.entry(chunk.device).or_default();
+            let seen = self.seen.entry(chunk.device.clone()).or_default();
             *seen = (*seen).max(chunk.number);
         }
         doc.get_heads() != before
     }
 
     /// The changes `doc` got from its Device since the last `push`, as a chunk
-    /// named with `prefix`; none if it hasn't changed.
-    pub fn outgoing(&self, doc: &mut AutoCommit, prefix: &str) -> Option<Outgoing> {
+    /// named with `prefix`; none if it hasn't changed. If `pulled`, the
+    /// listing `doc` was merged with, shows the Device at its limit of chunks,
+    /// the chunk is a snapshot replacing them.
+    pub fn outgoing(
+        &self,
+        doc: &mut AutoCommit,
+        prefix: &str,
+        pulled: &Pulled,
+    ) -> Option<Outgoing> {
         let heads = doc.get_heads();
         if heads == self.sent_heads {
             return None;
         }
         let device = doc.get_actor().clone();
-        let bytes = doc
+        let mut bytes: Vec<u8> = doc
             .get_changes(&self.sent_heads)
             .iter()
             .filter(|change| change.actor_id() == &device)
             .flat_map(|change| change.raw_bytes().iter().copied())
             .collect();
+        let device = device.to_hex_string();
+        let mut replaces = Vec::new();
+        if !bytes.is_empty() && pulled.own.len() >= MAX_OWN_CHUNKS {
+            bytes = doc.save();
+            replaces = (pulled.own.iter())
+                .map(|number| format!("{prefix}{device}-{number}"))
+                .collect();
+        }
         let number = self.sent + 1;
         Some(Outgoing {
-            name: format!("{prefix}{}-{number}", device.to_hex_string()),
+            name: format!("{prefix}{device}-{number}"),
             number,
             bytes,
             heads,
+            replaces,
         })
     }
 
@@ -244,8 +284,8 @@ mod tests {
         fn exchange(&mut self, storage: &dyn Storage) {
             let listing = storage.list("doc").unwrap();
             let pulled = pull(storage, "doc", &listing, "", &self.device(), &self.cursor).unwrap();
-            self.cursor.apply(&mut self.doc, pulled);
-            if let Some(outgoing) = self.cursor.outgoing(&mut self.doc, "") {
+            self.cursor.apply(&mut self.doc, &pulled);
+            if let Some(outgoing) = self.cursor.outgoing(&mut self.doc, "", &pulled) {
                 push(storage, "doc", &mut self.cursor, outgoing).unwrap();
             }
         }
@@ -392,7 +432,8 @@ mod tests {
         let (_alive, storage) = Scratch::new("prefix");
         let (mut a, b) = (Replica::new(1), Replica::new(2));
         a.set("a", "x");
-        let outgoing = a.cursor.outgoing(&mut a.doc, "one.").unwrap();
+        let pulled = pull(&storage, "doc", &[], "one.", &a.device(), &a.cursor).unwrap();
+        let outgoing = a.cursor.outgoing(&mut a.doc, "one.", &pulled).unwrap();
         push(&storage, "doc", &mut a.cursor, outgoing).unwrap();
         let listing = storage.list("doc").unwrap();
 
@@ -418,6 +459,77 @@ mod tests {
 
         assert!(!wants(&first));
         assert!(wants(&empty));
+    }
+
+    /// The names in `doc` that are chunks of `device`.
+    fn chunks_of(storage: &dyn Storage, device: &str) -> Vec<String> {
+        let mut names: Vec<String> = storage
+            .list("doc")
+            .unwrap()
+            .into_iter()
+            .map(|blob| blob.name)
+            .filter(|name| name.starts_with(device))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_devices_chunk_count_stays_bounded_however_many_changes_it_makes() {
+        let (_alive, storage) = Scratch::new("bounded");
+        let mut a = Replica::new(1);
+        let mut most = 0;
+        for n in 0..100 {
+            a.set("a", &n.to_string());
+            a.exchange(&storage);
+            most = most.max(chunks_of(&storage, &a.device()).len());
+        }
+
+        assert!(most <= MAX_OWN_CHUNKS, "{most} chunks");
+        assert!(chunks_of(&storage, &a.device()).len() < 100);
+    }
+
+    #[test]
+    fn devices_converge_after_compaction_also_from_a_fresh_start() {
+        let (_alive, storage) = Scratch::new("compacted");
+        let (mut a, mut b, mut fresh) = (Replica::new(1), Replica::new(2), Replica::new(3));
+        for n in 0..(3 * MAX_OWN_CHUNKS) {
+            a.set(&format!("a{n}"), "x");
+            a.exchange(&storage);
+            // b follows only now and then, so its chunks are replaced meanwhile.
+            if n % 7 == 0 {
+                b.set(&format!("b{n}"), "y");
+                b.exchange(&storage);
+            }
+        }
+        a.set("last", "z");
+        a.exchange(&storage);
+        b.exchange(&storage);
+        a.exchange(&storage);
+        fresh.exchange(&storage);
+
+        for replica in [&a, &b, &fresh] {
+            assert_eq!(replica.doc.keys(ROOT).count(), 3 * MAX_OWN_CHUNKS + 4 + 1);
+            assert_eq!(replica.get("last").as_deref(), Some("z"));
+            assert_eq!(replica.get("a0").as_deref(), Some("x"));
+            assert_eq!(replica.get("b14").as_deref(), Some("y"));
+        }
+    }
+
+    #[test]
+    fn compacting_never_deletes_the_chunks_of_another_device() {
+        let (_alive, storage) = Scratch::new("others");
+        let (mut a, mut b) = (Replica::new(1), Replica::new(2));
+        b.set("b", "y");
+        b.exchange(&storage);
+        let theirs = chunks_of(&storage, &b.device());
+
+        for n in 0..(2 * MAX_OWN_CHUNKS) {
+            a.set("a", &n.to_string());
+            a.exchange(&storage);
+        }
+
+        assert_eq!(chunks_of(&storage, &b.device()), theirs);
     }
 
     #[test]
