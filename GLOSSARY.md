@@ -61,8 +61,12 @@ An entry in the Table of Contents nested under a Chapter or another Section, at 
 _Avoid_: Subchapter, subsection
 
 **Reader**:
-The view in which a single Document is read.
+The view in which the Documents open in Tabs are read, one at a time.
 _Avoid_: Reading mode, viewer
+
+**Tab**:
+A Document kept open in the Reader, so the user can switch between several. Closing a Tab leaves the Document in the Library.
+_Avoid_: Window, open document
 
 **Jump**:
 Moving to another place in a Document by choosing a Chapter, Section, Document Search match or link, rather than by scrolling.
