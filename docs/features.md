@@ -12,7 +12,7 @@ The application should provide the following features. Sections are in implement
 
 Files are imported by clicking a "+" Icon in the UI or "File > Import" in the global menu. The file is copied unchanged into a local folder on the device that holds the whole Library (local-first). A file can only be imported once.
 
-Documents are removed by long pressing (mobile) or right clicking (desktop) and choosing "Remove" from the context menu, after a confirmation. Removing deletes the File and everything recorded about it, on all devices once Cloud Backing exists. The same File can be imported again afterwards.
+Documents are removed by long pressing (mobile) or right clicking (desktop) and choosing "Remove" from the context menu, after a confirmation. Removing deletes the File and everything recorded about it, on all devices with Cloud Backing. The same File can be imported again afterwards.
 
 Removes the temporary sample Document added by Reading.
 

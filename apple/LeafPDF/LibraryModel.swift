@@ -429,6 +429,12 @@ final class LibraryModel {
         refresh()
     }
 
+    /// The open Readers `readers` while all their Documents are still in the
+    /// Library; none once one was Removed, here or on another Device.
+    func readers(keeping readers: [LibraryDocument]) -> [LibraryDocument] {
+        readers.allSatisfy { open in documents.contains { $0.id == open.id } } ? readers : []
+    }
+
     /// Saves `place` as Reading Progress of `document`, read `lastRead`. The
     /// Document is updated at once, so every window shows it; the core writes
     /// off the main thread, in order, and this returns when it has. Does

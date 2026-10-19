@@ -206,12 +206,8 @@ impl Library {
                 folders.push((hash, entry.path()));
             }
         }
-        let removed_hashes: HashSet<String> = doc
-            .imports()
-            .iter()
-            .filter(|i| i.removed)
-            .map(|i| i.hash.clone())
-            .collect();
+        let removed_hashes: HashSet<String> =
+            doc.removed_files().into_iter().map(str::to_owned).collect();
         let mut changed = false;
         let mut first_imports = Vec::new();
         for (hash, folder) in folders {

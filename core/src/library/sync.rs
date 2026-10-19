@@ -52,7 +52,9 @@ impl Library {
     /// Devices: merges the Library document, the states and the Preferences of
     /// the other Devices, sends this Device's changes, uploads the Files the
     /// storage lacks and downloads the ones this Device lacks, those Read last
-    /// first, then those Imported last first.
+    /// first, then those Imported last first. Files of Removed Documents are
+    /// deleted from the storage, and so are this Device's chunks of the states
+    /// of Removed Imports.
     ///
     /// A step with nothing new costs one listing per directory and loads no
     /// document. A File whose bytes don't match its hash is not stored. The
@@ -80,6 +82,7 @@ impl Library {
             .into_iter()
             .map(|blob| blob.name)
             .collect();
+        self.delete_removed_files(storage, &remote_files)?;
         self.upload_files(storage, &remote_files)?;
         self.download_files(storage, &remote_files)
     }
@@ -179,13 +182,17 @@ impl Library {
                 remote.entry(import).or_default().push(blob.clone());
             }
         }
-        let imports: Vec<(String, String)> = self
-            .catalog()
-            .imports()
-            .iter()
-            .filter(|i| !i.removed)
-            .map(|i| (i.id.clone(), i.hash.clone()))
-            .collect();
+        let mut imports = Vec::new();
+        let mut removed = HashSet::new();
+        for i in self.catalog().imports() {
+            if i.removed {
+                removed.insert(i.id.clone());
+            } else {
+                imports.push((i.id.clone(), i.hash.clone()));
+            }
+        }
+        exchanges.docs.retain(|import, _| !removed.contains(import));
+        self.delete_own_chunks(storage, &listing, &removed)?;
         for (import, hash) in imports {
             let folder = self.root.join(&hash);
             let target = Target {
@@ -208,6 +215,51 @@ impl Library {
             if let Some(merged) = merged {
                 self.report_merged_state(&hash, &merged);
             }
+        }
+        Ok(())
+    }
+
+    /// Deletes this Device's chunks among `listing`, the blobs of the state
+    /// directory, of the Imports `removed`. Other Devices delete theirs.
+    fn delete_own_chunks(
+        &self,
+        storage: &dyn Storage,
+        listing: &[Blob],
+        removed: &HashSet<String>,
+    ) -> io::Result<()> {
+        let device = self.device_id();
+        for blob in listing {
+            let own_of_removed = blob
+                .name
+                .split_once('.')
+                .and_then(|(import, chunk)| Some((import, chunk.rsplit_once('-')?.0)))
+                .is_some_and(|(import, from)| from == device && removed.contains(import));
+            if own_of_removed {
+                storage.delete(&format!("{STATE_DIR}/{}", blob.name))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Deletes the Files `remote` lists that were Removed, unless the Library
+    /// document lists a live Import of them. One uploaded again by a Device
+    /// that had not learned of the Remove goes at the next step.
+    fn delete_removed_files(
+        &self,
+        storage: &dyn Storage,
+        remote: &HashSet<String>,
+    ) -> io::Result<()> {
+        let doomed: Vec<String> = {
+            let doc = self.catalog();
+            let removed = doc.removed_files();
+            remote
+                .iter()
+                .filter(|hash| removed.contains(hash.as_str()))
+                .cloned()
+                .collect()
+        };
+        for hash in doomed {
+            storage.delete(&format!("{FILES_DIR}/{hash}"))?;
         }
         Ok(())
     }
@@ -1133,6 +1185,98 @@ mod tests {
         b.sync();
 
         assert!(a.ids().is_empty() && b.ids().is_empty());
+    }
+
+    #[test]
+    fn a_remove_deletes_the_document_and_its_file_on_the_other_device_and_in_the_cloud() {
+        let mut cloud = Cloud::new();
+        let (a, b, id) = two_devices_with_a_document(&mut cloud);
+        assert_eq!(cloud.blobs_with(b"shared document").len(), 1);
+
+        a.library.remove(&id).unwrap();
+        settle(&a, &b);
+
+        assert!(a.ids().is_empty() && b.ids().is_empty());
+        assert!(!b.home.join("library").join(&id).exists());
+        assert!(cloud.blobs_with(b"shared document").is_empty());
+    }
+
+    #[test]
+    fn each_device_deletes_its_own_chunks_of_a_removed_document() {
+        let mut cloud = Cloud::new();
+        let (a, b, id) = two_devices_with_a_document(&mut cloud);
+        highlight(&a, &id, "on a");
+        highlight(&b, &id, "on b");
+        settle(&a, &b);
+        b.sync();
+        assert!(!cloud.storage().list(STATE_DIR).unwrap().is_empty());
+
+        a.library.remove(&id).unwrap();
+        settle(&a, &b);
+        b.sync();
+
+        assert!(cloud.storage().list(STATE_DIR).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_remove_does_not_delete_the_file_of_a_document_imported_again_elsewhere() {
+        let mut cloud = Cloud::new();
+        let (a, b, id) = two_devices_with_a_document(&mut cloud);
+        b.library.remove(&id).unwrap();
+        b.import("again.pdf", b"shared document");
+        b.sync();
+
+        // A removes what it knows of, not the new Import.
+        a.library.remove(&id).unwrap();
+        a.sync();
+        b.sync();
+        a.sync();
+
+        assert_eq!(cloud.blobs_with(b"shared document").len(), 1);
+        assert_eq!(a.ids(), std::slice::from_ref(&id));
+        assert_eq!(b.ids(), [id]);
+    }
+
+    #[test]
+    fn a_reimport_racing_a_remove_ends_with_the_file_in_the_cloud() {
+        let mut cloud = Cloud::new();
+        let (a, b, id) = two_devices_with_a_document(&mut cloud);
+        highlight(&a, &id, "old");
+        settle(&a, &b);
+
+        // A's Remove deletes the File before B's Re-Import got there.
+        a.library.remove(&id).unwrap();
+        a.sync();
+        assert!(cloud.blobs_with(b"shared document").is_empty());
+        b.library.remove(&id).unwrap();
+        b.import("again.pdf", b"shared document");
+        b.sync();
+        a.sync();
+
+        assert_eq!(cloud.blobs_with(b"shared document").len(), 1);
+        for device in [&a, &b] {
+            assert_eq!(device.ids(), std::slice::from_ref(&id));
+            assert!(device.library.markup(&id).unwrap().highlights.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_remove_made_while_disconnected_reaches_the_cloud_when_connecting_again() {
+        let mut cloud = Cloud::new();
+        let (a, b, id) = two_devices_with_a_document(&mut cloud);
+        let other = b.import("other.pdf", b"other document").id;
+
+        // A is Disconnected: it syncs nothing while it Removes.
+        a.library.remove(&id).unwrap();
+        b.sync();
+        assert_eq!(b.ids().len(), 2);
+        a.sync();
+        b.sync();
+
+        assert_eq!(a.ids(), std::slice::from_ref(&other));
+        assert_eq!(b.ids(), [other]);
+        assert!(cloud.blobs_with(b"shared document").is_empty());
+        assert!(!a.home.join("library").join(&id).exists());
     }
 
     #[test]

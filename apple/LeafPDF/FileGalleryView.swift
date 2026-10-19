@@ -9,7 +9,7 @@ import UniformTypeIdentifiers
 /// PDF and open it, replacing any open Document. A cell's context menu
 /// (long-press, right-click) or VoiceOver action offers "Remove", after
 /// confirmation. A window reading a Document that gets Removed (here or in
-/// another window) returns to the grid and says so.
+/// another window or Device) returns to the grid, without a message.
 ///
 /// With a keyboard (Mac, iPad), arrow keys move a highlight through the grid,
 /// including the "+" cell; nothing is highlighted until the first press.
@@ -24,7 +24,6 @@ struct FileGalleryView: View {
     @State private var rejection: ImportAlert?
     @State private var duplicate: LibraryDocument?
     @State private var removal: LibraryDocument?
-    @State private var removedWhileOpen: LibraryDocument?
     @State private var scroll = ScrollActivity()
     @State private var columnCount = 2
     /// The keyboard highlight; nil until the first arrow press.
@@ -113,10 +112,8 @@ struct FileGalleryView: View {
                 isGridFocused = true
             }
         }
-        .onChange(of: library.documents) { _, documents in
-            guard let gone = path.first(where: { open in !documents.contains { $0.id == open.id } }) else { return }
-            path = []
-            removedWhileOpen = gone
+        .onChange(of: library.documents) {
+            path = library.readers(keeping: path)
         }
         .disabled(library.runningImport != nil)
         .focusedSceneValue(\.isImporting, library.runningImport == nil ? $isImporting : nil)
@@ -144,13 +141,6 @@ struct FileGalleryView: View {
             Button("Remove", role: .destructive) { library.remove(document) }
         } message: { _ in
             Text("The file, its markup and your reading progress are deleted on all your devices.")
-        }
-        .alert(
-            "Document removed", isPresented: Binding(get: { removedWhileOpen != nil }, set: { _ in removedWhileOpen = nil }),
-            presenting: removedWhileOpen
-        ) { _ in
-        } message: { gone in
-            Text("“\(gone.title)” was removed from your Library.")
         }
         .alert(
             "Already in your Library", isPresented: Binding(get: { duplicate != nil }, set: { _ in duplicate = nil }),

@@ -67,6 +67,22 @@ impl LibraryDoc {
             .filter(move |i| i.hash == hash && !i.removed)
     }
 
+    /// The Files that were Removed: every Import of each is Removed. A File
+    /// with a live Import, e.g. one made elsewhere since, isn't among them.
+    pub fn removed_files(&self) -> HashSet<&str> {
+        let live: HashSet<&str> = self
+            .imports
+            .iter()
+            .filter(|i| !i.removed)
+            .map(|i| i.hash.as_str())
+            .collect();
+        self.imports
+            .iter()
+            .filter(|i| i.removed && !live.contains(i.hash.as_str()))
+            .map(|i| i.hash.as_str())
+            .collect()
+    }
+
     /// Records an Import of the File `hash`, `imported` in milliseconds since
     /// the Unix epoch, and returns its ID.
     pub fn add_import(&mut self, hash: &str, name: &str, imported: u64) -> String {
@@ -256,6 +272,21 @@ mod tests {
         let live: Vec<_> = doc.live("abc").map(|i| i.id.clone()).collect();
         assert_ne!(first, second);
         assert_eq!(live, [second]);
+    }
+
+    #[test]
+    fn a_file_is_removed_only_while_none_of_its_imports_is_live() {
+        let mut doc = LibraryDoc::load(None, &actor(1));
+        doc.add_import("gone", "a.pdf", 1);
+        doc.add_import("back", "b.pdf", 2);
+        doc.add_import("kept", "c.pdf", 3);
+        doc.remove("gone");
+        doc.remove("back");
+        assert_eq!(doc.removed_files(), HashSet::from(["gone", "back"]));
+
+        doc.add_import("back", "b.pdf", 4);
+
+        assert_eq!(doc.removed_files(), HashSet::from(["gone"]));
     }
 
     #[test]
