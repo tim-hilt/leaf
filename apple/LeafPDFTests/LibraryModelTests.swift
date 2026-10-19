@@ -676,6 +676,68 @@ import Testing
         #expect(try openLibrary().defaultHighlightColor == purple)
     }
 
+    @Test func aCustomColorComesAfterTheBuiltInOnesInTheOrderAddedAndSurvivesReopening() async throws {
+        let library = try openLibrary()
+        let teal = try #require(await library.addCustomColor(RGB(0, 0.5, 0.5)))
+        let brown = try #require(await library.addCustomColor(RGB(0.6, 0.3, 0)))
+
+        #expect(library.highlightColors.suffix(2) == [teal, brown])
+        #expect(teal.isCustom && !library.highlightColors[0].isCustom)
+        #expect(try openLibrary().highlightColors.suffix(2) == [teal, brown])
+    }
+
+    @Test func aCustomColorCanBeTheDefaultHighlightColor() async throws {
+        let library = try openLibrary()
+        let teal = try #require(await library.addCustomColor(RGB(0, 0.5, 0.5)))
+
+        await library.setDefaultHighlightColor(teal)
+
+        #expect(try openLibrary().defaultHighlightColor == teal)
+    }
+
+    @Test func removingTheDefaultCustomColorMakesYellowTheDefaultAgain() async throws {
+        let library = try openLibrary()
+        let teal = try #require(await library.addCustomColor(RGB(0, 0.5, 0.5)))
+        await library.setDefaultHighlightColor(teal)
+
+        await library.removeCustomColor(teal)
+
+        #expect(library.highlightColors.count == 6)
+        #expect(library.defaultHighlightColor == library.highlightColors[0])
+        #expect(try openLibrary().highlightColors.count == 6)
+        #expect(try openLibrary().defaultHighlightColor.name == "Yellow")
+    }
+
+    @Test func aBuiltInColorCannotBeRemoved() async throws {
+        let library = try openLibrary()
+
+        await library.removeCustomColor(library.highlightColors[1])
+
+        #expect(library.highlightColors.count == 6)
+    }
+
+    @Test func aHighlightKeepsItsColorWhenItsCustomColorIsRemoved() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        let teal = try #require(await library.addCustomColor(RGB(0, 0.5, 0.5)))
+        await library.setDefaultHighlightColor(teal)
+        _ = await library.addHighlight(anchor, to: document)
+
+        await library.removeCustomColor(teal)
+
+        #expect(await library.highlights(of: document).map(\.color) == [teal.color])
+    }
+
+    @Test func aColorThatIsNoLongerInThePaletteShowsAsAnExtraCircleAtTheEnd() throws {
+        let library = try openLibrary()
+        let gone = RGB(0, 0.5, 0.5)
+
+        let shown = library.highlightColors.including(gone)
+
+        #expect(shown.count == 7 && shown.last?.color == gone)
+        #expect(library.highlightColors.including(library.highlightColors[2].color) == library.highlightColors)
+    }
+
     @Test func newHighlightsGetTheDefaultHighlightColor() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)

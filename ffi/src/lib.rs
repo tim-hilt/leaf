@@ -91,18 +91,20 @@ pub struct Rgb {
     pub b: u8,
 }
 
-/// See `leafpdf_core::markup::BuiltInColor`.
+/// See `leafpdf_core::preferences::HighlightColor`.
 #[derive(uniffi::Record)]
-pub struct BuiltInColor {
-    pub name: String,
+pub struct HighlightColor {
+    pub id: String,
     pub rgb: Rgb,
+    pub is_custom: bool,
 }
 
-impl From<leafpdf_core::markup::BuiltInColor> for BuiltInColor {
-    fn from(c: leafpdf_core::markup::BuiltInColor) -> Self {
+impl From<leafpdf_core::preferences::HighlightColor> for HighlightColor {
+    fn from(c: leafpdf_core::preferences::HighlightColor) -> Self {
         Self {
-            name: c.name.to_owned(),
+            id: c.id,
             rgb: c.rgb.into(),
+            is_custom: c.is_custom,
         }
     }
 }
@@ -310,7 +312,7 @@ impl Library {
         Ok(self.0.remove_highlight(&id, &highlight)?)
     }
 
-    pub fn highlight_colors(&self) -> Vec<BuiltInColor> {
+    pub fn highlight_colors(&self) -> Vec<HighlightColor> {
         self.0
             .highlight_colors()
             .into_iter()
@@ -318,12 +320,20 @@ impl Library {
             .collect()
     }
 
-    pub fn default_highlight_color(&self) -> BuiltInColor {
+    pub fn default_highlight_color(&self) -> HighlightColor {
         self.0.default_highlight_color().into()
     }
 
-    pub fn set_default_highlight_color(&self, name: String) -> Result<(), LibraryError> {
-        Ok(self.0.set_default_highlight_color(&name)?)
+    pub fn set_default_highlight_color(&self, id: String) -> Result<(), LibraryError> {
+        Ok(self.0.set_default_highlight_color(&id)?)
+    }
+
+    pub fn add_custom_color(&self, rgb: Rgb, added: u64) -> Result<HighlightColor, LibraryError> {
+        Ok(self.0.add_custom_color(rgb.into(), added)?.into())
+    }
+
+    pub fn remove_custom_color(&self, id: String) -> Result<(), LibraryError> {
+        Ok(self.0.remove_custom_color(&id)?)
     }
 
     pub fn documents(&self) -> Result<Vec<Document>, LibraryError> {

@@ -102,8 +102,9 @@ final class LibraryModel {
     }
     /// `documents` in `sort` order, kept up to date as Titles arrive.
     private var sorted: [LibraryDocument] = []
-    /// The Highlight Colors to choose from, yellow first.
-    let highlightColors: [HighlightColor]
+    /// The Highlight Colors to choose from: the built-in ones, yellow first, then
+    /// the Custom Colors in the order added. Kept in the Library's Preferences.
+    private(set) var highlightColors: [HighlightColor]
     /// The color of new Highlights; one of `highlightColors`. Yellow until chosen,
     /// kept in the Library's Preferences. Setting it shows at once, in every window.
     private(set) var defaultHighlightColor: HighlightColor
@@ -311,8 +312,34 @@ final class LibraryModel {
     /// returns when it has.
     func setDefaultHighlightColor(_ color: HighlightColor) async {
         defaultHighlightColor = color
-        let core = core, name = color.name
-        await inStateOrder { try? core.setDefaultHighlightColor(name: name) }
+        let core = core, id = color.id
+        await inStateOrder { try? core.setDefaultHighlightColor(id: id) }
+    }
+
+    /// Adds `color` as a Custom Color after the others, `added` now. It shows at
+    /// once, once the core, which writes off the main thread, in order, has
+    /// stored it. Nil if that failed.
+    @discardableResult
+    func addCustomColor(_ color: RGB, at added: Date = .now) async -> HighlightColor? {
+        let core = core, rgb = Rgb(color)
+        let milliseconds = UInt64(max(0, added.timeIntervalSince1970 * 1000).rounded())
+        guard let stored = await inStateOrder({ try? core.addCustomColor(rgb: rgb, added: milliseconds) })
+        else { return nil }
+        let custom = HighlightColor(stored)
+        highlightColors.append(custom)
+        return custom
+    }
+
+    /// Removes the Custom Color `color`. It goes at once; Highlights keep their
+    /// color, and if it was the Default Highlight Color, yellow is again. Does
+    /// nothing for a built-in color. The core writes off the main thread, in
+    /// order, and this returns when it has.
+    func removeCustomColor(_ color: HighlightColor) async {
+        guard color.isCustom else { return }
+        highlightColors.removeAll { $0 == color }
+        if defaultHighlightColor == color { defaultHighlightColor = highlightColors[0] }
+        let core = core, id = color.id
+        await inStateOrder { try? core.removeCustomColor(id: id) }
     }
 
     /// Runs `access` off the main thread, after every earlier access to the

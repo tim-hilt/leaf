@@ -11,8 +11,8 @@
 //! folder's only non-hidden entry. The state is stored like an Import: written
 //! to staging, then renamed into place.
 
-use crate::markup::{self, BuiltInColor, Highlight, Markup, PageRects, Rgb};
-use crate::preferences;
+use crate::markup::{self, Highlight, Markup, PageRects, Rgb};
+use crate::preferences::{self, HighlightColor};
 use crate::progress::{self, ReadingProgress};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -195,32 +195,57 @@ impl Library {
         self.update_state(id, |existing| markup::remove(existing, highlight))
     }
 
-    /// The Highlight Colors to choose from, yellow first.
-    pub fn highlight_colors(&self) -> Vec<BuiltInColor> {
-        markup::BUILT_IN_COLORS.to_vec()
+    /// The Highlight Colors to choose from: the six built-in ones, yellow
+    /// first, then the Custom Colors in the order added.
+    pub fn highlight_colors(&self) -> Vec<HighlightColor> {
+        preferences::colors(self.read_preferences().as_deref())
     }
 
     /// The color of new Highlights: yellow until the user picks another, or if
-    /// the Preferences are unreadable.
-    pub fn default_highlight_color(&self) -> BuiltInColor {
-        fs::read(self.preferences()).map_or(BuiltInColor::YELLOW, |bytes| {
-            preferences::default_color(&bytes)
+    /// the Preferences are unreadable or its Custom Color was removed.
+    pub fn default_highlight_color(&self) -> HighlightColor {
+        preferences::default_color(self.read_preferences().as_deref())
+    }
+
+    /// Makes the Highlight Color `id`, a built-in color's name or a Custom
+    /// Color's ID, the Default Highlight Color. An `id` that is no Highlight
+    /// Color is `InvalidInput`. Corrupt Preferences are replaced.
+    pub fn set_default_highlight_color(&self, id: &str) -> io::Result<()> {
+        if !self.highlight_colors().iter().any(|c| c.id == id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{id:?} is not a Highlight Color"),
+            ));
+        }
+        self.replace_file(&self.preferences(), |existing| {
+            preferences::set_default_color(existing, id)
         })
     }
 
-    /// Makes the built-in Highlight Color called `name` the Default Highlight
-    /// Color. A `name` that is no Highlight Color is `InvalidInput`. Corrupt
+    /// Adds `rgb` as a Custom Color after the others, `added` in milliseconds
+    /// since the Unix epoch, and returns it. There is no limit. Corrupt
     /// Preferences are replaced.
-    pub fn set_default_highlight_color(&self, name: &str) -> io::Result<()> {
-        let color = BuiltInColor::named(name).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{name:?} is not a Highlight Color"),
-            )
-        })?;
+    pub fn add_custom_color(&self, rgb: Rgb, added: u64) -> io::Result<HighlightColor> {
+        let mut color = None;
         self.replace_file(&self.preferences(), |existing| {
-            preferences::set_default_color(existing, color)
+            let (bytes, new) = preferences::add_custom_color(existing, rgb, added);
+            color = Some(new);
+            bytes
+        })?;
+        Ok(color.expect("the write ran"))
+    }
+
+    /// Removes the Custom Color `id`. Highlights keep their color. If it was
+    /// the Default Highlight Color, that is yellow again. Does nothing for a
+    /// built-in color, which can't be removed, or an unknown `id`.
+    pub fn remove_custom_color(&self, id: &str) -> io::Result<()> {
+        self.replace_file(&self.preferences(), |existing| {
+            preferences::remove_custom_color(existing, id)
         })
+    }
+
+    fn read_preferences(&self) -> Option<Vec<u8>> {
+        fs::read(self.preferences()).ok()
     }
 
     /// Replaces the state of Document `id` with what `write` makes of the
@@ -1112,8 +1137,8 @@ mod tests {
         let names: Vec<_> = scratch
             .library()
             .highlight_colors()
-            .iter()
-            .map(|c| c.name)
+            .into_iter()
+            .map(|c| c.id)
             .collect();
         assert_eq!(names, ["Yellow", "Green", "Blue", "Pink", "Purple", "Red"]);
     }
@@ -1122,7 +1147,7 @@ mod tests {
     fn the_default_highlight_color_is_yellow_until_set() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        assert_eq!(library.default_highlight_color().name, "Yellow");
+        assert_eq!(library.default_highlight_color().id, "Yellow");
     }
 
     #[test]
@@ -1131,15 +1156,15 @@ mod tests {
         let library = scratch.library();
 
         library.set_default_highlight_color("Purple").unwrap();
-        assert_eq!(library.default_highlight_color().name, "Purple");
+        assert_eq!(library.default_highlight_color().id, "Purple");
         drop(library);
 
         let library = scratch.library();
         let purple = library.default_highlight_color();
-        assert_eq!(purple.name, "Purple");
+        assert_eq!(purple.id, "Purple");
         assert_eq!(purple, library.highlight_colors()[4]);
         library.set_default_highlight_color("Yellow").unwrap();
-        assert_eq!(scratch.library().default_highlight_color().name, "Yellow");
+        assert_eq!(scratch.library().default_highlight_color().id, "Yellow");
     }
 
     #[test]
@@ -1151,7 +1176,102 @@ mod tests {
         let err = library.set_default_highlight_color("Teal").unwrap_err();
 
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-        assert_eq!(library.default_highlight_color().name, "Green");
+        assert_eq!(library.default_highlight_color().id, "Green");
+    }
+
+    const TEAL: Rgb = Rgb {
+        r: 0,
+        g: 128,
+        b: 128,
+    };
+
+    #[test]
+    fn a_custom_color_is_listed_after_the_built_in_ones_and_survives_reopening() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+
+        let teal = library.add_custom_color(TEAL, 100).unwrap();
+        let brown = library
+            .add_custom_color(
+                Rgb {
+                    r: 150,
+                    g: 75,
+                    b: 0,
+                },
+                200,
+            )
+            .unwrap();
+
+        assert!(teal.is_custom && teal.rgb == TEAL);
+        drop(library);
+        assert_eq!(scratch.library().highlight_colors()[6..], [teal, brown]);
+    }
+
+    #[test]
+    fn there_is_no_limit_to_custom_colors() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        for n in 0..50 {
+            library
+                .add_custom_color(Rgb { r: n, g: 0, b: 0 }, 1)
+                .unwrap();
+        }
+        assert_eq!(library.highlight_colors().len(), 6 + 50);
+    }
+
+    #[test]
+    fn a_custom_color_can_be_the_default_highlight_color_and_survives_reopening() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let teal = library.add_custom_color(TEAL, 100).unwrap();
+
+        library.set_default_highlight_color(&teal.id).unwrap();
+
+        assert_eq!(scratch.library().default_highlight_color(), teal);
+    }
+
+    #[test]
+    fn removing_a_custom_color_makes_yellow_the_default_again() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let teal = library.add_custom_color(TEAL, 100).unwrap();
+        library.set_default_highlight_color(&teal.id).unwrap();
+
+        library.remove_custom_color(&teal.id).unwrap();
+
+        assert_eq!(library.highlight_colors().len(), 6);
+        assert_eq!(library.default_highlight_color().id, "Yellow");
+        let err = library.set_default_highlight_color(&teal.id).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn built_in_colors_cannot_be_removed() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+
+        library.remove_custom_color("Yellow").unwrap();
+
+        assert_eq!(library.highlight_colors().len(), 6);
+        assert_eq!(library.highlight_colors()[0].id, "Yellow");
+    }
+
+    #[test]
+    fn a_highlight_keeps_its_color_when_the_custom_color_is_removed() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let teal = library.add_custom_color(TEAL, 100).unwrap();
+        let added = library
+            .add_highlight(&document.id, vec![], "x", teal.rgb, 1)
+            .unwrap();
+
+        library.remove_custom_color(&teal.id).unwrap();
+
+        assert_eq!(
+            library.markup(&document.id).unwrap().highlights,
+            vec![added]
+        );
     }
 
     #[test]
@@ -1159,11 +1279,11 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
         fs::write(scratch.0.join("library").join(PREFERENCES), b"garbage").unwrap();
-        assert_eq!(library.default_highlight_color().name, "Yellow");
+        assert_eq!(library.default_highlight_color().id, "Yellow");
 
         library.set_default_highlight_color("Red").unwrap();
 
-        assert_eq!(library.default_highlight_color().name, "Red");
+        assert_eq!(library.default_highlight_color().id, "Red");
     }
 
     #[test]

@@ -22,16 +22,29 @@ struct Highlight: Identifiable, Equatable {
     var color: RGB
 }
 
-/// One of the Highlight Colors to choose from. The name identifies it.
+/// A color to highlight in: a built-in one, or a Custom Color of the user.
+/// The id identifies it: a built-in color's name, or a Custom Color's ID.
 struct HighlightColor: Identifiable, Equatable, Sendable {
-    let name: String
+    let id: String
     let color: RGB
+    let isCustom: Bool
 
-    var id: String { name }
+    /// What names the color to VoiceOver.
+    var name: String { isCustom ? "Custom Color" : id }
 }
 
 extension HighlightColor {
-    init(_ stored: BuiltInColor) { self.init(name: stored.name, color: RGB(stored.rgb)) }
+    init(_ stored: LeafCore.HighlightColor) {
+        self.init(id: stored.id, color: RGB(stored.rgb), isCustom: stored.isCustom)
+    }
+}
+
+extension [HighlightColor] {
+    /// These colors, and a last one in `color` unless one is already: a Highlight
+    /// keeps its color when its Custom Color is removed, so it still shows.
+    func including(_ color: RGB) -> [HighlightColor] {
+        contains { $0.color == color } ? self : self + [HighlightColor(id: "Removed Color", color: color, isCustom: true)]
+    }
 }
 
 extension RGB {

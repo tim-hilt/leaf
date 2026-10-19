@@ -47,11 +47,11 @@ pub struct Rgb {
 }
 
 impl Rgb {
-    fn packed(self) -> u64 {
+    pub(crate) fn packed(self) -> u64 {
         u64::from(self.r) << 16 | u64::from(self.g) << 8 | u64::from(self.b)
     }
 
-    fn unpacked(value: u64) -> Option<Self> {
+    pub(crate) fn unpacked(value: u64) -> Option<Self> {
         let [_, _, _, _, _, r, g, b] = value.to_be_bytes();
         (value <= 0xFF_FFFF).then_some(Self { r, g, b })
     }
@@ -173,16 +173,7 @@ fn delete_highlight(doc: &mut AutoCommit, id: &str) {
 
 /// Every `highlights` map in `doc`, the one Automerge picks as winner last.
 fn highlight_maps(doc: &AutoCommit) -> Vec<ObjId> {
-    doc.get_all(ROOT, "highlights")
-        .map(|values| {
-            values
-                .into_iter()
-                .filter_map(|(value, id)| {
-                    matches!(value, Value::Object(ObjType::Map)).then_some(id)
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    state::maps(doc, "highlights")
 }
 
 fn read_highlight(doc: &AutoCommit, map: &ObjId, id: String) -> Option<Highlight> {

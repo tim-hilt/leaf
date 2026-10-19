@@ -7,7 +7,7 @@
 //! makes it version 2.
 
 use automerge::{
-    AutoCommit, ObjId, Prop, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
+    AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 
 const SCHEMA_VERSION: u64 = 2;
@@ -33,6 +33,21 @@ pub(crate) fn update_versioned(
     doc.put(ROOT, "version", version)
         .expect("a root map accepts new keys");
     doc.save()
+}
+
+/// Every map at the root key `key` of `doc`, the one Automerge picks as winner
+/// last. Devices that first write to it concurrently each create their own.
+pub(crate) fn maps(doc: &AutoCommit, key: &str) -> Vec<ObjId> {
+    doc.get_all(ROOT, key)
+        .map(|values| {
+            values
+                .into_iter()
+                .filter_map(|(value, id)| {
+                    matches!(value, Value::Object(ObjType::Map)).then_some(id)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The scalar at `prop` of `obj`, if there is one.
