@@ -76,7 +76,13 @@ Cloud Backing is off until the user Connects a Cloud Provider in Settings; only 
 
 ## 9. File Import (external)
 
-Files can also be imported from outside via the "Share" function in mobile clients or the context menu + "Open With" menu entry on desktop clients. Reuses the in-app import pipeline; needs extra app extension targets.
+Files can also be Imported from outside: the share sheet on iOS and iPadOS, "Open With" and the Dock icon on macOS, and dropping onto the Gallery. LeafPDF only declares that it opens PDFs (on macOS as an Alternate handler, never the default). There are no extension targets; the in-app import pipeline is reused.
+
+- One file opens the Reader on it. A file already in the Library opens its Document; a drop shows "Already in your Library", like "+".
+- Several files are Imported one after another and the Gallery stays. Duplicates are skipped and rejections are listed in one alert. "+" accepts several files too.
+- The frontmost window takes the file, or a new one if none is open. It replaces an open Reader and closes sheets and popovers. A file that arrives during an Import waits its turn.
+- Drops get the system highlight and are accepted on the Gallery only, not in the Reader.
+- PDFs only for now; EPUB and MOBI may follow.
 
 ## 10. More Cloud Providers
 
@@ -85,3 +91,8 @@ Same Cloud Backing as section 8, other storage, in order:
 1. Folder: a folder picked in Files or Finder, e.g. in iCloud Drive (no paid Apple Developer membership needed)
 2. Google Drive
 3. OneDrive: reuses the HTTP + OAuth groundwork from Google Drive
+
+## 11. Keep multiple documents open in Tabs
+
+No description needed
+
