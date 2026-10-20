@@ -48,6 +48,13 @@
             try await expectShown(.sampleYellow, at: CGPoint(x: icon.minX + 2, y: icon.minY + 2), in: reader)
         }
 
+        @Test func pagesFillTheWidthAtFitToWidth() async throws {
+            // No margin beside the pages, where the light background would frame Dark Pages.
+            let reader = try makeReader(appearance: .dark(.default))
+            try await expectShown(paper, at: CGPoint(x: 0, y: 100), in: reader)
+            try await expectShown(paper, at: CGPoint(x: reader.bounds.width - 1, y: 100), in: reader)
+        }
+
         func highlight() -> Highlight {
             Highlight(
                 id: "a", anchor: HighlightAnchor(pages: [.init(pageIndex: 0, rects: [marked])], quotedText: "a"),

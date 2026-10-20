@@ -544,6 +544,9 @@ final class ReaderPDFView: PDFView {
 
         override init(frame: CGRect) {
             super.init(frame: frame)
+            // Pages span the full width: PDFKit's side margins frame Dark Pages in the light background.
+            pageBreakMargins.left = 0
+            pageBreakMargins.right = 0
             let doubleTap = UITapGestureRecognizer(target: self, action: #selector(didDoubleTap))
             doubleTap.numberOfTapsRequired = 2
             addGestureRecognizer(doubleTap)
