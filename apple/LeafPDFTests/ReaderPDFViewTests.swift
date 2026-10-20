@@ -371,6 +371,30 @@ import Testing
         #expect(reported == 0)
     }
 
+    #if os(iOS)
+        @Test func aSingleTapWithASelectionOnlyClearsIt() throws {
+            let reader = try readerWithText()
+            var taps = 0
+            reader.onSingleTap = { taps += 1 }
+            try select(reader, from: 6, to: 9)
+
+            reader.singleTap(at: CGPoint(x: 5, y: 5))
+
+            #expect(reader.currentSelection == nil)
+            #expect(taps == 0)
+        }
+
+        @Test func aSingleTapWithoutASelectionIsReported() throws {
+            let reader = try readerWithText()
+            var taps = 0
+            reader.onSingleTap = { taps += 1 }
+
+            reader.singleTap(at: CGPoint(x: 5, y: 5))
+
+            #expect(taps == 1)
+        }
+    #endif
+
     // MARK: Highlight hit-testing
 
     /// A Highlight on page 1 over `rect` (page space).

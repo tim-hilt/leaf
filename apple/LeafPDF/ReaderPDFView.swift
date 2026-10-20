@@ -11,7 +11,7 @@ final class ReaderHandle {
 /// is resized or rotated, and when zooming with the keyboard. PDFKit's own
 /// pinch gesture does the pinch zooming, so the content under the fingers
 /// stays put; on iOS a double-tap toggles between fit-to-width and zoomed in,
-/// and a single tap, unless it is on a link, calls `onSingleTap`. It reports when it has opened and
+/// and a single tap clears the selection or, without one and unless it is on a link, calls `onSingleTap`. It reports when it has opened and
 /// whenever it scrolls, so the Reader can save Reading Progress.
 ///
 /// Highlights are drawn into the pages (`StyledDocument`); a Highlight with a
@@ -582,7 +582,18 @@ final class ReaderPDFView: PDFView {
         }
 
         @objc private func didSingleTap(_ tap: UITapGestureRecognizer) {
-            if reportMarkupTap(at: tap.location(in: self)) { return }
+            singleTap(at: tap.location(in: self))
+        }
+
+        /// A single tap at `point`: with a selection it only clears it, as our
+        /// recognizers keep PDFKit from doing so; otherwise it reports any
+        /// markup there, or else calls `onSingleTap`.
+        func singleTap(at point: CGPoint) {
+            if currentSelection != nil {
+                clearSelection()
+                return
+            }
+            if reportMarkupTap(at: point) { return }
             onSingleTap()
         }
 
