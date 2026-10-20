@@ -433,6 +433,8 @@ final class ReaderPDFView: PDFView {
         /// alongside PDFKit's, and ignores taps that start on a link: PDFKit
         /// follows those, and that is all a link tap should do. It decides at
         /// touch-down, since following the link moves the page from under the finger.
+        /// A tap that stops a scroll only stops it: by the time the tap is
+        /// recognized the scroll has already stopped, so this too is decided at touch-down.
         private final class SingleTapFilter: NSObject, UIGestureRecognizerDelegate {
             private weak var view: ReaderPDFView?
 
@@ -440,6 +442,7 @@ final class ReaderPDFView: PDFView {
 
             func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
                 guard let view else { return false }
+                if gestureRecognizer is UITapGestureRecognizer && view.isScrolling { return false }
                 return !view.hasLink(at: touch.location(in: view))
             }
 
@@ -453,6 +456,11 @@ final class ReaderPDFView: PDFView {
         private var singleTapFilter: SingleTapFilter?
 
         private var scrollObservation: NSKeyValueObservation?
+
+        /// Whether the pages are still moving after the finger left them.
+        fileprivate var isScrolling: Bool {
+            subviews.lazy.compactMap { $0 as? UIScrollView }.first?.isDecelerating ?? false
+        }
 
         /// The edit menu offering "Add Note", and the spot it was asked at.
         private lazy var addNoteMenu = UIEditMenuInteraction(delegate: self)
