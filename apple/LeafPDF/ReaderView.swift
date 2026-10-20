@@ -10,7 +10,8 @@ import SwiftUI
 /// Immersive Mode hides everything but the pages, the Tab strip too. On iOS a
 /// single tap toggles it; on macOS it is the native full screen, with the toolbar
 /// shown on hover.
-/// Scrolling never changes it, and the Reader always opens with its UI showing.
+/// Scrolling never changes it, nor minimizes the bars, and the Reader always
+/// opens with its UI showing. Toggling it leaves the pages where they are.
 ///
 /// Pages are drawn per the Page Style in Settings, and redrawn live when it changes.
 /// ⇧⌘D switches to the opposite of what is showing; on macOS the View menu also
@@ -139,6 +140,7 @@ struct ReaderView: View {
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             .toolbarVisibility(isImmersive ? .hidden : .automatic, for: .navigationBar)
+            .navigationBarNeverMinimizes()
             .statusBarHidden(isImmersive)
             // Hiding system overlays also lets the home indicator fade.
             .persistentSystemOverlays(isImmersive ? .hidden : .automatic)
@@ -339,6 +341,19 @@ struct ReaderView: View {
         #endif
     }
 }
+
+#if os(iOS)
+    extension View {
+        /// Keeps iOS 27+ from minimizing the navigation bar while the content scrolls.
+        @ViewBuilder fileprivate func navigationBarNeverMinimizes() -> some View {
+            if #available(iOS 27, *) {
+                toolbarMinimizationBehavior(.never, for: .navigationBar)
+            } else {
+                self
+            }
+        }
+    }
+#endif
 
 /// The Highlight or page Note whose popover is open, and the spot it opened
 /// from, in the pages' coordinates with the origin at the top-left. A new page

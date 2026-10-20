@@ -631,8 +631,22 @@ final class ReaderPDFView: PDFView {
 
         override func layoutSubviews() {
             super.layoutSubviews()
+            insetBySafeArea()
             styleBackdrops()
             layoutDidChange()
+        }
+
+        /// Insets the pages by the safe area without moving them. Bars come and go
+        /// over the pages (Immersive Mode), changing only the safe area; adjusting
+        /// for it itself, UIKit's scroll view would move the pages along with the bars.
+        private func insetBySafeArea() {
+            guard let scrollView = subviews.lazy.compactMap({ $0 as? UIScrollView }).first else { return }
+            scrollView.contentInsetAdjustmentBehavior = .never
+            let insets = UIEdgeInsets(top: safeAreaInsets.top, left: 0, bottom: safeAreaInsets.bottom, right: 0)
+            guard scrollView.contentInset != insets else { return }
+            scrollView.contentInset = insets
+            // Until it opens, the Document starts below the bars.
+            if !hasOpened { scrollView.contentOffset.y = -insets.top }
         }
 
         /// Zooms to `scale`, keeping the content at `point` (in view coordinates)

@@ -393,6 +393,33 @@ import Testing
 
             #expect(taps == 1)
         }
+
+        /// Immersive Mode hides the bars over the pages: only the safe area changes.
+        @Test(arguments: [(100.0, 0.0), (0.0, 100.0)])
+        func thePagesStayPutWhenTheSafeAreaChanges(from top: CGFloat, to newTop: CGFloat) throws {
+            let controller = UIViewController()
+            controller.additionalSafeAreaInsets.top = top
+            let reader = try makeReader(size: portrait, in: controller)
+            reader.go(to: place)
+            let page = try #require(reader.document?.page(at: place.pageIndex))
+            let before = reader.convert(place.point, from: page)
+
+            controller.additionalSafeAreaInsets.top = newTop
+            controller.view.layoutIfNeeded()
+            layout(reader)
+
+            #expect(abs(reader.convert(place.point, from: page).y - before.y) < 1)
+        }
+
+        @Test func theFirstPageOpensBelowTheBars() throws {
+            let controller = UIViewController()
+            controller.additionalSafeAreaInsets.top = 100
+            let reader = try makeReader(size: portrait, in: controller)
+            let page = try #require(reader.document?.page(at: 0))
+            let top = reader.convert(CGPoint(x: 0, y: page.bounds(for: reader.displayBox).maxY), from: page)
+            #expect(top.y >= reader.safeAreaInsets.top)
+            #expect(top.y < reader.safeAreaInsets.top + 20)
+        }
     #endif
 
     // MARK: Highlight hit-testing
@@ -720,6 +747,25 @@ private func viewPoint(of rect: CGRect, in reader: ReaderPDFView) -> CGPoint {
 #if os(iOS)
     /// Windows of the Readers under test, which a view only holds weakly.
     @MainActor private var openWindows: [UIWindow] = []
+
+    /// A Reader on an eight-page Document, filling the view of `controller`,
+    /// the root of a window of `size`, so it gets the controller's safe area.
+    @MainActor
+    private func makeReader(size: CGSize, in controller: UIViewController) throws -> ReaderPDFView {
+        let reader = ReaderPDFView(handle: ReaderHandle())
+        reader.displayMode = .singlePageContinuous
+        reader.autoScales = true
+        let window = UIWindow(frame: CGRect(origin: .zero, size: size))
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        openWindows.append(window)
+        reader.frame = controller.view.bounds
+        controller.view.addSubview(reader)
+        reader.document = try makePDF(named: "Long.pdf", pageCount: 8)
+        controller.view.layoutIfNeeded()
+        layout(reader)
+        return reader
+    }
 #endif
 
 /// A Reader on an eight-page Document, laid out in a window of `size`. With
