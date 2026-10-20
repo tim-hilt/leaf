@@ -5,8 +5,8 @@ import UniformTypeIdentifiers
 /// in the toolbar's sort menu, led by a "+" cell that Imports. The window's own
 /// search field (⌘F on Mac and iPad) narrows it to matching Documents; with
 /// none, "No Results" follows the "+" cell. A click or tap opens a Document in the
-/// Reader, in a Tab (see `Tabs`). A "Reader" toolbar button returns to the Tabs
-/// while any are open. The "+" cell and File > Import… (also from the Reader)
+/// Reader, in a Tab (see `Tabs`). A "Reader" toolbar button, a square showing
+/// the number of Tabs, returns to them while any are open. The "+" cell and File > Import… (also from the Reader)
 /// Import PDFs, as do Files dropped onto the Gallery or handed over by other apps
 /// (share sheet, Open With, Dock icon). Every Document of the Files opens in a
 /// Tab, the first one active; a single File already in the Library is reported
@@ -124,7 +124,12 @@ struct FileGalleryView: View {
             }
             .toolbar {
                 if tabs.activeID != nil {
-                    Button("Reader", systemImage: "book") { tabs.showReader() }
+                    let count = tabs.openIDs.count
+                    // SF Symbols has numbered squares up to 50.
+                    Button("Reader", systemImage: count <= 50 ? "\(count).square" : "square.stack") {
+                        tabs.showReader()
+                    }
+                    .accessibilityValue("\(count) Tabs")
                 }
                 if library.showsSyncWarning { SyncWarning(isShowingSettings: $isShowingSettings) }
                 SortMenu(sort: Bindable(library).sort)
