@@ -74,17 +74,18 @@ struct ReaderView: View {
     @State private var isImmersive = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            if tabs.openIDs.count > 1 && !isImmersive { TabStrip() }
-            HStack(spacing: 0) {
-                if showsResultsSidebar {
-                    SearchResultsList(results: results)
-                        .frame(width: 320)
-                        .transition(.move(edge: .leading))
-                    Divider()
-                }
-                pages
+        HStack(spacing: 0) {
+            if showsResultsSidebar {
+                SearchResultsList(results: results)
+                    .frame(width: 320)
+                    .transition(.move(edge: .leading))
+                Divider()
             }
+            pages
+        }
+        // An inset, not a stack sibling: toggling it must not move the pages.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if tabs.openIDs.count > 1 && !isImmersive { TabStrip() }
         }
         .animation(.default, value: showsResultsSidebar)
         .sheet(isPresented: $isShowingResults) { SearchResultsSheet(results: results) }
@@ -188,7 +189,13 @@ struct ReaderView: View {
                     onAddNote: addPageNote,
                     onPageNoteTap: { openMarkup = OpenMarkup(target: .pageNote($0.id), point: $1) },
                     onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
-                    onBackChange: { backPageNumber = $0 }, onShowResults: { isShowingResults = true })
+                    onBackChange: { backPageNumber = $0 }, onShowResults: { isShowingResults = true }
+                )
+                #if os(iOS)
+                    // Under the bars, so Immersive Mode changes only the safe area, not
+                    // the frame, and the pages stay put.
+                    .ignoresSafeArea(.container, edges: .top)
+                #endif
             } else {
                 Color.clear
             }
