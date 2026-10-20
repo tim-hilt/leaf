@@ -55,6 +55,18 @@
             try await expectShown(paper, at: CGPoint(x: reader.bounds.width - 1, y: 100), in: reader)
         }
 
+        @Test func darkPagesNeverShowLightWhileOpening() async throws {
+            let reader = try makeReader(appearance: .dark(.default))
+            try await expectAlwaysShown(paper, at: centre(of: marked, in: reader), in: reader)
+        }
+
+        @Test func darkPagesNeverShowLightAfterAJump() async throws {
+            let reader = try makeReader(appearance: .dark(.default), pageCount: 60)
+            try await settle()
+            reader.go(to: Place(pageIndex: 40, point: CGPoint(x: 0, y: 700)))
+            try await expectAlwaysShown(paper, at: CGPoint(x: 200, y: 400), in: reader)
+        }
+
         func highlight() -> Highlight {
             Highlight(
                 id: "a", anchor: HighlightAnchor(pages: [.init(pageIndex: 0, rects: [marked])], quotedText: "a"),
@@ -67,11 +79,13 @@
 
         /// A Reader on a blank two-page `StyledDocument`, set up as the app does:
         /// everything is set before the view has a size.
-        func makeReader(appearance: PageAppearance = .light, highlights: [Highlight] = []) throws -> ReaderPDFView {
+        func makeReader(
+            appearance: PageAppearance = .light, highlights: [Highlight] = [], pageCount: Int = 2
+        ) throws -> ReaderPDFView {
             let reader = ReaderPDFView(handle: ReaderHandle())
             reader.displayMode = .singlePageContinuous
             reader.autoScales = true
-            reader.document = try #require(StyledDocument(url: writePDF(named: "Redraw.pdf", pageCount: 2)))
+            reader.document = try #require(StyledDocument(url: writePDF(named: "Redraw.pdf", pageCount: pageCount)))
             reader.pageAppearance = appearance
             reader.highlights = highlights
             // On screen: PDFKit draws differently into windows that aren't.
@@ -98,6 +112,16 @@
                 shown = pixel(at: point, in: reader)
             }
             #expect(shown.isClose(to: color), "\(shown) at \(point)")
+        }
+
+        /// Expects `color` on screen at `point` from now on, for half a second.
+        func expectAlwaysShown(_ color: RGB, at point: CGPoint, in reader: ReaderPDFView) async throws {
+            for _ in 0..<25 {
+                let shown = pixel(at: point, in: reader)
+                #expect(shown.isClose(to: color), "\(shown) at \(point)")
+                guard shown.isClose(to: color) else { return }
+                try await Task.sleep(for: .milliseconds(20))
+            }
         }
 
         func pixel(at point: CGPoint, in view: UIView) -> RGB {

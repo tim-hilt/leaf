@@ -56,6 +56,9 @@ final class ReaderPDFView: PDFView {
             guard newValue != pageAppearance, let styled = document as? StyledDocument else { return }
             styled.appearance = newValue
             redrawPages()
+            #if os(iOS)
+                styleBackdrops()
+            #endif
         }
     }
 
@@ -486,6 +489,7 @@ final class ReaderPDFView: PDFView {
             scrollObservation = subviews.lazy.compactMap { $0 as? UIScrollView }.first?
                 .observe(\.contentOffset) { [weak self] _, _ in
                     MainActor.assumeIsolated {
+                        self?.styleBackdrops()
                         self?.noteIcons.refresh()
                         self?.onScroll()
                     }
@@ -516,6 +520,27 @@ final class ReaderPDFView: PDFView {
             offset.x = min(max(offset.x + current.x - viewPoint.x, minimum.x), max(maximum.x, minimum.x))
             offset.y = min(max(offset.y + current.y - viewPoint.y, minimum.y), max(maximum.y, minimum.y))
             scrollView.contentOffset = offset
+        }
+
+        /// Until a page is drawn, PDFKit shows a backdrop: white, with a light preview
+        /// of the page. On Dark Pages that flashes, so there the backdrop is hidden
+        /// and the page shows plain paper until drawn. Run whenever PDFKit may have
+        /// added pages.
+        private func styleBackdrops() {
+            guard let documentView else { return }
+            let paper: UIColor? =
+                if case .dark(let colors) = pageAppearance {
+                    UIColor(red: colors.paper.r, green: colors.paper.g, blue: colors.paper.b, alpha: 1)
+                } else { nil }
+            for pageView in documentView.subviews where pageView.backgroundColor != paper {
+                pageView.backgroundColor = paper
+                // The backdrop: the opaque layer right under the page's own layer.
+                for pageLayer in pageView.layer.sublayers ?? [] {
+                    for layer in pageLayer.sublayers ?? [] where layer.backgroundColor?.alpha == 1 {
+                        layer.isHidden = paper != nil
+                    }
+                }
+            }
         }
 
         /// The native find bar over Document Search.
@@ -588,6 +613,7 @@ final class ReaderPDFView: PDFView {
 
         override func layoutSubviews() {
             super.layoutSubviews()
+            styleBackdrops()
             layoutDidChange()
         }
 
