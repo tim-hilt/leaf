@@ -41,8 +41,7 @@ enum PageAppearance: Equatable, Sendable {
 /// drawn into them. Only what is drawn changes, never the File, and overlays
 /// PDFKit draws on top of the page (search highlights, the selection) keep
 /// their colors. Changing `appearance` or `highlights` affects pages drawn
-/// from then on; a `PDFView` showing the Document redraws with
-/// `layoutDocumentView()` (ADR-0013).
+/// from then on; `ReaderPDFView` redraws its pages when they change (ADR-0013).
 final class StyledDocument: PDFDocument, PDFDocumentDelegate {
     /// A Highlight's rectangle on a page, in PDF page space.
     fileprivate struct Mark: Sendable {

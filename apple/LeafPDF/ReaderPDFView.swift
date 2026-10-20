@@ -55,7 +55,7 @@ final class ReaderPDFView: PDFView {
         set {
             guard newValue != pageAppearance, let styled = document as? StyledDocument else { return }
             styled.appearance = newValue
-            layoutDocumentView()
+            redrawPages()
         }
     }
 
@@ -70,8 +70,24 @@ final class ReaderPDFView: PDFView {
                 return
             }
             styled.highlights = highlights
-            layoutDocumentView()
+            redrawPages()
         }
+    }
+
+    /// Redraws the pages, keeping the viewport.
+    private func redrawPages() {
+        #if os(iOS)
+            // `layoutDocumentView()` keeps the drawn tiles on iOS: only scrolling
+            // to new ones would show the change. PDFKit's own layers (tiles
+            // among them) redraw themselves; plain ones would lose their contents.
+            func redraw(_ layer: CALayer) {
+                if type(of: layer) != CALayer.self { layer.setNeedsDisplay() }
+                layer.sublayers?.forEach(redraw)
+            }
+            documentView.map { redraw($0.layer) }
+        #else
+            layoutDocumentView()
+        #endif
     }
 
     /// The page Notes, each with a Note icon above the pages.
@@ -394,6 +410,8 @@ final class ReaderPDFView: PDFView {
         if maxScaleFactor != range.maximum { maxScaleFactor = range.maximum }
         zoomRange = range
         if noteIcons.superview == nil { addSubview(noteIcons) }
+        // It may have been made before the view had a size.
+        noteIcons.frame = bounds
         noteIcons.refresh()
         if !hasOpened {
             hasOpened = true
