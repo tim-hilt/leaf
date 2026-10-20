@@ -56,7 +56,7 @@ Markup is never written into the File: it lives in the Document's synced state a
 
 - Highlight: select text, then "Highlight" in the selection menu or ⌃⌘H (macOS). New Highlights get the Default Highlight Color. A Highlight may span pages; overlapping Highlights stay separate.
 - Clicking a Highlight opens a popover (sheet on iPhone): Highlight Colors, its Note, "Remove Highlight". Dragging still selects text.
-- Notes are plain text; web links open in the browser. An "Edit" button switches the Note to editing, where links are plain text. A Highlight with a Note shows a Note icon at its end. Emptying a Note removes it.
+- Notes are plain text; web links open in the browser. An "Edit" button switches the Note to editing, where links are plain text. A Highlight with a Note shows a Note icon at its end, on the top-right corner of its last line. Emptying a Note removes it.
 - Page Notes: right-click or long-press an empty spot, "Add Note". They can't be moved; their popover has "Remove Note".
 - Note icons keep their size at any zoom and their colors on Dark Pages; Highlights are reversed with the page.
 - Settings: Highlight Colors. Yellow, green, blue, pink, purple and red are fixed; Custom Colors, any number, are added with "+" and removed via their context menu. Pick the Default Highlight Color (yellow). Both sync (ADR-0014); removing a Custom Color leaves its Highlights as they are, their popover shows the color as an extra circle.

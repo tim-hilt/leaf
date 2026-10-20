@@ -451,16 +451,17 @@ import Testing
         return highlight
     }
 
-    @Test func theNoteIconSitsAtTheEndOfTheLastRectOfItsHighlight() throws {
+    @Test func theNoteIconSitsOnTheTopRightCornerOfTheLastRectOfItsHighlight() throws {
         let reader = try readerWithText()
         let rect = CGRect(x: 100, y: 690, width: 80, height: 20)
         reader.highlights = [noted("a", rect)]
 
         let icon = try #require(reader.noteIconRect(of: reader.highlights[0]))
 
-        let end = reader.convert(CGPoint(x: rect.maxX, y: rect.midY), from: try #require(reader.document?.page(at: 0)))
-        #expect(abs(icon.minX - end.x) < 0.001)
-        #expect(abs(icon.midY - end.y) < 0.001)
+        let page = try #require(reader.document?.page(at: 0))
+        let corner = reader.convert(CGPoint(x: rect.maxX, y: rect.maxY), from: page)
+        #expect(abs(icon.midX - corner.x) < 0.001)
+        #expect(abs(icon.midY - corner.y) < 0.001)
         #expect(icon.width == icon.height && icon.width > 0)
     }
 
@@ -476,8 +477,8 @@ import Testing
 
         let icon = try #require(reader.noteIconRect(of: highlight))
 
-        let end = reader.convert(CGPoint(x: 122, y: 700), from: try #require(reader.document?.page(at: 1)))
-        #expect(abs(icon.minX - end.x) < 0.001 && abs(icon.midY - end.y) < 0.001)
+        let corner = reader.convert(CGPoint(x: 122, y: 710), from: try #require(reader.document?.page(at: 1)))
+        #expect(abs(icon.midX - corner.x) < 0.001 && abs(icon.midY - corner.y) < 0.001)
     }
 
     @Test func aHighlightWithoutANoteHasNoNoteIcon() throws {

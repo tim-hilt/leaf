@@ -291,15 +291,15 @@ final class ReaderPDFView: PDFView {
     }
 
     /// Where the Note icon of `highlight` is, in the view's coordinates: at the
-    /// end of its last rectangle, vertically centred on it, at the same size on
-    /// screen at any zoom. Nil without a Note.
+    /// end of its last rectangle, centred on its top-right corner so it covers
+    /// little text, at the same size on screen at any zoom. Nil without a Note.
     func noteIconRect(of highlight: Highlight) -> CGRect? {
         guard highlight.note != nil, let last = highlight.anchor.pages.last, let rect = last.rects.last,
             let page = document?.page(at: last.pageIndex)
         else { return nil }
-        let end = convert(CGPoint(x: rect.maxX, y: rect.midY), from: page)
+        let corner = convert(CGPoint(x: rect.maxX, y: rect.maxY), from: page)
         let side = NoteIconsView.size
-        return CGRect(x: end.x, y: end.y - side / 2, width: side, height: side)
+        return CGRect(x: corner.x - side / 2, y: corner.y - side / 2, width: side, height: side)
     }
 
     /// The Highlight whose Note icon is at `point`, in the view's coordinates:
