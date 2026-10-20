@@ -51,7 +51,6 @@ struct SettingsView: View {
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar { Button("Done") { dismiss() } }
             }
-            .presentationDetents([.medium, .large])
         }
     }
 #endif
