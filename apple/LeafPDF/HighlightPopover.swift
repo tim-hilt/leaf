@@ -19,7 +19,9 @@ struct HighlightPopover: View {
             Button("Remove Highlight", systemImage: "trash", role: .destructive, action: onRemove)
         }
         .padding()
-        .frame(minWidth: 260)
+        // A popover is as big as its content's ideal size; at no width, the grid
+        // is a single column and a Note a single line.
+        .frame(minWidth: 260, idealWidth: 280)
         .presentationDetents([.medium, .large])
     }
 }
@@ -39,7 +41,7 @@ struct PageNotePopover: View {
             Button("Remove Note", systemImage: "trash", role: .destructive, action: onRemove)
         }
         .padding()
-        .frame(minWidth: 260)
+        .frame(minWidth: 260, idealWidth: 280)
         .presentationDetents([.medium, .large])
     }
 }
