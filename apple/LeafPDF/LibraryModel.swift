@@ -849,9 +849,9 @@ final class LibraryModel {
         }
         guard !missing.isEmpty else { return }
         readingDetails.formUnion(missing.map(\.0))
-        Task(priority: .background) { [weak self] in
+        Task(priority: .utility) { [weak self] in
             for (id, file) in missing {
-                let read = await Task.detached(priority: .background) { PDFDocument(url: file)?.details }.value
+                let read = await Task.detached(priority: .utility) { PDFDocument(url: file)?.details }.value
                 guard let self else { return }
                 self.readingDetails.remove(id)
                 self.publish(read, for: id)
