@@ -37,6 +37,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.timhilt.leafpdf
+        # XcodeGen presets an empty team; inherit it from Config/Local.xcconfig.
+        DEVELOPMENT_TEAM: $(inherited)
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
