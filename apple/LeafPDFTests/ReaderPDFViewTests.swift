@@ -592,6 +592,30 @@ import Testing
         #expect(reported == ["a"])
     }
 
+    #if os(iOS)
+        /// PDFKit selects the nearest text on a long press, even at an empty spot.
+        @Test func aLongPressAtAnEmptySpotKeepsPDFKitFromSelecting() throws {
+            let reader = try readerWithText()
+            let page = try #require(reader.document?.page(at: 0))
+            let word = try #require(page.selection(for: NSRange(location: 0, length: 5))).bounds(for: page)
+            let empty = reader.convert(CGPoint(x: 300, y: 400), from: page)
+            let text = reader.convert(CGPoint(x: word.midX, y: word.midY), from: page)
+            let pdfKitPresses = recognizers(in: reader).filter {
+                $0 is UILongPressGestureRecognizer && $0.view?.superview is UIScrollView
+            }
+            let scrolling = try #require(reader.subviews.compactMap { $0 as? UIScrollView }.first?.panGestureRecognizer)
+
+            #expect(!pdfKitPresses.isEmpty)
+            #expect(pdfKitPresses.allSatisfy { reader.addNotePressPreempts($0, at: empty) })
+            #expect(pdfKitPresses.allSatisfy { !reader.addNotePressPreempts($0, at: text) })
+            #expect(!reader.addNotePressPreempts(scrolling, at: empty))
+        }
+
+        private func recognizers(in view: UIView) -> [UIGestureRecognizer] {
+            (view.gestureRecognizers ?? []) + view.subviews.flatMap(recognizers(in:))
+        }
+    #endif
+
     @Test func aSpotWithoutTextHighlightOrNoteIsEmpty() throws {
         let reader = try readerWithText()
         let page = try #require(reader.document?.page(at: 0))

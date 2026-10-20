@@ -441,12 +441,25 @@ final class ReaderPDFView: PDFView {
         private final class SingleTapFilter: NSObject, UIGestureRecognizerDelegate {
             private weak var view: ReaderPDFView?
 
+            /// Where the current long press went down.
+            private var pressPoint: CGPoint?
+
             init(view: ReaderPDFView) { self.view = view }
 
             func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
                 guard let view else { return false }
                 if gestureRecognizer is UITapGestureRecognizer && view.isScrolling { return false }
-                return !view.hasLink(at: touch.location(in: view))
+                let point = touch.location(in: view)
+                if gestureRecognizer is UILongPressGestureRecognizer { pressPoint = point }
+                return !view.hasLink(at: point)
+            }
+
+            /// Asked lazily, once the long press has its touch.
+            func gestureRecognizer(
+                _ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer
+            ) -> Bool {
+                guard gestureRecognizer is UILongPressGestureRecognizer, let view, let pressPoint else { return false }
+                return view.addNotePressPreempts(other, at: pressPoint)
             }
 
             func gestureRecognizer(
@@ -598,6 +611,15 @@ final class ReaderPDFView: PDFView {
             }
             if reportMarkupTap(at: point) { return }
             onSingleTap()
+        }
+
+        /// Whether `other` must wait for a long press at `point` to fail. At an
+        /// empty spot PDFKit would select the nearest text and replace "Add Note"
+        /// with its own menu; so there its gestures wait, but scrolling never does.
+        func addNotePressPreempts(_ other: UIGestureRecognizer, at point: CGPoint) -> Bool {
+            guard let otherView = other.view, otherView.isDescendant(of: self), !(otherView is UIScrollView)
+            else { return false }
+            return isEmptySpot(at: point)
         }
 
         /// Offers "Add Note" at an empty spot; elsewhere PDFKit's own long press selects.
