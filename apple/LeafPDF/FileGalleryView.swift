@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// search field (⌘F on Mac and iPad) narrows it to matching Documents; with
 /// none, "No Results" follows the "+" cell. A click or tap opens a Document in the
 /// Reader, in a Tab (see `Tabs`). A "Reader" toolbar button returns to the Tabs
-/// while any are open. The toolbar "+" and File > Import… (also from the Reader)
+/// while any are open. The "+" cell and File > Import… (also from the Reader)
 /// Import PDFs, as do Files dropped onto the Gallery or handed over by other apps
 /// (share sheet, Open With, Dock icon). Every Document of the Files opens in a
 /// Tab, the first one active; a single File already in the Library is reported
@@ -128,7 +128,6 @@ struct FileGalleryView: View {
                 }
                 if library.showsSyncWarning { SyncWarning(isShowingSettings: $isShowingSettings) }
                 SortMenu(sort: Bindable(library).sort)
-                Button("Import…", systemImage: "plus") { isImporting = true }
                 #if os(iOS)
                     Button("Settings", systemImage: "gear") { isShowingSettings = true }
                 #endif
