@@ -486,6 +486,7 @@ final class ReaderPDFView: PDFView {
         fileprivate var notePoint: CGPoint?
 
         private func observeScrolling() {
+            letScrollIndicatorScrub()
             scrollObservation = subviews.lazy.compactMap { $0 as? UIScrollView }.first?
                 .observe(\.contentOffset) { [weak self] _, _ in
                     MainActor.assumeIsolated {
@@ -494,6 +495,23 @@ final class ReaderPDFView: PDFView {
                         self?.onScroll()
                     }
                 }
+        }
+
+        /// The native scroll indicator can be grabbed with a press while it shows, then
+        /// dragged to scrub through the Document. PDFKit's and our presses, and text
+        /// selection, would take that press first, so they wait for the indicator's,
+        /// which fails at once off the indicator.
+        private func letScrollIndicatorScrub() {
+            guard let scrollView = subviews.lazy.compactMap({ $0 as? UIScrollView }).first, let documentView
+            else { return }
+            // The scroll view's only long presses are its indicators'.
+            let indicatorPresses = (scrollView.gestureRecognizers ?? []).filter { $0 is UILongPressGestureRecognizer }
+            let presses = ((gestureRecognizers ?? []) + (documentView.gestureRecognizers ?? [])).filter {
+                $0 is UILongPressGestureRecognizer || $0 is UIPanGestureRecognizer
+            }
+            for press in presses {
+                for indicatorPress in indicatorPresses { press.require(toFail: indicatorPress) }
+            }
         }
 
         /// Below any part of the view hidden behind bars.
