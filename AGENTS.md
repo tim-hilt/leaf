@@ -8,6 +8,7 @@ Native, cross platform PDF Reader with cloud syncing
 - `ffi/`: `leafpdf-ffi`, UniFFI bindings of the core
 - `apple/`: iOS, iPadOS and macOS client; edit `project.yml`, never the `.xcodeproj`
 - `docs/adr/`: architecture decisions
+- `Makefile`: build and test entry points; run tests through it (`make apple-test-ios ONLY=<Suite>` for iOS-only code)
 
 # Coding Guidelines
 

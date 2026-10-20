@@ -28,6 +28,8 @@ open apple/LeafPDF.xcodeproj  # run the LeafPDF scheme on a simulator or "My Mac
 - After changing Rust code: `make apple-core`
 - After adding/removing Swift files or editing `apple/project.yml`: `make apple-project`
 - Build for macOS and the iOS Simulator: `make apple-build` (regenerates the project first)
-- Tests, including both builds: `make apple-test`
+- Tests, including both builds: `make apple-test` (macOS)
+- Tests on an iOS Simulator, for iOS-only code: `make apple-test-ios` (`SIM=<device name>`)
+- Narrow either to a suite or test: `ONLY=LeafPDFTests/ReaderPDFViewTests`. Full log: `/tmp/leafpdf-test.log`
 - Debug build of the core: `make apple-core PROFILE=dev`
 - Running on a device: create `apple/Config/Local.xcconfig` with `DEVELOPMENT_TEAM = <your team ID>`

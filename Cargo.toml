@@ -7,3 +7,7 @@ version = "0.1.0"
 edition = "2024"
 license = "UNLICENSED"
 publish = false
+
+# Optimised dependencies (Automerge) keep the debug test run fast.
+[profile.dev.package."*"]
+opt-level = 3

@@ -9,8 +9,15 @@ FFI_LIB := libleafpdf_ffi.a
 APPLE_GEN := apple/LeafCore/Generated
 SWIFT_SRC := apple/LeafPDF apple/LeafPDFTests
 XCODEBUILD := cd apple && xcodebuild -quiet -scheme LeafPDF
+CORE_SRC := $(shell find core ffi -type f) Cargo.toml Cargo.lock rust-toolchain.toml Makefile
+CORE_STAMP := $(APPLE_GEN)/.built-$(PROFILE)
 
-.PHONY: test lint fmt apple apple-core apple-project apple-build apple-test clean
+# App tests: ONLY narrows to a suite or test, e.g. ONLY=LeafPDFTests/ReaderPDFViewTests.
+ONLY ?= LeafPDFTests
+SIM ?= iPad Pro 13-inch (M5)
+XCTEST = scripts/apple-test.sh -only-testing:$(ONLY)
+
+.PHONY: test lint fmt apple apple-core apple-project apple-build apple-test apple-test-ios clean
 
 ## Rust core
 
@@ -31,9 +38,14 @@ fmt:
 apple: apple-core apple-project
 
 # Builds the core for every Apple target and packages it, together with the
-# generated Swift bindings, into the LeafCore Swift package.
-apple-core:
-	cargo build -p leafpdf-ffi --profile $(PROFILE) $(addprefix --target ,$(APPLE_TARGETS))
+# generated Swift bindings, into the LeafCore Swift package. Skipped while the
+# Rust sources are unchanged. Deployment targets match apple/project.yml, so C
+# dependencies link without warnings.
+apple-core: $(CORE_STAMP)
+
+$(CORE_STAMP): $(CORE_SRC)
+	IPHONEOS_DEPLOYMENT_TARGET=18.0 MACOSX_DEPLOYMENT_TARGET=15.0 \
+		cargo build -p leafpdf-ffi --profile $(PROFILE) $(addprefix --target ,$(APPLE_TARGETS))
 	rm -rf $(APPLE_GEN)
 	cargo run -q -p leafpdf-ffi --features cli --bin uniffi-bindgen -- generate \
 		--library target/aarch64-apple-darwin/$(PROFILE_DIR)/$(FFI_LIB) \
@@ -45,9 +57,11 @@ apple-core:
 		$(foreach t,$(APPLE_TARGETS),-library target/$(t)/$(PROFILE_DIR)/$(FFI_LIB) -headers $(APPLE_GEN)/headers) \
 		-output $(APPLE_GEN)/LeafCoreFFI.xcframework
 	rm -rf $(APPLE_GEN)/headers
+	swift test --package-path apple/LeafCore
+	touch $@
 
 apple-project:
-	cd apple && xcodegen generate
+	cd apple && xcodegen generate --quiet
 
 # Builds the app for macOS and the iOS Simulator. Regenerates the project
 # first, so new Swift files are picked up.
@@ -56,8 +70,11 @@ apple-build: apple-project
 	$(XCODEBUILD) build -destination 'generic/platform=iOS Simulator'
 
 apple-test: apple-core apple-build
-	swift test --package-path apple/LeafCore
-	$(XCODEBUILD) test -destination 'platform=macOS' -only-testing:LeafPDFTests
+	$(XCTEST) -destination 'platform=macOS'
+
+# The same tests on an iOS Simulator, for iOS-only code. SIM picks the device.
+apple-test-ios: apple-core apple-project
+	$(XCTEST) -destination 'platform=iOS Simulator,name=$(SIM)'
 
 clean:
 	cargo clean
