@@ -23,9 +23,8 @@ import SwiftUI
 /// on iPhone) to recolor it, write its Note or remove it, all stored at once.
 ///
 /// A Note can also sit on an empty spot of a page: "Add Note" in the context menu
-/// (macOS) or after a long press (iOS), or the toolbar's "Add Note", which puts it
-/// in the middle of the viewport. Its popover opens in editing and also has "Remove
-/// Note"; emptying the Note removes it. Page Notes can't be moved.
+/// (macOS) or after a long press (iOS). Its popover opens in editing and also has
+/// "Remove Note"; emptying the Note removes it. Page Notes can't be moved.
 ///
 /// Opens at the Tab's place, zoom and Back place if it was shown before (kept
 /// in `Tabs`, in memory), else at the Document's Reading Progress at
@@ -129,9 +128,6 @@ struct ReaderView: View {
                         #if os(iOS)
                             .keyboardShortcut("f", modifiers: .command)
                         #endif
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Add Note", systemImage: "note.text.badge.plus") { handle.view?.addNoteInVisiblePage() }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Page Style", systemImage: "gearshape") { isShowingPageStyle = true }

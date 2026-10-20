@@ -554,23 +554,6 @@ import Testing
         #expect(reported == 0)
     }
 
-    @Test func addNoteInTheVisiblePageReportsTheMiddleOfTheViewport() throws {
-        let reader = try readerWithText()
-        reader.go(to: Place(pageIndex: 3, point: CGPoint(x: 0, y: 600)))
-        var reported: [Place] = []
-        reader.onAddNote = { reported.append($0) }
-
-        reader.addNoteInVisiblePage()
-
-        let place = try #require(reported.first)
-        let middle = CGPoint(x: reader.bounds.midX, y: reader.bounds.midY)
-        let page = try #require(reader.document?.page(at: place.pageIndex))
-        #expect(reported.count == 1)
-        #expect(reader.page(for: middle, nearest: true) == page)
-        let spot = reader.convert(place.point, from: page)
-        #expect(abs(spot.x - middle.x) < 0.001 && abs(spot.y - middle.y) < 0.001)
-    }
-
     @Test func thePageNoteIconIsCentredOnItsSpotAndKeepsItsOnScreenSizeAtAnyZoom() throws {
         let reader = try readerWithText()
         let note = pageNote("a", at: CGPoint(x: 300, y: 400))

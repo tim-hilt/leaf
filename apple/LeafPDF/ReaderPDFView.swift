@@ -22,9 +22,8 @@ final class ReaderHandle {
 /// Highlight reports it (`onHighlightTap`); drags and long presses still select.
 ///
 /// Page Notes have a Note icon at their spot, centred on it. A right-click (macOS)
-/// or long press (iOS) on an empty spot offers "Add Note", and `addNoteInVisiblePage()`
-/// does the same in the middle of the viewport; both report the Place to
-/// `onAddNote`. A click or tap on a page Note's icon reports it (`onPageNoteTap`).
+/// or long press (iOS) on an empty spot offers "Add Note", which reports the Place
+/// to `onAddNote`. A click or tap on a page Note's icon reports it (`onPageNoteTap`).
 ///
 /// A Jump goes to a Place and remembers where the viewport was, so that Back
 /// can return there. Only the latest Jump is remembered, and only for as long
@@ -360,20 +359,6 @@ final class ReaderPDFView: PDFView {
     /// Does nothing off the pages.
     func addNote(at point: CGPoint) {
         if let place = place(at: point) { onAddNote(place) }
-    }
-
-    /// Reports the middle of the viewport, on its page, to `onAddNote`: the page
-    /// there, or the nearest, and a spot not outside it.
-    func addNoteInVisiblePage() {
-        let middle = CGPoint(x: viewportRect.midX, y: viewportRect.midY)
-        guard let document, let page = page(for: middle, nearest: true) else { return }
-        let bounds = page.bounds(for: .cropBox)
-        let spot = convert(middle, to: page)
-        onAddNote(
-            Place(
-                pageIndex: document.index(for: page),
-                point: CGPoint(
-                    x: min(max(spot.x, bounds.minX), bounds.maxX), y: min(max(spot.y, bounds.minY), bounds.maxY))))
     }
 
     // MARK: Links
