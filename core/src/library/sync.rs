@@ -802,6 +802,25 @@ mod tests {
     }
 
     #[test]
+    fn details_stay_on_their_device() {
+        let mut cloud = Cloud::new();
+        let (a, b) = (cloud.device(), cloud.device());
+        let imported = a.import("Paper.pdf", b"paper bytes");
+        let details = crate::details::Details {
+            title: Some("Paper".to_owned()),
+            author: None,
+            page_count: 1,
+        };
+        a.library.set_details(&imported.id, &details).unwrap();
+
+        a.sync();
+        b.sync();
+
+        assert_eq!(b.document(&imported.id).details, None);
+        assert_eq!(a.document(&imported.id).details, Some(details));
+    }
+
+    #[test]
     fn uploads_and_downloads_report_documents_done_of_total_ending_at_total() {
         let mut cloud = Cloud::new();
         let (a, b) = (cloud.device(), cloud.device());
@@ -823,6 +842,7 @@ mod tests {
         b.sync();
         a.library
             .add_highlight(&imported.id, vec![], "quoted", Rgb { r: 1, g: 2, b: 3 }, 1)
+            .unwrap()
             .unwrap();
 
         assert_eq!(a.sync_reporting(), []);
@@ -1110,6 +1130,7 @@ mod tests {
             .library
             .add_highlight(id, anchor, text, color, 1)
             .unwrap()
+            .unwrap()
     }
 
     /// Two Devices that both hold one Document, imported on the first.
@@ -1171,11 +1192,21 @@ mod tests {
             .unwrap();
         let on_a = highlight(&a, &id, "on a").id;
         let on_b = highlight(&b, &id, "on b").id;
-        let note_a = a.library.add_page_note(&id, 0, 1.0, 2.0, 1).unwrap().id;
+        let note_a = a
+            .library
+            .add_page_note(&id, 0, 1.0, 2.0, 1)
+            .unwrap()
+            .unwrap()
+            .id;
         a.library
             .set_page_note_text(&id, &note_a, "from a")
             .unwrap();
-        let note_b = b.library.add_page_note(&id, 1, 3.0, 4.0, 2).unwrap().id;
+        let note_b = b
+            .library
+            .add_page_note(&id, 1, 3.0, 4.0, 2)
+            .unwrap()
+            .unwrap()
+            .id;
         b.library
             .set_page_note_text(&id, &note_b, "from b")
             .unwrap();
@@ -1682,6 +1713,7 @@ mod tests {
 
         a.library
             .add_highlight(&id, vec![], "q", Rgb { r: 1, g: 2, b: 3 }, 1)
+            .unwrap()
             .unwrap();
 
         let stored = AutoCommit::load(&fs::read(&path).unwrap()).unwrap();

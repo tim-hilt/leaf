@@ -2,51 +2,49 @@ import LeafCore
 import Observation
 import PDFKit
 
-/// A Document in the Library. Holds no open PDF: the Reader opens `file`.
-/// Equal only with equal details, so views showing a stale copy update when the
-/// Title arrives; compare `id`s to tell whether two values are the same Document.
+/// A Document in the Library, as the core last listed it. Holds no open PDF:
+/// the Reader opens `file`. Equal only with equal details, progress and Date
+/// Imported, so views showing a stale copy update when the Title arrives;
+/// compare `id`s to tell whether two values are the same Document.
+///
+/// Title, Author and page count are read from the PDF at Import or by the
+/// Library's background pass.
 struct LibraryDocument: Identifiable, Hashable {
-    let id: String
+    fileprivate let stored: LeafCore.Document
+
+    var id: String { stored.id }
     /// The stored File.
-    let file: URL
-    /// Read from the PDF at Import or by the Library's background pass; nil until then.
-    fileprivate(set) var details: DocumentDetails?
+    var file: URL { URL(fileURLWithPath: stored.path) }
+    /// The PDF's title, or else the file name without extension.
+    var title: String { stored.title }
+    /// Nil if the PDF has none, or until it is read.
+    var author: String? { stored.author }
+    /// Nil until read from the PDF.
+    var pageCount: Int? { stored.pageCount.map(Int.init) }
+    /// How far the user has got, in whole percent rounded down, counting the
+    /// page they are on: 100 only on the last page. Nil if the Document was
+    /// never opened or its page count isn't known yet.
+    var percentRead: Int? { stored.percentRead.map(Int.init) }
     /// Where the user left off; nil if the Document was never opened.
-    fileprivate(set) var progress: ReadingProgress?
+    private var progress: ReadingProgress? { stored.progress }
 
     /// The name the File had when it was Imported.
     var fileName: String { file.lastPathComponent }
-    /// The saved Title, or the file name without extension until it is read.
-    var title: String { details?.title ?? file.deletingPathExtension().lastPathComponent }
-    var author: String? { details?.author }
     /// Where the user left off, to reopen the Document there.
     var place: Place? {
         progress.map { Place(pageIndex: Int($0.pageIndex), point: CGPoint(x: $0.x, y: $0.y)) }
     }
     /// When the Reader last showed the Document; nil if never.
     var lastRead: Date? { progress.map { Date(timeIntervalSince1970: Double($0.lastRead) / 1000) } }
-    /// Nil until read from the PDF.
-    var pageCount: Int? { details?.pageCount }
-    /// How far the user has got, in whole percent rounded down, counting the
-    /// page they are on: 100 only on the last page. Nil if the Document was
-    /// never opened or its page count isn't known yet.
-    var percentRead: Int? {
-        guard let progress, let pageCount, pageCount > 0 else { return nil }
-        return min(100, 100 * (Int(progress.pageIndex) + 1) / pageCount)
-    }
 
-    /// A Document with no details or progress.
+    /// A Document with no details or progress, Imported at the Unix epoch.
     init(id: String, file: URL) {
-        self.id = id
-        self.file = file
+        stored = LeafCore.Document(
+            id: id, path: file.path, imported: 0, progress: nil, title: file.deletingPathExtension().lastPathComponent,
+            author: nil, pageCount: nil, percentRead: nil)
     }
 
-    fileprivate init(_ stored: LeafCore.Document, details: DocumentDetails?) {
-        id = stored.id
-        file = URL(fileURLWithPath: stored.path)
-        self.details = details
-        progress = stored.progress
-    }
+    fileprivate init(_ stored: LeafCore.Document) { self.stored = stored }
 }
 
 /// Why a File isn't Imported at all; nothing was copied.
@@ -261,23 +259,22 @@ private final class SyncRelay: SyncObserver {
 }
 
 /// The Library as the clients see it: the core's Library folder plus its
-/// Documents, each with its saved Title and Author. One per app, shared by all
-/// windows.
+/// Documents. One per app, shared by all windows.
 @MainActor @Observable
 final class LibraryModel {
     /// Every Document, newest Import first.
-    private(set) var documents: [LibraryDocument] = [] { didSet { reorder() } }
+    private(set) var documents: [LibraryDocument] = [] { didSet { relist() } }
     /// How the Gallery orders its Documents. Remembered on this device (user
     /// defaults, not synced) and shared by all windows; setting it re-orders at once.
     var sort: LibrarySort {
         didSet {
             guard sort != oldValue else { return }
             sort.save(to: defaults)
-            reorder()
+            relist()
         }
     }
     /// `documents` in `sort` order, kept up to date as Titles arrive.
-    private var sorted: [LibraryDocument] = []
+    private var listing = Listing(documents: [], sort: LibrarySort.standard.core)
     /// The Highlight Colors to choose from: the built-in ones, yellow first, then
     /// the Custom Colors in the order added. Kept in the Library's Preferences.
     private(set) var highlightColors: [HighlightColor]
@@ -300,7 +297,6 @@ final class LibraryModel {
     /// Reader that sees its Document's number change reads the Markup again.
     private var markupRevisions: [String: Int] = [:]
     @ObservationIgnored private let core: LeafCore.Library
-    @ObservationIgnored private let saved: DetailsStore
     @ObservationIgnored private let covers: CoverStore
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let credentials: CloudCredentials
@@ -317,20 +313,19 @@ final class LibraryModel {
     /// The latest access to a Document's state in the core; the next one waits for it.
     @ObservationIgnored private var lastStateAccess: Task<Void, Never>?
 
-    /// Opens the Library folder at `root`, creating it if needed, with Titles
-    /// and Authors saved in `detailsFile`, Covers in `coversFolder` and the sort
-    /// choice in `defaults`. Documents without saved details are
-    /// listed by file name; a low-priority background pass then reads them
-    /// from the PDFs, one at a time. A WebDAV server saved in `credentials` is
-    /// Connected again, without contacting it, so launching offline works;
+    /// Opens the Library folder at `root`, creating it if needed, with Covers
+    /// in `coversFolder` and the sort choice in `defaults`. Documents whose
+    /// details the core lacks are listed by file name; a low-priority
+    /// background pass then reads them from the PDFs, one at a time. A WebDAV
+    /// server saved in `credentials` is Connected again, without contacting
+    /// it, so launching offline works;
     /// Sync steps run `syncIntervals` apart. Files in `inbox` are temporary
     /// copies, deleted after `importFiles`.
     init(
-        root: URL, detailsFile: URL, coversFolder: URL, defaults: UserDefaults, credentials: CloudCredentials,
+        root: URL, coversFolder: URL, defaults: UserDefaults, credentials: CloudCredentials,
         syncIntervals: SyncIntervals = SyncIntervals(debounceMs: 3000, pollMs: 10000), inbox: URL? = nil
     ) throws {
         core = try LeafCore.Library.open(root: root.path)
-        saved = DetailsStore(file: detailsFile)
         covers = CoverStore(folder: coversFolder)
         self.defaults = defaults
         self.credentials = credentials
@@ -362,9 +357,10 @@ final class LibraryModel {
         let support = try files.url(
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let caches = try files.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        // Where details were kept before the core kept them; the background pass reads them again.
+        try? files.removeItem(at: support.appending(path: "Details.json"))
         return try LibraryModel(
             root: support.appending(path: "Library", directoryHint: .isDirectory),
-            detailsFile: support.appending(path: "Details.json"),
             coversFolder: caches.appending(path: "Covers", directoryHint: .isDirectory),
             defaults: .standard,
             credentials: CloudCredentials(defaults: .standard, service: "com.timhilt.leafpdf.cloud"),
@@ -499,11 +495,7 @@ final class LibraryModel {
     /// A Document moves to its place (or into the results) when its Title and
     /// Author arrive.
     func visibleDocuments(matching searchText: String) -> [LibraryDocument] {
-        let text = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return sorted }
-        return sorted.filter { document in
-            [document.title, document.fileName, document.author ?? ""].contains { $0.localizedStandardContains(text) }
-        }
+        listing.matching(search: searchText).map { documents[Int($0)] }
     }
 
     /// The saved Cover of `document`, loaded and decoded off the main thread,
@@ -534,7 +526,7 @@ final class LibraryModel {
     /// Copies the File at `url` into the Library without blocking the main
     /// thread, publishing `runningImport` meanwhile. Files that aren't
     /// readable, unlocked PDFs are rejected before anything is copied. The
-    /// Document's Title, Author and Cover are saved before this returns.
+    /// Document's details and Cover are saved before this returns.
     func `import`(_ url: URL) async -> ImportOutcome {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -547,9 +539,9 @@ final class LibraryModel {
         let covers = covers
         switch await Task.detached(operation: { Self.check(url, covers: covers) }).value {
         case .failure(let rejection): return .rejected(rejection)
-        case .success(let details): read = details
+        case .success(let pdf): read = pdf
         }
-        if let read { runningImport?.title = read.details.title }
+        if let read { runningImport?.title = read.title }
 
         let core = core
         let path = url.path
@@ -558,19 +550,19 @@ final class LibraryModel {
             guard let running = self?.runningImport else { return }
             self?.runningImport?.fraction = max(running.fraction, fraction)
         }
+        let details = read?.details
         do {
-            let result = try await Task.detached { try core.import(source: path, progress: relay) }.value
-            let (stored, isNew) =
-                switch result {
-                case .imported(let stored): (stored, true)
-                case .alreadyImported(let stored): (stored, false)
-                }
-            if let read {
-                if saved[stored.id] == nil { saved[stored.id] = read.details }
-                if let cover = read.cover { covers.save(cover, id: stored.id) }
-            }
+            let (stored, isNew) = try await Task.detached {
+                let (stored, isNew) =
+                    switch try core.import(source: path, progress: relay) {
+                    case .imported(let stored): (stored, true)
+                    case .alreadyImported(let stored): (stored, false)
+                    }
+                if let details { try? core.setDetails(stored.id, details) }
+                return (stored, isNew)
+            }.value
+            if let cover = read?.cover { covers.save(cover, id: stored.id) }
             refresh()
-            core.localChange()
             guard let document = documents.first(where: { $0.id == stored.id }) else {
                 return .failed("The imported file couldn't be opened.")
             }
@@ -624,32 +616,28 @@ final class LibraryModel {
         try? FileManager.default.removeItem(at: file)
     }
 
-    /// Deletes the Document, its File and its saved Title, Author and Cover. If that
+    /// Deletes the Document, its File, its details and its Cover. If that
     /// fails, the Document stays in `documents`.
     func remove(_ document: LibraryDocument) {
-        if (try? core.remove(id: document.id)) != nil {
-            saved[document.id] = nil
-            covers.remove(document.id)
-            core.localChange()
-        }
+        if (try? core.remove(id: document.id)) != nil { covers.remove(document.id) }
         refresh()
     }
 
     /// Saves `place` as Reading Progress of `document`, read `lastRead`. The
-    /// Document is updated at once, so every window shows it; the core writes
-    /// off the main thread, in order, and this returns when it has. Does
-    /// nothing for a Document that was Removed. A failed write is ignored: the
-    /// next save replaces it.
+    /// core writes off the main thread, in order; this returns when it has,
+    /// with the Document updated in every window. Does nothing for a Document
+    /// that was Removed. A failed write is ignored: the next save replaces it.
     func saveProgress(_ place: Place, of document: LibraryDocument, at lastRead: Date = .now) async {
-        guard let index = documents.firstIndex(where: { $0.id == document.id }) else { return }
         let progress = ReadingProgress(
             pageIndex: UInt32(place.pageIndex), x: place.point.x, y: place.point.y,
             lastRead: lastRead.millisecondsSince1970)
-        documents[index].progress = progress
-
         let core = core
         let id = document.id
-        await writing { try? core.saveProgress(id: id, progress: progress) }
+        update(
+            await inStateOrder {
+                try? core.saveProgress(id: id, progress: progress)
+                return try? core.document(id: id)
+            })
     }
 
     /// The Highlights of `document`, oldest first. Empty if there are none or
@@ -668,7 +656,6 @@ final class LibraryModel {
     func addHighlight(
         _ anchor: HighlightAnchor, to document: LibraryDocument, at created: Date = .now
     ) async -> Highlight? {
-        guard documents.contains(where: { $0.id == document.id }) else { return nil }
         let core = core
         let id = document.id
         let pages = anchor.pages.map { page in
@@ -678,12 +665,10 @@ final class LibraryModel {
         }
         let rgb = Rgb(defaultHighlightColor.color)
         let milliseconds = created.millisecondsSince1970
-        let stored = await writing {
+        let stored = await inStateOrder {
             try? core.addHighlight(
                 id: id, anchor: pages, quotedText: anchor.quotedText, color: rgb, created: milliseconds)
         }
-        // Removed meanwhile: the core stored nothing.
-        guard documents.contains(where: { $0.id == id }) else { return nil }
         return stored.map(Highlight.init)
     }
 
@@ -691,34 +676,31 @@ final class LibraryModel {
     /// main thread, in order, and this returns when it has. Does nothing for a
     /// Document that was Removed.
     func setHighlightColor(_ color: RGB, of highlight: Highlight, in document: LibraryDocument) async {
-        guard documents.contains(where: { $0.id == document.id }) else { return }
         let core = core
         let id = document.id
         let highlightID = highlight.id
         let rgb = Rgb(color)
-        await writing { try? core.setHighlightColor(id: id, highlight: highlightID, color: rgb) }
+        await inStateOrder { try? core.setHighlightColor(id: id, highlight: highlightID, color: rgb) }
     }
 
     /// Sets the Note of `highlight` of `document` to `note`; empty removes it. The
     /// core writes off the main thread, in order, and this returns when it has.
     /// Does nothing for a Document that was Removed.
     func setNote(_ note: String, of highlight: Highlight, in document: LibraryDocument) async {
-        guard documents.contains(where: { $0.id == document.id }) else { return }
         let core = core
         let id = document.id
         let highlightID = highlight.id
-        await writing { try? core.setHighlightNote(id: id, highlight: highlightID, note: note) }
+        await inStateOrder { try? core.setHighlightNote(id: id, highlight: highlightID, note: note) }
     }
 
     /// Removes `highlight` from `document`. The core writes off the main
     /// thread, in order, and this returns when it has. Does nothing for a
     /// Document that was Removed.
     func removeHighlight(_ highlight: Highlight, from document: LibraryDocument) async {
-        guard documents.contains(where: { $0.id == document.id }) else { return }
         let core = core
         let id = document.id
         let highlightID = highlight.id
-        await writing { try? core.removeHighlight(id: id, highlight: highlightID) }
+        await inStateOrder { try? core.removeHighlight(id: id, highlight: highlightID) }
     }
 
     /// The page Notes of `document`, oldest first. Empty if there are none or
@@ -735,16 +717,13 @@ final class LibraryModel {
     /// page Note when it has. It isn't listed by `pageNotes(of:)` until it has
     /// text (`setText`). Nil for a Document that was Removed, or if the write failed.
     func addPageNote(at place: Place, to document: LibraryDocument, at created: Date = .now) async -> PageNote? {
-        guard documents.contains(where: { $0.id == document.id }) else { return nil }
         let core = core
         let id = document.id
         let milliseconds = created.millisecondsSince1970
-        let stored = await writing {
+        let stored = await inStateOrder {
             try? core.addPageNote(
                 id: id, pageIndex: UInt32(place.pageIndex), x: place.point.x, y: place.point.y, created: milliseconds)
         }
-        // Removed meanwhile: the core stored nothing.
-        guard documents.contains(where: { $0.id == id }) else { return nil }
         return stored.map(PageNote.init)
     }
 
@@ -752,22 +731,20 @@ final class LibraryModel {
     /// Note. The core writes off the main thread, in order, and this returns when
     /// it has. Does nothing for a Document that was Removed.
     func setText(_ text: String, of note: PageNote, in document: LibraryDocument) async {
-        guard documents.contains(where: { $0.id == document.id }) else { return }
         let core = core
         let id = document.id
         let noteID = note.id
-        await writing { try? core.setPageNoteText(id: id, note: noteID, text: text) }
+        await inStateOrder { try? core.setPageNoteText(id: id, note: noteID, text: text) }
     }
 
     /// Removes the page Note `note` from `document`. The core writes off the main
     /// thread, in order, and this returns when it has. Does nothing for a
     /// Document that was Removed.
     func removePageNote(_ note: PageNote, from document: LibraryDocument) async {
-        guard documents.contains(where: { $0.id == document.id }) else { return }
         let core = core
         let id = document.id
         let noteID = note.id
-        await writing { try? core.removePageNote(id: id, note: noteID) }
+        await inStateOrder { try? core.removePageNote(id: id, note: noteID) }
     }
 
     /// Makes `color`, one of `highlightColors`, the Default Highlight Color. It
@@ -777,7 +754,7 @@ final class LibraryModel {
         defaultHighlightColor = color
         let core = core
         let id = color.id
-        await writing { try? core.setDefaultHighlightColor(id: id) }
+        await inStateOrder { try? core.setDefaultHighlightColor(id: id) }
     }
 
     /// Adds `color` as a Custom Color after the others, `added` now. It shows at
@@ -788,7 +765,7 @@ final class LibraryModel {
         let core = core
         let rgb = Rgb(color)
         let milliseconds = added.millisecondsSince1970
-        guard let stored = await writing({ try? core.addCustomColor(rgb: rgb, added: milliseconds) })
+        guard let stored = await inStateOrder({ try? core.addCustomColor(rgb: rgb, added: milliseconds) })
         else { return nil }
         let custom = HighlightColor(stored)
         highlightColors.append(custom)
@@ -805,7 +782,7 @@ final class LibraryModel {
         if defaultHighlightColor == color { defaultHighlightColor = highlightColors[0] }
         let core = core
         let id = color.id
-        await writing { try? core.removeCustomColor(id: id) }
+        await inStateOrder { try? core.removeCustomColor(id: id) }
     }
 
     /// Runs `access` off the main thread, after every earlier access to the
@@ -821,17 +798,11 @@ final class LibraryModel {
         return await running.value
     }
 
-    /// `inStateOrder` for a write: tells the core, which sends it to the cloud
-    /// soon, once it is stored.
-    private func writing<T: Sendable>(_ access: @escaping @Sendable () -> T) async -> T {
-        let result = await inStateOrder(access)
-        core.localChange()
-        return result
-    }
-
     /// What Import reads from the PDF it opened to check the File.
     private struct ReadPDF: Sendable {
-        let details: DocumentDetails
+        /// What the progress modal shows.
+        let title: String
+        let details: PDFDetails
         let cover: CGImage?
     }
 
@@ -841,7 +812,8 @@ final class LibraryModel {
     /// it off the main thread.
     private nonisolated static func check(_ url: URL, covers: CoverStore) -> Result<ReadPDF?, ImportRejection> {
         if let pdf = PDFDocument(url: url) {
-            return pdf.isLocked ? .failure(.locked) : .success(ReadPDF(details: pdf.details, cover: covers.render(pdf)))
+            guard !pdf.isLocked else { return .failure(.locked) }
+            return .success(ReadPDF(title: pdf.title, details: pdf.details, cover: covers.render(pdf)))
         }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return .success(nil) }
         defer { try? handle.close() }
@@ -849,26 +821,28 @@ final class LibraryModel {
         return .failure(head == Data("%PDF-".utf8) ? .unreadable : .notPDF)
     }
 
-    private func reorder() { sorted = sort.ordered(documents) }
+    private func relist() { listing = Listing(documents: documents.map(\.stored), sort: sort.core) }
 
-    /// Reloads `documents` from the core, with their saved details. If the
-    /// listing fails, `documents` stays as it was rather than looking as if
-    /// everything was Removed.
+    /// Reloads `documents` from the core. If the listing fails, `documents`
+    /// stays as it was rather than looking as if everything was Removed.
     private func refresh() {
         guard let stored = try? core.documents() else { return }
         let kept = Set(stored.map(\.id))
         // Removed on another Device.
-        for gone in documents where !kept.contains(gone.id) {
-            saved[gone.id] = nil
-            covers.remove(gone.id)
-        }
-        documents = stored.map { LibraryDocument($0, details: saved[$0.id]) }
+        for gone in documents where !kept.contains(gone.id) { covers.remove(gone.id) }
+        documents = stored.map(LibraryDocument.init)
     }
 
-    /// Reads the details of Documents that have none, or none with a page
-    /// count, from their PDFs, one at a time at background priority,
-    /// publishing each as it arrives. A PDF that can't be read is skipped and
-    /// tried again at the next launch.
+    /// Replaces a Document in `documents` with `stored`, its newer copy from
+    /// the core; nothing if it was Removed meanwhile.
+    private func update(_ stored: LeafCore.Document?) {
+        guard let stored, let index = documents.firstIndex(where: { $0.id == stored.id }) else { return }
+        documents[index] = LibraryDocument(stored)
+    }
+
+    /// Reads the details of Documents the core has none of from their PDFs,
+    /// one at a time at background priority, publishing each as it arrives.
+    /// A PDF that can't be read is skipped and tried again at the next launch.
     private func readMissingDetails() {
         let missing = documents.filter { $0.pageCount == nil && !readingDetails.contains($0.id) }.map {
             ($0.id, $0.file)
@@ -879,20 +853,24 @@ final class LibraryModel {
             for (id, file) in missing {
                 let read = await Task.detached(priority: .utility) { PDFDocument(url: file)?.details }.value
                 guard let self else { return }
-                self.readingDetails.remove(id)
-                self.publish(read, for: id)
+                readingDetails.remove(id)
+                guard let read else { continue }
+                let core = core
+                update(
+                    await inStateOrder {
+                        try? core.setDetails(id, read)
+                        return try? core.document(id: id)
+                    })
             }
         }
     }
+}
 
-    /// Saves `details` for Document `id` unless it was Removed or already has
-    /// a page count, which means complete details.
-    private func publish(_ details: DocumentDetails?, for id: String) {
-        guard let details, saved[id]?.pageCount == nil, let index = documents.firstIndex(where: { $0.id == id }) else {
-            return
-        }
-        saved[id] = details
-        documents[index].details = details
+extension LeafCore.Library {
+    /// Keeps `details`, read from the File of Document `id`, on this Device.
+    fileprivate func setDetails(_ id: String, _ details: PDFDetails) throws {
+        try setDetails(
+            id: id, title: details.title, author: details.author, pageCount: UInt32(clamping: details.pageCount))
     }
 }
 

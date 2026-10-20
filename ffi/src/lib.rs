@@ -1,9 +1,11 @@
 //! Foreign-language interface of the LeafPDF core, exported via UniFFI.
 //!
 //! This crate is the only place that knows about FFI: it adapts
-//! `leafpdf-core` types to UniFFI-compatible ones and nothing else. Keep
+//! `leafpdf-core` types to UniFFI-compatible ones and connects the Library to
+//! its Sync loop, so every write is sent without the client asking. Keep
 //! domain logic in `leafpdf-core` so it stays testable without bindings.
 
+use leafpdf_core::listing;
 use leafpdf_core::storage::{DirStorage, Storage};
 use leafpdf_core::sync_loop::{self, SyncLoop};
 use leafpdf_core::webdav::WebDavStorage;
@@ -239,22 +241,100 @@ impl From<leafpdf_core::markup::Markup> for Markup {
     }
 }
 
-/// A Document in the Library: its ID, the path of its stored File and its
-/// Reading Progress, if it was ever opened.
+/// A Document in the Library, see `leafpdf_core::library::Document`. Author
+/// and page count are none until `Library::set_details` gives them.
 #[derive(uniffi::Record)]
 pub struct Document {
     pub id: String,
     pub path: String,
+    /// Date Imported, in milliseconds since the Unix epoch.
+    pub imported: u64,
     pub progress: Option<ReadingProgress>,
+    pub title: String,
+    pub author: Option<String>,
+    pub page_count: Option<u32>,
+    pub percent_read: Option<u8>,
 }
 
 impl From<leafpdf_core::library::Document> for Document {
     fn from(d: leafpdf_core::library::Document) -> Self {
         Self {
+            title: d.title(),
+            percent_read: d.percent_read(),
             id: d.id,
             path: d.path.to_string_lossy().into_owned(),
+            imported: d.imported,
             progress: d.progress.map(Into::into),
+            author: d.details.as_ref().and_then(|x| x.author.clone()),
+            page_count: d.details.map(|x| x.page_count),
         }
+    }
+}
+
+/// What Documents are ordered by, see `leafpdf_core::listing::SortKey`.
+#[derive(uniffi::Enum)]
+pub enum SortKey {
+    DateImported,
+    Title,
+    RecentlyRead,
+}
+
+/// How a Gallery orders its Documents, see `leafpdf_core::listing::Sort`.
+#[derive(uniffi::Record)]
+pub struct Sort {
+    pub key: SortKey,
+    pub reversed: bool,
+}
+
+impl From<Sort> for listing::Sort {
+    fn from(s: Sort) -> Self {
+        Self {
+            key: match s.key {
+                SortKey::DateImported => listing::SortKey::DateImported,
+                SortKey::Title => listing::SortKey::Title,
+                SortKey::RecentlyRead => listing::SortKey::RecentlyRead,
+            },
+            reversed: s.reversed,
+        }
+    }
+}
+
+impl From<&Document> for listing::Item {
+    fn from(d: &Document) -> Self {
+        let path = std::path::Path::new(&d.path);
+        Self {
+            title: d.title.clone(),
+            file_name: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            author: d.author.clone(),
+            imported: d.imported,
+            last_read: d.progress.as_ref().map(|p| p.last_read),
+        }
+    }
+}
+
+/// Documents in the order of a `Sort`, ready for Library Search, see
+/// `leafpdf_core::listing::Listing`.
+#[derive(uniffi::Object)]
+pub struct Listing(listing::Listing);
+
+#[uniffi::export]
+impl Listing {
+    #[uniffi::constructor]
+    pub fn new(documents: &[Document], sort: Sort) -> Arc<Self> {
+        let items: Vec<_> = documents.iter().map(Into::into).collect();
+        Arc::new(Self(listing::Listing::new(&items, sort.into())))
+    }
+
+    /// The positions in `documents` of those matching `search`, in order.
+    pub fn matching(&self, search: &str) -> Vec<u32> {
+        let found = self.0.matching(search).into_iter();
+        found
+            .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
+            .collect()
     }
 }
 
@@ -414,6 +494,15 @@ impl Library {
     fn sync(&self) -> std::sync::MutexGuard<'_, Option<SyncLoop>> {
         self.sync.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// The outcome of a write to the Library; tells the Sync loop, if any, to
+    /// send it soon. Every write goes through here, so clients never have to.
+    fn written<T>(&self, outcome: std::io::Result<T>) -> Result<T, LibraryError> {
+        if let Some(sync) = &*self.sync() {
+            sync.local_change();
+        }
+        Ok(outcome?)
+    }
 }
 
 #[uniffi::export]
@@ -495,14 +584,6 @@ impl Library {
         drop(stopped);
     }
 
-    /// Something changed locally (an Import, a Remove, Reading Progress, Markup,
-    /// Highlight Colors): sends it soon.
-    pub fn local_change(&self) {
-        if let Some(sync) = &*self.sync() {
-            sync.local_change();
-        }
-    }
-
     /// The app is in the foreground: syncs at once, then regularly.
     pub fn foreground(&self) {
         if let Some(sync) = &*self.sync() {
@@ -524,16 +605,16 @@ impl Library {
     ) -> Result<ImportResult, LibraryError> {
         let result = self.core.import(source.as_ref(), |copied, total| {
             progress.report(copied, total)
-        })?;
-        Ok(result.into())
+        });
+        Ok(self.written(result)?.into())
     }
 
     pub fn remove(&self, id: String) -> Result<(), LibraryError> {
-        Ok(self.core.remove(&id)?)
+        self.written(self.core.remove(&id))
     }
 
     pub fn save_progress(&self, id: String, progress: ReadingProgress) -> Result<(), LibraryError> {
-        Ok(self.core.save_progress(&id, &progress.into())?)
+        self.written(self.core.save_progress(&id, &progress.into()))
     }
 
     pub fn markup(&self, id: String) -> Result<Markup, LibraryError> {
@@ -547,12 +628,12 @@ impl Library {
         quoted_text: String,
         color: Rgb,
         created: u64,
-    ) -> Result<Highlight, LibraryError> {
+    ) -> Result<Option<Highlight>, LibraryError> {
         let anchor = anchor.into_iter().map(Into::into).collect();
-        let highlight =
-            self.core
-                .add_highlight(&id, anchor, &quoted_text, color.into(), created)?;
-        Ok(highlight.into())
+        let highlight = self
+            .core
+            .add_highlight(&id, anchor, &quoted_text, color.into(), created);
+        Ok(self.written(highlight)?.map(Into::into))
     }
 
     pub fn set_highlight_color(
@@ -561,9 +642,7 @@ impl Library {
         highlight: String,
         color: Rgb,
     ) -> Result<(), LibraryError> {
-        Ok(self
-            .core
-            .set_highlight_color(&id, &highlight, color.into())?)
+        self.written(self.core.set_highlight_color(&id, &highlight, color.into()))
     }
 
     pub fn set_highlight_note(
@@ -572,11 +651,11 @@ impl Library {
         highlight: String,
         note: String,
     ) -> Result<(), LibraryError> {
-        Ok(self.core.set_highlight_note(&id, &highlight, &note)?)
+        self.written(self.core.set_highlight_note(&id, &highlight, &note))
     }
 
     pub fn remove_highlight(&self, id: String, highlight: String) -> Result<(), LibraryError> {
-        Ok(self.core.remove_highlight(&id, &highlight)?)
+        self.written(self.core.remove_highlight(&id, &highlight))
     }
 
     pub fn add_page_note(
@@ -586,11 +665,9 @@ impl Library {
         x: f64,
         y: f64,
         created: u64,
-    ) -> Result<PageNote, LibraryError> {
-        Ok(self
-            .core
-            .add_page_note(&id, page_index, x, y, created)?
-            .into())
+    ) -> Result<Option<PageNote>, LibraryError> {
+        let note = self.core.add_page_note(&id, page_index, x, y, created);
+        Ok(self.written(note)?.map(Into::into))
     }
 
     pub fn set_page_note_text(
@@ -599,11 +676,11 @@ impl Library {
         note: String,
         text: String,
     ) -> Result<(), LibraryError> {
-        Ok(self.core.set_page_note_text(&id, &note, &text)?)
+        self.written(self.core.set_page_note_text(&id, &note, &text))
     }
 
     pub fn remove_page_note(&self, id: String, note: String) -> Result<(), LibraryError> {
-        Ok(self.core.remove_page_note(&id, &note)?)
+        self.written(self.core.remove_page_note(&id, &note))
     }
 
     pub fn highlight_colors(&self) -> Vec<HighlightColor> {
@@ -619,18 +696,136 @@ impl Library {
     }
 
     pub fn set_default_highlight_color(&self, id: String) -> Result<(), LibraryError> {
-        Ok(self.core.set_default_highlight_color(&id)?)
+        self.written(self.core.set_default_highlight_color(&id))
     }
 
     pub fn add_custom_color(&self, rgb: Rgb, added: u64) -> Result<HighlightColor, LibraryError> {
-        Ok(self.core.add_custom_color(rgb.into(), added)?.into())
+        Ok(self
+            .written(self.core.add_custom_color(rgb.into(), added))?
+            .into())
     }
 
     pub fn remove_custom_color(&self, id: String) -> Result<(), LibraryError> {
-        Ok(self.core.remove_custom_color(&id)?)
+        self.written(self.core.remove_custom_color(&id))
     }
 
     pub fn documents(&self) -> Result<Vec<Document>, LibraryError> {
         Ok(self.core.documents()?.into_iter().map(Into::into).collect())
+    }
+
+    pub fn document(&self, id: String) -> Result<Option<Document>, LibraryError> {
+        Ok(self.core.document(&id)?.map(Into::into))
+    }
+
+    /// Keeps what the client read from the File of Document `id` on this
+    /// Device, see `leafpdf_core::library::Library::set_details`. Not synced.
+    pub fn set_details(
+        &self,
+        id: String,
+        title: Option<String>,
+        author: Option<String>,
+        page_count: u32,
+    ) -> Result<(), LibraryError> {
+        let details = leafpdf_core::details::Details {
+            title,
+            author,
+            page_count,
+        };
+        Ok(self.core.set_details(&id, &details)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed};
+    use std::time::Instant;
+
+    /// Counts the Sync steps that ended.
+    #[derive(Default)]
+    struct Steps(AtomicUsize);
+
+    impl SyncObserver for Steps {
+        fn status_changed(&self, status: SyncStatus) {
+            if !matches!(status, SyncStatus::Syncing) {
+                self.0.fetch_add(1, Relaxed);
+            }
+        }
+        fn library_changed(&self) {}
+        fn markup_changed(&self, _: String) {}
+        fn transfer_progress(&self, _: u64, _: u64) {}
+    }
+
+    struct NoProgress;
+
+    impl ImportProgress for NoProgress {
+        fn report(&self, _: u64, _: u64) {}
+    }
+
+    /// Waits up to 5 s for a step to end after the `before`th one.
+    fn another_step(steps: &Steps, before: usize, after: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while steps.0.load(Relaxed) <= before {
+            assert!(Instant::now() < deadline, "no Sync step after {after}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn every_write_starts_a_sync_step_without_being_told() {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "leafpdf-ffi-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("a.pdf");
+        std::fs::write(&source, b"%PDF-").unwrap();
+        let library = Library::open(dir.join("library").display().to_string()).unwrap();
+        let steps = Arc::new(Steps::default());
+        let hour = 3_600_000;
+        library
+            .connect_directory(
+                dir.join("cloud").display().to_string(),
+                steps.clone(),
+                SyncIntervals {
+                    debounce_ms: 10,
+                    poll_ms: hour,
+                },
+            )
+            .unwrap();
+        another_step(&steps, 0, "connecting");
+
+        // Each write runs on the Library's only Document, if any.
+        let write = |name: &str, write: &dyn Fn(&Library, String)| {
+            let before = steps.0.load(Relaxed);
+            let id = library.documents().unwrap().first().map(|d| d.id.clone());
+            write(&library, id.unwrap_or_default());
+            another_step(&steps, before, name);
+        };
+        write("import", &|l, _| {
+            l.import(source.display().to_string(), Arc::new(NoProgress))
+                .unwrap();
+        });
+        write("save_progress", &|l, id| {
+            let progress = ReadingProgress {
+                page_index: 1,
+                x: 0.0,
+                y: 0.0,
+                last_read: 1,
+            };
+            l.save_progress(id, progress).unwrap();
+        });
+        write("add_page_note", &|l, id| {
+            l.add_page_note(id, 0, 1.0, 2.0, 1).unwrap();
+        });
+        write("add_custom_color", &|l, _| {
+            l.add_custom_color(Rgb { r: 1, g: 2, b: 3 }, 1).unwrap();
+        });
+        write("remove", &|l, id| l.remove(id).unwrap());
+
+        library.disconnect();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -9,4 +9,5 @@ publish.workspace = true
 automerge = "0.12.0"
 quick-xml = "0.42.0"
 sha2 = "0.10"
+unicode-normalization = "0.1.26"
 ureq = { version = "3.4", default-features = false, features = ["rustls"] }

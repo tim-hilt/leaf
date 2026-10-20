@@ -8,8 +8,6 @@ import UniformTypeIdentifiers
 @MainActor @Suite struct LibraryModelTests {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
-    var detailsFile: URL { root.deletingLastPathComponent().appending(path: "\(root.lastPathComponent)-details.json") }
-
     var coversFolder: URL { root.deletingLastPathComponent().appending(path: "\(root.lastPathComponent)-covers") }
 
     /// This device's user defaults, as far as the Library is concerned: one
@@ -21,14 +19,13 @@ import UniformTypeIdentifiers
         CloudCredentials(defaults: defaults, service: "leafpdf-test-\(root.lastPathComponent)")
     }
 
-    /// Opens the Library at `root`, keeping its saved Titles and Authors in
-    /// `detailsFile`, its Covers in `coversFolder`, its sort choice in `defaults`
-    /// and its Cloud Backing credentials in `credentials`.
+    /// Opens the Library at `root`, keeping its Covers in `coversFolder`, its
+    /// sort choice in `defaults` and its Cloud Backing credentials in `credentials`.
     func openLibrary(
         syncIntervals: SyncIntervals = SyncIntervals(debounceMs: 3000, pollMs: 10000), inbox: URL? = nil
     ) throws -> LibraryModel {
         try LibraryModel(
-            root: root, detailsFile: detailsFile, coversFolder: coversFolder, defaults: defaults,
+            root: root, coversFolder: coversFolder, defaults: defaults,
             credentials: credentials, syncIntervals: syncIntervals, inbox: inbox)
     }
 
@@ -36,6 +33,17 @@ import UniformTypeIdentifiers
     func importPDF(titled title: String, into library: LibraryModel) async throws {
         _ = await library.import(try writePDF(named: "\(UUID().uuidString).pdf", metadataTitle: title))
         try await Task.sleep(for: .milliseconds(20))
+    }
+
+    /// Imports `source` into the Library at `root` the way an older LeafPDF
+    /// left it: without details, so a Library opened next lists it by file
+    /// name until its background pass reads them. Call it before `openLibrary`.
+    func importWithoutDetails(_ source: URL) throws {
+        _ = try LeafCore.Library.open(root: root.path).import(source: source.path, progress: NoProgress())
+    }
+
+    private final class NoProgress: ImportProgress {
+        func report(copied: UInt64, total: UInt64) {}
     }
 
     /// The saved Cover files.
@@ -400,7 +408,7 @@ import UniformTypeIdentifiers
             Issue.record("expected the removed File to Import as new")
             return
         }
-        #expect(again == doomed)
+        #expect(again.id == doomed.id)
         #expect(library.documents == [again, kept])
     }
 
@@ -452,9 +460,7 @@ import UniformTypeIdentifiers
     }
 
     @Test func missingSavedTitlesShowFileNamesFirstAndTitlesAfterTheBackgroundPass() async throws {
-        _ = await (try openLibrary()).import(
-            try writePDF(named: "scan0042.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
-        try FileManager.default.removeItem(at: detailsFile)
+        try importWithoutDetails(try writePDF(named: "scan0042.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
 
         let library = try openLibrary()
         let stale = try #require(library.documents.first)
@@ -467,25 +473,6 @@ import UniformTypeIdentifiers
         #expect(library.documents.first != stale)
         // Saved, so the next launch has them at once.
         #expect(try openLibrary().documents.first?.title == "Moby-Dick")
-    }
-
-    @Test func removeDeletesTheSavedTitleAndAuthor() async throws {
-        let library = try openLibrary()
-        let source = try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville")
-        guard case .opened(let document) = await library.import(source) else {
-            Issue.record("expected .opened")
-            return
-        }
-
-        library.remove(document)
-
-        let details = try JSONDecoder().decode([String: DocumentDetails].self, from: Data(contentsOf: detailsFile))
-        #expect(details.isEmpty)
-        guard case .opened(let again) = await library.import(try writePDF(named: "b.pdf")) else {
-            Issue.record("expected .opened")
-            return
-        }
-        #expect(again.author == nil)
     }
 
     @Test func openingTheLibraryOpensNoPDFs() throws {
@@ -646,10 +633,8 @@ import UniformTypeIdentifiers
     }
 
     @Test func aDocumentWhoseTitleArrivesLaterMovesToItsPlace() async throws {
-        let first = try openLibrary()
-        _ = await first.import(try writePDF(named: "zzz.pdf", metadataTitle: "Alpha"))
-        _ = await first.import(try writePDF(named: "mmm.pdf", metadataTitle: "Mike"))
-        try FileManager.default.removeItem(at: detailsFile)
+        try importWithoutDetails(try writePDF(named: "zzz.pdf", metadataTitle: "Alpha"))
+        try importWithoutDetails(try writePDF(named: "mmm.pdf", metadataTitle: "Mike"))
         let library = try openLibrary()
         library.sort.key = .title
         // Still by file name: the background pass can't publish before the next suspension.
@@ -703,9 +688,7 @@ import UniformTypeIdentifiers
     }
 
     @Test func aDocumentWhoseAuthorArrivesLaterJoinsTheResults() async throws {
-        let first = try openLibrary()
-        _ = await first.import(try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
-        try FileManager.default.removeItem(at: detailsFile)
+        try importWithoutDetails(try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
         let library = try openLibrary()
         #expect(library.visibleDocuments(matching: "melville").isEmpty)
 
@@ -1140,22 +1123,13 @@ import UniformTypeIdentifiers
         #expect(try openLibrary().documents.first?.pageCount == 3)
     }
 
-    @Test func theBackgroundPassReadsAMissingPageCountAndKeepsTheTitle() async throws {
-        let original = try openLibrary()
-        guard
-            case .opened(let document) = await original.import(
-                try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville", pageCount: 3))
-        else { throw ImportFailed() }
-        // Details saved before page counts existed.
-        let old = #"{"\#(document.id)":{"title":"Moby-Dick","author":"Melville"}}"#
-        try Data(old.utf8).write(to: detailsFile)
+    @Test func theBackgroundPassReadsAMissingPageCount() async throws {
+        try importWithoutDetails(try writePDF(named: "a.pdf", pageCount: 3))
 
         let library = try openLibrary()
-        #expect(library.documents.first?.title == "Moby-Dick")
         #expect(library.documents.first?.pageCount == nil)
 
         try await waitUntil { library.documents.first?.pageCount == 3 }
-        #expect(library.documents.first?.author == "Melville")
         #expect(try openLibrary().documents.first?.pageCount == 3)
     }
 
@@ -1191,15 +1165,6 @@ import UniformTypeIdentifiers
         let document = try await importDocument(pageCount: 4, into: try openLibrary())
 
         #expect(document.percentRead == nil)
-    }
-
-    @Test func aDocumentWithoutKnownPageCountHasNoPercentRead() async throws {
-        let library = try openLibrary()
-        let document = try await importDocument(pageCount: 4, into: library)
-        await library.saveProgress(place, of: document, at: lastRead)
-        try FileManager.default.removeItem(at: detailsFile)
-
-        #expect(try openLibrary().documents.first?.percentRead == nil)
     }
 
     @Test func voiceOverReadsAnOpenedDocumentWithItsPercentage() async throws {

@@ -1,14 +1,12 @@
 import Foundation
+import LeafCore
 
-/// How the Gallery orders its Documents. The default is Date Imported, newest
-/// first.
+/// How the Gallery orders its Documents, as chosen on this device. The default
+/// is Date Imported, newest first. The core does the ordering (`Listing`).
 struct LibrarySort: Equatable {
     enum Key: String {
-        /// The core's order: newest Import first.
         case dateImported
-        /// A–Z by Title, Finder-like: "2" before "10", ignoring case and accents.
         case title
-        /// Newest Last Read first; never-opened Documents follow in the core's order.
         case recentlyRead
     }
 
@@ -18,35 +16,15 @@ struct LibrarySort: Equatable {
 
     static let standard = LibrarySort(key: .dateImported, isReversed: false)
 
-    /// `documents`, which must be in the core's order (newest Import first),
-    /// in this order. Documents with equal Titles or Last Read keep that order.
-    func ordered(_ documents: [LibraryDocument]) -> [LibraryDocument] {
-        switch key {
-        case .dateImported:
-            return flipped(documents)
-        case .title:
-            return flipped(Self.stable(documents) { $0.title.localizedStandardCompare($1.title) == .orderedAscending })
-        case .recentlyRead:
-            // Reversing flips only the opened Documents: never-opened ones always trail.
-            let opened = documents.filter { $0.lastRead != nil }
-            let neverOpened = documents.filter { $0.lastRead == nil }
-            return flipped(Self.stable(opened) { $0.lastRead! > $1.lastRead! }) + neverOpened
-        }
-    }
-
-    private func flipped(_ documents: [LibraryDocument]) -> [LibraryDocument] {
-        isReversed ? documents.reversed() : documents
-    }
-
-    /// `documents` sorted by `areInIncreasingOrder`; equal ones keep their order.
-    private static func stable(
-        _ documents: [LibraryDocument], by areInIncreasingOrder: (LibraryDocument, LibraryDocument) -> Bool
-    ) -> [LibraryDocument] {
-        documents.enumerated().sorted { a, b in
-            if areInIncreasingOrder(a.element, b.element) { return true }
-            if areInIncreasingOrder(b.element, a.element) { return false }
-            return a.offset < b.offset
-        }.map(\.element)
+    /// This choice as the core takes it.
+    var core: Sort {
+        let key: SortKey =
+            switch key {
+            case .dateImported: .dateImported
+            case .title: .title
+            case .recentlyRead: .recentlyRead
+            }
+        return Sort(key: key, reversed: isReversed)
     }
 
     private static let keyName = "gallery.sort.key"

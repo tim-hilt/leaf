@@ -535,6 +535,7 @@ mod tests {
             crate::markup::Rgb { r: 1, g: 2, b: 3 },
             1,
         )
+        .unwrap()
         .unwrap();
         a_loop.local_change();
         eventually("the state-only step", || a_events.steps() == 2);
@@ -555,7 +556,9 @@ mod tests {
         });
 
         let color = crate::markup::Rgb { r: 1, g: 2, b: 3 };
-        b.add_highlight(&id, vec![], "quoted", color, 1).unwrap();
+        b.add_highlight(&id, vec![], "quoted", color, 1)
+            .unwrap()
+            .unwrap();
         b.save_progress(
             &id,
             &crate::progress::ReadingProgress {

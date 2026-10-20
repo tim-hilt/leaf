@@ -19,7 +19,6 @@ extension LibraryModelTests {
         let defaults = UserDefaults(suiteName: name)!
         return try LibraryModel(
             root: parent.appending(path: name, directoryHint: .isDirectory),
-            detailsFile: parent.appending(path: "\(name)-details.json"),
             coversFolder: parent.appending(path: "\(name)-covers"), defaults: defaults,
             credentials: CloudCredentials(defaults: defaults, service: "leafpdf-test-\(name)"), syncIntervals: Self.fast
         )

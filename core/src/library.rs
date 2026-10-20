@@ -14,7 +14,8 @@
 //! as a hidden file (`state_name`), see `state`; the Document reads as the
 //! union of them. They are separate Automerge documents, never merged into
 //! one, so the Device ID can be the actor in all of them. The File is the folder's only non-hidden entry. A state is
-//! stored like an Import: written to staging, then renamed into place.
+//! stored like an Import: written to staging, then renamed into place. So are
+//! the Document's details (`DETAILS`, see `details`), which are never synced.
 //!
 //! Every local change to an Automerge document is made as the Device ID, which
 //! is generated once and kept in `DEVICE`.
@@ -25,6 +26,7 @@
 //! and, next to a state, `cursor_name`.
 
 use crate::chunks::Cursor;
+use crate::details::{self, Details};
 use crate::library_doc::{Import, LibraryDoc};
 use crate::markup::{self, Highlight, Markup, PageNote, PageRects, Rgb};
 use crate::preferences::{self, HighlightColor};
@@ -53,6 +55,8 @@ const PREFERENCES_CURSOR: &str = ".preferences.cursor";
 const PREFERENCES_KEY: &str = "preferences";
 /// The state of a Document before Imports had their own, see `open`.
 const LEGACY_STATE: &str = ".state.automerge";
+/// A Document's details, in its folder.
+const DETAILS: &str = ".details";
 
 /// A Document in the Library.
 #[derive(Debug, Clone, PartialEq)]
@@ -61,9 +65,38 @@ pub struct Document {
     pub id: String,
     /// The stored File.
     pub path: PathBuf,
+    /// Date Imported: that of the Document's first Import, in milliseconds
+    /// since the Unix epoch.
+    pub imported: u64,
     /// Where the user left off; none if the Document was never opened, or its
     /// state is missing or unreadable.
     pub progress: Option<ReadingProgress>,
+    /// What the client read from the File; none until it `set_details`, or
+    /// if they are unreadable.
+    pub details: Option<Details>,
+}
+
+impl Document {
+    /// The Title: the title stored in the File, or else its name without
+    /// extension.
+    pub fn title(&self) -> String {
+        match self.details.as_ref().and_then(|d| d.title.clone()) {
+            Some(title) => title,
+            None => self
+                .path
+                .file_stem()
+                .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
+        }
+    }
+
+    /// How far the user has got, in whole percent rounded down, counting the
+    /// page they are on: 100 only on the last page. None if the Document was
+    /// never opened or its page count isn't known.
+    pub fn percent_read(&self) -> Option<u8> {
+        let pages = u64::from(self.details.as_ref()?.page_count);
+        let reached = u64::from(self.progress?.page_index) + 1;
+        (pages > 0).then(|| (100 * reached / pages).min(100) as u8)
+    }
 }
 
 /// What an Import did.
@@ -274,10 +307,7 @@ impl Library {
         let (id, is_new) = result?;
         // A duplicate keeps the name it was first imported under.
         let document = self
-            .entry(&id)
-            .map(|entry| self.document(&entry))
-            .transpose()?
-            .flatten()
+            .document(&id)?
             .ok_or_else(|| io::Error::other("imported Document is empty"))?;
         Ok(if is_new {
             ImportResult::Imported(document)
@@ -331,7 +361,7 @@ impl Library {
         let per_chunk = std::thread::scope(|scope| {
             let workers: Vec<_> = entries
                 .chunks(per_thread)
-                .map(|chunk| scope.spawn(|| chunk.iter().map(|e| self.document(e)).collect()))
+                .map(|chunk| scope.spawn(|| chunk.iter().map(|e| self.document_of(e)).collect()))
                 .collect();
             workers
                 .into_iter()
@@ -359,8 +389,31 @@ impl Library {
         (!imports.is_empty()).then(|| Entry::new(imports))
     }
 
+    /// Document `id`, as `documents` lists it; none if it isn't in the
+    /// Library or its File isn't stored yet. An `id` that isn't a Document ID
+    /// is `InvalidInput`.
+    pub fn document(&self, id: &str) -> io::Result<Option<Document>> {
+        self.folder(id)?;
+        match self.entry(id) {
+            Some(entry) => self.document_of(&entry),
+            None => Ok(None),
+        }
+    }
+
+    /// Keeps `details`, read from the File of Document `id`, on this Device,
+    /// replacing any before; `Document::details` returns them as `details`
+    /// stores them. Does nothing for a Document that isn't in the Library. An
+    /// `id` that isn't a Document ID is `InvalidInput`.
+    pub fn set_details(&self, id: &str, details: &Details) -> io::Result<()> {
+        let path = self.folder(id)?.join(DETAILS);
+        if self.entry(id).is_none() {
+            return Ok(());
+        }
+        self.replace_file(&path, |_| details::encode(details))
+    }
+
     /// The Document of `entry`, if its File is stored.
-    fn document(&self, entry: &Entry) -> io::Result<Option<Document>> {
+    fn document_of(&self, entry: &Entry) -> io::Result<Option<Document>> {
         let Some(path) = self.file_path(entry)? else {
             return Ok(None);
         };
@@ -369,7 +422,11 @@ impl Library {
         Ok(Some(Document {
             id: entry.id.clone(),
             path,
+            imported: entry.imported,
             progress,
+            details: fs::read(self.root.join(&entry.id).join(DETAILS))
+                .ok()
+                .and_then(|bytes| details::decode(&bytes)),
         }))
     }
 
@@ -407,8 +464,8 @@ impl Library {
     /// Adds a Highlight of `quoted_text` at `anchor` in `color`, `created` in
     /// milliseconds since the Unix epoch, to Document `id`, and returns it. It
     /// is independent of any Highlight already there, also on the same text.
-    /// Like `save_progress`, it does nothing for a Document that isn't in the
-    /// Library, and a corrupt state is replaced.
+    /// For a Document that isn't in the Library it adds nothing and returns
+    /// `None`. A corrupt state is replaced.
     pub fn add_highlight(
         &self,
         id: &str,
@@ -416,7 +473,7 @@ impl Library {
         quoted_text: &str,
         color: Rgb,
         created: u64,
-    ) -> io::Result<Highlight> {
+    ) -> io::Result<Option<Highlight>> {
         let highlight = Highlight {
             id: state::new_id(),
             anchor,
@@ -425,8 +482,8 @@ impl Library {
             created,
             note: None,
         };
-        self.add_to_state(id, |doc| markup::put_highlight(doc, &highlight))?;
-        Ok(highlight)
+        let added = self.add_to_state(id, |doc| markup::put_highlight(doc, &highlight))?;
+        Ok(added.then_some(highlight))
     }
 
     /// Sets the color of Highlight `highlight` of Document `id`. Does nothing
@@ -454,8 +511,8 @@ impl Library {
     /// Adds a page Note at (`x`, `y`) in page space on page `page_index` of
     /// Document `id`, `created` in milliseconds since the Unix epoch, and
     /// returns it, still without text: it isn't in the Markup until
-    /// `set_page_note_text` gives it some. Like `add_highlight`, it does nothing
-    /// for a Document that isn't in the Library.
+    /// `set_page_note_text` gives it some. Like `add_highlight`, it adds nothing
+    /// and returns `None` for a Document that isn't in the Library.
     pub fn add_page_note(
         &self,
         id: &str,
@@ -463,7 +520,7 @@ impl Library {
         x: f64,
         y: f64,
         created: u64,
-    ) -> io::Result<PageNote> {
+    ) -> io::Result<Option<PageNote>> {
         let note = PageNote {
             id: state::new_id(),
             page_index,
@@ -472,8 +529,8 @@ impl Library {
             created,
             text: String::new(),
         };
-        self.add_to_state(id, |doc| markup::put_page_note(doc, &note))?;
-        Ok(note)
+        let added = self.add_to_state(id, |doc| markup::put_page_note(doc, &note))?;
+        Ok(added.then_some(note))
     }
 
     /// Sets the text of page Note `note` of Document `id` to `text`, an edit
@@ -558,13 +615,13 @@ impl Library {
     }
 
     /// Makes `change` to the state of the Document's first Import, which
-    /// holds what is added. Nothing happens if the Document isn't in the
-    /// Library.
-    fn add_to_state(&self, id: &str, change: impl FnOnce(&mut AutoCommit)) -> io::Result<()> {
+    /// holds what is added. Whether it was made: not if the Document isn't in
+    /// the Library.
+    fn add_to_state(&self, id: &str, change: impl FnOnce(&mut AutoCommit)) -> io::Result<bool> {
         let folder = self.folder(id)?;
         match self.import_ids(id).first() {
-            Some(import) => self.update_state(&folder, import, change),
-            None => Ok(()),
+            Some(import) => self.update_state(&folder, import, change).map(|()| true),
+            None => Ok(false),
         }
     }
 
@@ -1078,8 +1135,8 @@ mod tests {
 
         let again = import_new(&library, &source);
 
-        assert_eq!(again, first);
-        assert_eq!(library.documents().unwrap(), vec![first]);
+        assert_eq!((&again.id, &again.path), (&first.id, &first.path));
+        assert_eq!(library.documents().unwrap(), vec![again]);
     }
 
     #[test]
@@ -1250,6 +1307,141 @@ mod tests {
         assert_eq!(library.documents().unwrap(), vec![]);
     }
 
+    fn details(title: Option<&str>, author: Option<&str>, page_count: u32) -> Details {
+        Details {
+            title: title.map(str::to_owned),
+            author: author.map(str::to_owned),
+            page_count,
+        }
+    }
+
+    #[test]
+    fn a_document_has_no_details_until_set_and_keeps_them_after_reopening() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        assert_eq!(document.details, None);
+
+        let moby = details(Some("Moby-Dick"), Some("Melville"), 635);
+        library.set_details(&document.id, &moby).unwrap();
+
+        assert_eq!(library.documents().unwrap()[0].details, Some(moby.clone()));
+        let reopened = scratch.library();
+        assert_eq!(reopened.documents().unwrap()[0].details, Some(moby));
+    }
+
+    #[test]
+    fn details_are_kept_as_stored() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        library
+            .set_details(&document.id, &details(Some(" "), Some(" Melville\n"), 3))
+            .unwrap();
+
+        let stored = library.document(&document.id).unwrap().unwrap().details;
+        assert_eq!(stored, Some(details(None, Some("Melville"), 3)));
+    }
+
+    #[test]
+    fn details_of_a_removed_document_are_gone_and_not_written() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let source = scratch.file("a.pdf", b"abc");
+        let document = import_new(&library, &source);
+        let moby = details(Some("Moby-Dick"), None, 1);
+        library.set_details(&document.id, &moby).unwrap();
+        library.remove(&document.id).unwrap();
+
+        library.set_details(&document.id, &moby).unwrap();
+
+        assert!(!scratch.0.join("library").join(&document.id).exists());
+        assert_eq!(import_new(&library, &source).details, None);
+    }
+
+    #[test]
+    fn setting_details_refuses_an_id_that_points_outside_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        for id in ["../x", "/tmp", "", ".staging"] {
+            let err = library
+                .set_details(id, &details(None, None, 1))
+                .unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn the_title_is_the_stored_one_or_else_the_file_name_without_extension() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("scan0042.pdf", b"abc"));
+        assert_eq!(document.title(), "scan0042");
+
+        library
+            .set_details(&document.id, &details(None, Some("Melville"), 1))
+            .unwrap();
+        assert_eq!(library.documents().unwrap()[0].title(), "scan0042");
+
+        library
+            .set_details(&document.id, &details(Some("Moby-Dick"), None, 1))
+            .unwrap();
+        assert_eq!(library.documents().unwrap()[0].title(), "Moby-Dick");
+    }
+
+    #[test]
+    fn percent_read_is_the_page_reached_of_the_page_count_rounded_down() {
+        let document = |page_index, page_count| Document {
+            id: String::new(),
+            path: PathBuf::from("a.pdf"),
+            imported: 0,
+            progress: Some(progress(page_index, 1)),
+            details: Some(details(None, None, page_count)),
+        };
+        for (page_index, page_count, percent) in [
+            (0, 4, 25),
+            (3, 4, 100),
+            (1, 3, 66),
+            (0, 200, 0),
+            (9, 4, 100),
+        ] {
+            let read = document(page_index, page_count).percent_read();
+            assert_eq!(read, Some(percent), "page {page_index} of {page_count}");
+        }
+        assert_eq!(document(0, 0).percent_read(), None, "no pages");
+        let never_opened = Document {
+            progress: None,
+            ..document(0, 4)
+        };
+        assert_eq!(never_opened.percent_read(), None);
+        let unknown_page_count = Document {
+            details: None,
+            ..document(0, 4)
+        };
+        assert_eq!(unknown_page_count.percent_read(), None);
+    }
+
+    #[test]
+    fn a_document_is_found_by_id_while_it_is_in_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        library
+            .save_progress(&document.id, &progress(1, 1))
+            .unwrap();
+
+        let found = library.document(&document.id).unwrap();
+        assert_eq!(found, Some(library.documents().unwrap().remove(0)));
+
+        library.remove(&document.id).unwrap();
+        assert_eq!(library.document(&document.id).unwrap(), None);
+        assert_eq!(
+            library.document("../x").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
     #[test]
     fn saving_for_a_removed_document_does_nothing() {
         let scratch = Scratch::new();
@@ -1369,6 +1561,7 @@ mod tests {
     fn highlight(library: &Library, id: &str, quoted_text: &str, created: u64) -> Highlight {
         library
             .add_highlight(id, anchor(), quoted_text, YELLOW, created)
+            .unwrap()
             .unwrap()
     }
 
@@ -1565,6 +1758,7 @@ mod tests {
 
         let added = library
             .add_page_note(&document.id, 4, 100.5, 200.5, 1_000)
+            .unwrap()
             .unwrap();
         assert_eq!(library.markup(&document.id).unwrap(), Markup::default());
         library
@@ -1597,8 +1791,14 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
-        let first = library.add_page_note(&document.id, 0, 1.0, 2.0, 1).unwrap();
-        let second = library.add_page_note(&document.id, 1, 3.0, 4.0, 2).unwrap();
+        let first = library
+            .add_page_note(&document.id, 0, 1.0, 2.0, 1)
+            .unwrap()
+            .unwrap();
+        let second = library
+            .add_page_note(&document.id, 1, 3.0, 4.0, 2)
+            .unwrap()
+            .unwrap();
         for note in [&first, &second] {
             library
                 .set_page_note_text(&document.id, &note.id, "x")
@@ -1623,7 +1823,10 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
-        let added = library.add_page_note(&document.id, 0, 1.0, 2.0, 1).unwrap();
+        let added = library
+            .add_page_note(&document.id, 0, 1.0, 2.0, 1)
+            .unwrap()
+            .unwrap();
         library
             .set_page_note_text(&document.id, &added.id, "x")
             .unwrap();
@@ -1641,7 +1844,10 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
-        let added = library.add_page_note(&document.id, 0, 1.0, 2.0, 1).unwrap();
+        let added = library
+            .add_page_note(&document.id, 0, 1.0, 2.0, 1)
+            .unwrap()
+            .unwrap();
         library
             .set_page_note_text(&document.id, &added.id, "x")
             .unwrap();
@@ -1697,14 +1903,28 @@ mod tests {
     }
 
     #[test]
-    fn highlighting_in_a_document_that_is_not_there_does_nothing() {
+    fn highlighting_in_a_document_that_is_not_there_adds_nothing() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        library
+        let added = library
             .add_highlight("0123", anchor(), "x", YELLOW, 1)
             .unwrap();
+        assert_eq!(added, None);
         assert_eq!(library.markup("0123").unwrap(), Markup::default());
         assert!(!scratch.0.join("library/0123").exists());
+    }
+
+    #[test]
+    fn adding_a_page_note_to_a_removed_document_adds_nothing() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        library.remove(&document.id).unwrap();
+
+        let added = library.add_page_note(&document.id, 0, 1.0, 2.0, 1).unwrap();
+
+        assert_eq!(added, None);
+        assert!(!scratch.0.join("library").join(&document.id).exists());
     }
 
     #[test]
@@ -1871,6 +2091,7 @@ mod tests {
         let teal = library.add_custom_color(TEAL, 100).unwrap();
         let added = library
             .add_highlight(&document.id, vec![], "x", teal.rgb, 1)
+            .unwrap()
             .unwrap();
 
         library.remove_custom_color(&teal.id).unwrap();
@@ -1976,7 +2197,10 @@ mod tests {
             library
                 .set_highlight_note(&kept.id, &added.id, "my thought")
                 .unwrap();
-            let note = library.add_page_note(&kept.id, 0, 1.0, 2.0, 1).unwrap();
+            let note = library
+                .add_page_note(&kept.id, 0, 1.0, 2.0, 1)
+                .unwrap()
+                .unwrap();
             library.set_page_note_text(&kept.id, &note.id, "x").unwrap();
             library.add_custom_color(TEAL, 100).unwrap();
             library.set_default_highlight_color("Green").unwrap();
@@ -2170,6 +2394,7 @@ mod tests {
             .unwrap();
         library
             .add_highlight(&document.id, anchor(), "first", YELLOW, 1)
+            .unwrap()
             .unwrap();
         let second = add_import(&library, &document.id, u64::MAX / 2);
         let other = a_highlight("other");

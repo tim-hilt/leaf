@@ -13,8 +13,10 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub(crate) mod chunks;
+pub mod details;
 pub mod library;
 pub(crate) mod library_doc;
+pub mod listing;
 pub mod markup;
 pub mod preferences;
 pub mod progress;
