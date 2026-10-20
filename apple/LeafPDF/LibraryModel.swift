@@ -153,6 +153,33 @@ enum SyncState: Equatable {
     }
 }
 
+/// What the Gallery's toolbar shows of Sync.
+enum SyncIndicator: Equatable {
+    case syncing
+    case synced(Date)
+    /// Trying again can help unless Sync is blocked; then Settings has to.
+    case failed(canRetry: Bool)
+
+    init(_ state: SyncState) {
+        switch state {
+        case .syncing: self = .syncing
+        case .synced(let date): self = .synced(date)
+        case .offline: self = .failed(canRetry: true)
+        case .wrongPassword, .updateNeeded: self = .failed(canRetry: false)
+        }
+    }
+
+    /// What its popover says.
+    var message: String {
+        switch self {
+        case .syncing: "Syncing\u{2026}"
+        case .failed: "Error while syncing"
+        case .synced(let date):
+            "Last synced at \(date.formatted(date: .omitted, time: .shortened)) \(date.formatted(date: .abbreviated, time: .omitted))"
+        }
+    }
+}
+
 /// Files uploading or downloading: what the Gallery's transfer bar shows.
 struct FileTransfer: Equatable {
     /// Documents whose File has been transferred.
@@ -264,9 +291,8 @@ final class LibraryModel {
     private(set) var connection: CloudConnection?
     /// Where Sync stands. Only meaningful while `connection` isn't nil.
     private(set) var syncState = SyncState.syncing
-    /// Sync is blocked until the user acts: the Gallery shows a warning that
-    /// opens Settings. Being offline is no reason for one.
-    var showsSyncWarning: Bool { connection != nil && syncState.isBlocked }
+    /// What the Gallery's toolbar shows of Sync; nil while not Connected.
+    var syncIndicator: SyncIndicator? { connection == nil ? nil : SyncIndicator(syncState) }
     /// The File transfers of the running Sync; nil while none runs. Reading
     /// Progress, Markup and Highlight Colors Sync without it.
     private(set) var transfer: FileTransfer?

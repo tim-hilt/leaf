@@ -267,31 +267,42 @@ extension LibraryModelTests {
         #expect(!SyncState.synced(.now).isBlocked)
     }
 
-    @Test func theWarningShowsOnlyWhileSyncIsBlockedNotWhileOffline() async throws {
-        // Offline: the server is down.
+    @Test func theIndicatorShowsHowSyncStandsWhileConnected() async throws {
+        // Offline: the server is down. Trying again can help.
         let account = WebDAVAccount(url: "https://127.0.0.1:1", username: "reader", password: "secret")
         #expect(credentials.save(account))
         let offline = try openLibrary(syncIntervals: Self.fast)
         #expect(try await eventually { offline.syncState == .offline })
-        #expect(!offline.showsSyncWarning)
+        #expect(offline.syncIndicator == .failed(canRetry: true))
         await offline.disconnect()
 
         // Not Connected.
         let library = try openLibrary(syncIntervals: Self.fast)
-        #expect(!library.showsSyncWarning)
+        #expect(library.syncIndicator == nil)
 
         // Blocked: the cloud refuses access, as a server does with a wrong password.
         try await library.connect(directory: cloud)
         #expect(try await eventually { if case .synced = library.syncState { true } else { false } })
-        #expect(!library.showsSyncWarning)
+        if case .synced(let date) = library.syncState { #expect(library.syncIndicator == .synced(date)) }
         try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: cloud.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cloud.path) }
         #expect(try await eventually { library.syncState == .wrongPassword })
-        #expect(library.showsSyncWarning)
+        #expect(library.syncIndicator == .failed(canRetry: false))
         #expect(library.connection != nil)
 
         await library.disconnect()
-        #expect(!library.showsSyncWarning)
+        #expect(library.syncIndicator == nil)
+    }
+
+    @Test func theIndicatorsMessageSaysWhenSyncLastSucceeded() {
+        let date = Date(timeIntervalSince1970: 1_000_000)
+        let time = date.formatted(date: .omitted, time: .shortened)
+        let day = date.formatted(date: .abbreviated, time: .omitted)
+
+        #expect(SyncIndicator.synced(date).message == "Last synced at \(time) \(day)")
+        #expect(SyncIndicator.syncing.message == "Syncing…")
+        #expect(SyncIndicator.failed(canRetry: true).message == "Error while syncing")
+        #expect(SyncIndicator.failed(canRetry: false).message == "Error while syncing")
     }
 
     @Test func aNewPasswordThatTheServerCantCheckLeavesTheConnectionAndTheSavedPasswordAlone() async throws {

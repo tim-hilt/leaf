@@ -13,8 +13,8 @@ import UniformTypeIdentifiers
 /// for "+" and drops. A cell's context menu
 /// (long-press, right-click) or VoiceOver action offers "Remove", after
 /// confirmation. A thin bar at the bottom shows "Syncing N of M Documents"
-/// while Files transfer, and a warning in the toolbar opens Settings while Sync is
-/// blocked (wrong password, update needed), but not while offline. A Document
+/// while Files transfer, and a toolbar icon shows how Sync stands while Connected
+/// (see `SyncStatusButton`). A Document
 /// that gets Removed (here or on another Device) has its Tab closed, without a message.
 ///
 /// With a keyboard (Mac, iPad), arrow keys move a highlight through the grid,
@@ -131,7 +131,9 @@ struct FileGalleryView: View {
                     }
                     .accessibilityValue("\(count) Tabs")
                 }
-                if library.showsSyncWarning { SyncWarning(isShowingSettings: $isShowingSettings) }
+                if let indicator = library.syncIndicator {
+                    SyncStatusButton(indicator: indicator, isShowingSettings: $isShowingSettings)
+                }
                 SortMenu(sort: Bindable(library).sort)
                 #if os(iOS)
                     Button("Settings", systemImage: "gear") { isShowingSettings = true }
@@ -380,18 +382,69 @@ extension ImportProblem.Failure {
     }
 }
 
-/// The toolbar's warning, shown only while Sync is blocked, that opens Settings.
-private struct SyncWarning: View {
+/// The toolbar icon showing how Sync stands: spinning arrows while syncing, a
+/// green check once synced, a red cross after an error. A click or tap opens a
+/// popover saying when Sync last succeeded, or offering to try again. While Sync
+/// is blocked (wrong password, update needed) trying again can't help, so it
+/// names the reason and opens Settings instead.
+private struct SyncStatusButton: View {
     @Environment(LibraryModel.self) private var library
+    let indicator: SyncIndicator
     @Binding var isShowingSettings: Bool
+    @State private var isShowingPopover = false
 
     var body: some View {
+        Button {
+            isShowingPopover = true
+        } label: {
+            icon
+        }
+        .accessibilityLabel("Sync Status")
+        .accessibilityValue(indicator.message)
+        .popover(isPresented: $isShowingPopover) { popover.padding().presentationCompactAdaptation(.popover) }
+    }
+
+    @ViewBuilder private var icon: some View {
+        switch indicator {
+        case .syncing:
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .symbolEffect(.rotate, options: .repeat(.continuous))
+        case .synced:
+            Image(systemName: "checkmark.circle.fill").symbolRenderingMode(.palette)
+                .foregroundStyle(.background, .green)
+        case .failed:
+            Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette)
+                .foregroundStyle(.background, .red)
+        }
+    }
+
+    @ViewBuilder private var popover: some View {
+        switch indicator {
+        case .syncing, .synced: Text(indicator.message)
+        case .failed(let canRetry):
+            VStack(alignment: .leading, spacing: 8) {
+                Text(indicator.message)
+                if canRetry {
+                    Button("Try Again") {
+                        isShowingPopover = false
+                        library.foreground()
+                    }
+                } else {
+                    Text(library.syncState.line()).font(.caption).foregroundStyle(.secondary)
+                    settingsButton
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var settingsButton: some View {
         #if os(iOS)
-            Button("Sync Blocked", systemImage: "exclamationmark.triangle") { isShowingSettings = true }
-                .help(library.syncState.line())
+            Button("Open Settings") {
+                isShowingPopover = false
+                isShowingSettings = true
+            }
         #else
-            SettingsLink { Label("Sync Blocked", systemImage: "exclamationmark.triangle") }
-                .help(library.syncState.line())
+            SettingsLink { Text("Open Settings") }
         #endif
     }
 }
