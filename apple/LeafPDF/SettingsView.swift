@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// The Settings: Theme, Highlight Colors (the Default Highlight Color), Cloud Backing, Page Style and Page Colors.
+/// The Settings: Theme, Highlight Colors (the Default Highlight Color) and Cloud Backing.
+/// Page Style and Page Colors live in the Reader's cog popover.
 /// A window on Mac (⌘,), a sheet from the Gallery's gear on iPhone and iPad.
 struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
@@ -26,14 +27,6 @@ struct SettingsView: View {
                     trailing: { AddCustomColorButton { color in Task { await library.addCustomColor(color) } } })
             }
             CloudBackingSection()
-            Section("Page Style") {
-                PageStylePicker(selection: $settings.pageStyle, paper: settings.pageColors.paper)
-            }
-            Section("Page Colors") {
-                PageColorsEditor()
-                    .disabled(settings.pageStyle == .light)
-                PageColorsPreview(colors: settings.pageColors)
-            }
         }
         .formStyle(.grouped)
     }

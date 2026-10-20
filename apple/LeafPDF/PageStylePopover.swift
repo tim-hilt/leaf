@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The Reader's cog popover: the same Page Style and Page Colors as in Settings.
+/// The Reader's cog popover: Page Style and Page Colors, shared by all Documents and saved.
 struct PageStylePopover: View {
     @Environment(AppSettings.self) private var settings
 

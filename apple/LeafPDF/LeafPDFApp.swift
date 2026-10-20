@@ -34,7 +34,6 @@ struct LeafPDFApp: App {
                 SettingsView()
                     .environment(library)
                     .environment(settings)
-                    .preferredColorScheme(settings.theme.colorScheme)
                     .frame(width: 420)
             }
         #endif
@@ -53,7 +52,7 @@ struct LeafPDFApp: App {
             .environment(library)
             .environment(tabs)
             .environment(settings)
-            .preferredColorScheme(settings.theme.colorScheme)
+            .onChange(of: settings.theme, initial: true) { settings.theme.apply() }
             .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
