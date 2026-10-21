@@ -425,14 +425,18 @@ pub trait SyncObserver: Send + Sync {
 #[derive(uniffi::Record)]
 pub struct SyncIntervals {
     pub debounce_ms: u64,
+    pub progress_ms: u64,
     pub poll_ms: u64,
+    pub idle_poll_ms: u64,
 }
 
 impl From<SyncIntervals> for sync_loop::Intervals {
     fn from(i: SyncIntervals) -> Self {
         Self {
             debounce: Duration::from_millis(i.debounce_ms),
+            progress: Duration::from_millis(i.progress_ms),
             poll: Duration::from_millis(i.poll_ms),
+            idle_poll: Duration::from_millis(i.idle_poll_ms),
         }
     }
 }
@@ -500,6 +504,14 @@ impl Library {
     fn written<T>(&self, outcome: std::io::Result<T>) -> Result<T, LibraryError> {
         if let Some(sync) = &*self.sync() {
             sync.local_change();
+        }
+        Ok(outcome?)
+    }
+
+    /// `written`, for Reading Progress, which Syncs less eagerly.
+    fn progress_written(&self, outcome: std::io::Result<()>) -> Result<(), LibraryError> {
+        if let Some(sync) = &*self.sync() {
+            sync.progress_change();
         }
         Ok(outcome?)
     }
@@ -614,7 +626,7 @@ impl Library {
     }
 
     pub fn save_progress(&self, id: String, progress: ReadingProgress) -> Result<(), LibraryError> {
-        self.written(self.core.save_progress(&id, &progress.into()))
+        self.progress_written(self.core.save_progress(&id, &progress.into()))
     }
 
     pub fn markup(&self, id: String) -> Result<Markup, LibraryError> {
@@ -791,7 +803,9 @@ mod tests {
                 steps.clone(),
                 SyncIntervals {
                     debounce_ms: 10,
+                    progress_ms: 10,
                     poll_ms: hour,
+                    idle_poll_ms: hour,
                 },
             )
             .unwrap();

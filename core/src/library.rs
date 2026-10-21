@@ -15,7 +15,9 @@
 //! union of them. They are separate Automerge documents, never merged into
 //! one, so the Device ID can be the actor in all of them. The File is the folder's only non-hidden entry. A state is
 //! stored like an Import: written to staging, then renamed into place. So are
-//! the Document's details (`DETAILS`, see `details`), which are never synced.
+//! the Document's details (`DETAILS`, see `details`), which are never synced,
+//! and its Reading Progress (`progress_name`, see `progress`), which `sync`
+//! sends as a plain value (ADR-0020).
 //!
 //! Every local change to an Automerge document is made as the Device ID, which
 //! is generated once and kept in `DEVICE`.
@@ -32,6 +34,7 @@ use crate::markup::{self, Highlight, Markup, PageNote, PageRects, Rgb};
 use crate::preferences::{self, HighlightColor};
 use crate::progress::{self, ReadingProgress};
 use crate::state;
+use crate::storage::flush_ordered;
 use automerge::{ActorId, AutoCommit};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -130,7 +133,14 @@ pub struct Library {
     sync_changes: AtomicU64,
     /// The Documents whose Markup a `sync` changed, see `take_markup_changes`.
     markup_changes: Mutex<Vec<String>>,
+    /// The Reading Progress of each Document read so far, by ID, see
+    /// `progress_of`. Changed under `writing`, along with the file.
+    progress: Mutex<HashMap<String, KnownProgress>>,
 }
+
+/// A Document's Reading Progress, and the Imports it was read for: when they
+/// change, e.g. at a Re-Import, it is read again.
+type KnownProgress = (Vec<String>, Option<ReadingProgress>);
 
 /// The cursors of the documents `sync` exchanges.
 #[derive(Debug, Default)]
@@ -192,6 +202,7 @@ impl Library {
             writing: Mutex::new(()),
             sync_changes: AtomicU64::new(0),
             markup_changes: Mutex::new(Vec::new()),
+            progress: Mutex::default(),
         };
         library.reconcile()?;
         Ok(library)
@@ -417,13 +428,11 @@ impl Library {
         let Some(path) = self.file_path(entry)? else {
             return Ok(None);
         };
-        let states = self.read_states(&entry.id, &entry.imports);
-        let progress = progress::read_all(states.iter().map(Vec::as_slice));
         Ok(Some(Document {
             id: entry.id.clone(),
             path,
             imported: entry.imported,
-            progress,
+            progress: self.progress_of(entry),
             details: fs::read(self.root.join(&entry.id).join(DETAILS))
                 .ok()
                 .and_then(|bytes| details::decode(&bytes)),
@@ -445,11 +454,69 @@ impl Library {
     }
 
     /// Stores `progress` as the Reading Progress of Document `id`, replacing
-    /// the previous one. Saving for a Document that isn't in the Library (never
-    /// imported, or Removed, even just now) does nothing. An `id` that isn't a
-    /// Document ID is `InvalidInput`. A corrupt state is replaced.
+    /// the previous one, without a trace. Saving for a Document that isn't in
+    /// the Library (never imported, or Removed, even just now) does nothing.
+    /// An `id` that isn't a Document ID is `InvalidInput`.
     pub fn save_progress(&self, id: &str, progress: &ReadingProgress) -> io::Result<()> {
-        self.edit_states(id, |doc| progress::put_progress(doc, progress))
+        self.folder(id)?;
+        let Some(entry) = self.entry(id) else {
+            return Ok(());
+        };
+        let _writing = self.writing();
+        match self.write_progress(&entry, progress) {
+            // The folder is gone: the Document was Removed.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
+    }
+
+    /// Stores `progress` for the Document of `entry`, under its first Import.
+    /// Called under `writing`.
+    fn write_progress(&self, entry: &Entry, progress: &ReadingProgress) -> io::Result<()> {
+        let path = self
+            .root
+            .join(&entry.id)
+            .join(progress_name(&entry.imports[0]));
+        write_atomically(&self.staging(), &path, &progress::encode(progress))?;
+        let known = (entry.imports.clone(), Some(*progress));
+        self.known_progress().insert(entry.id.clone(), known);
+        Ok(())
+    }
+
+    /// The Reading Progress of the Document of `entry`: the newest saved for
+    /// its Imports, or else the newest an older version kept in their states.
+    /// Read once, then kept in memory.
+    fn progress_of(&self, entry: &Entry) -> Option<ReadingProgress> {
+        if let Some((imports, known)) = self.known_progress().get(&entry.id)
+            && *imports == entry.imports
+        {
+            return *known;
+        }
+        let folder = self.root.join(&entry.id);
+        let newest = |found: Vec<ReadingProgress>| found.into_iter().max_by_key(|p| p.last_read);
+        let saved = entry
+            .imports
+            .iter()
+            .filter_map(|i| fs::read(folder.join(progress_name(i))).ok())
+            .filter_map(|bytes| progress::decode(&bytes))
+            .collect();
+        let read = newest(saved).or_else(|| {
+            let states = self.read_states(&entry.id, &entry.imports);
+            progress::read_all(states.iter().map(Vec::as_slice))
+        });
+        let mut known = self.known_progress();
+        match known.get(&entry.id) {
+            // Saved meanwhile.
+            Some((imports, saved)) if *imports == entry.imports => *saved,
+            _ => {
+                known.insert(entry.id.clone(), (entry.imports.clone(), read));
+                read
+            }
+        }
+    }
+
+    fn known_progress(&self) -> MutexGuard<'_, HashMap<String, KnownProgress>> {
+        self.progress.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The Markup of Document `id`: empty if it has none, or the Document isn't
@@ -765,6 +832,12 @@ fn state_name(import: &str) -> String {
     format!(".state-{import}.automerge")
 }
 
+/// The name of the file holding the Reading Progress saved for Import
+/// `import`: that of its Document, if it is the Document's first Import.
+fn progress_name(import: &str) -> String {
+    format!(".progress-{import}")
+}
+
 /// The name of the file holding what this Device knows of the exchange of the
 /// state of Import `import` with a storage.
 fn cursor_name(import: &str) -> String {
@@ -821,7 +894,7 @@ fn write_atomically(staging: &Path, path: &Path, bytes: &[u8]) -> io::Result<()>
     let staged = staging.join(unique_name());
     let mut file = File::create_new(&staged)?;
     file.write_all(bytes)?;
-    file.sync_all()?;
+    flush_ordered(&file)?;
     let result = fs::rename(&staged, path);
     if result.is_err() {
         let _ = fs::remove_file(&staged);
@@ -863,7 +936,7 @@ fn stream_hashed(
         copied += n as u64;
         progress(copied, total);
     }
-    output.sync_all()?;
+    flush_ordered(&output)?;
     Ok(hex(&hasher.finalize()))
 }
 
@@ -1165,6 +1238,12 @@ mod tests {
         library.folder(id).unwrap().join(state_name(&import))
     }
 
+    /// The path of the Reading Progress of the first Import of Document `id`.
+    fn first_progress_path(library: &Library, id: &str) -> PathBuf {
+        let import = library.import_ids(id).remove(0);
+        library.folder(id).unwrap().join(progress_name(&import))
+    }
+
     /// The path of the state of `document`'s first Import.
     fn state_path(library: &Library, document: &Document) -> PathBuf {
         first_state_path(library, &document.id)
@@ -1244,13 +1323,14 @@ mod tests {
     }
 
     #[test]
-    fn the_state_file_does_not_hide_the_file() {
+    fn the_state_and_progress_files_do_not_hide_the_file() {
         let scratch = Scratch::new();
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
         library
             .save_progress(&document.id, &progress(1, 1))
             .unwrap();
+        highlight(&library, &document.id, "the passage", 1);
 
         let listed = library.documents().unwrap();
 
@@ -1264,9 +1344,7 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
-        library
-            .save_progress(&document.id, &progress(1, 1))
-            .unwrap();
+        highlight(&library, &document.id, "the passage", 1);
 
         let folder = document.path.parent().unwrap();
         let hidden: Vec<_> = fs::read_dir(folder)
@@ -1490,21 +1568,16 @@ mod tests {
     }
 
     #[test]
-    fn a_corrupt_state_file_lists_as_never_opened_and_is_replaced_by_the_next_save() {
+    fn a_corrupt_progress_file_lists_as_never_opened_and_is_replaced_by_the_next_save() {
         let scratch = Scratch::new();
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
         library
             .save_progress(&document.id, &progress(3, 5))
             .unwrap();
-        let state = fs::read_dir(document.path.parent().unwrap())
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .find(|p| p != &document.path)
-            .unwrap();
-        fs::write(&state, b"not automerge").unwrap();
+        fs::write(first_progress_path(&library, &document.id), b"garbage").unwrap();
 
-        assert_eq!(listed_progress(&library, &document.id), None);
+        assert_eq!(listed_progress(&scratch.library(), &document.id), None);
 
         library
             .save_progress(&document.id, &progress(4, 6))
@@ -1513,6 +1586,33 @@ mod tests {
             listed_progress(&library, &document.id),
             Some(progress(4, 6))
         );
+    }
+
+    #[test]
+    fn reading_progress_in_an_older_state_is_read_until_the_document_has_its_own() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        fs::write(
+            state_path(&library, &document),
+            stored_progress(&progress(9, 2_000)),
+        )
+        .unwrap();
+        assert_eq!(
+            listed_progress(&scratch.library(), &document.id),
+            Some(progress(9, 2_000))
+        );
+
+        library
+            .save_progress(&document.id, &progress(1, 1_500))
+            .unwrap();
+
+        for library in [library, scratch.library()] {
+            assert_eq!(
+                listed_progress(&library, &document.id),
+                Some(progress(1, 1_500))
+            );
+        }
     }
 
     #[test]
@@ -1651,7 +1751,7 @@ mod tests {
         highlight(&library, &document.id, "the passage", 1_000);
 
         assert_eq!(
-            listed_progress(&library, &document.id),
+            listed_progress(&scratch.library(), &document.id),
             Some(progress(7, 1_000))
         );
         let upgraded = AutoCommit::load(&fs::read(&state).unwrap()).unwrap();
@@ -2219,7 +2319,7 @@ mod tests {
         work(&library);
         library.remove(&kept.id).unwrap();
         import_new(&library, &source);
-        library.save_progress(&kept.id, &progress(1, 1)).unwrap();
+        highlight(&library, &kept.id, "again", 1);
         assert_eq!(library.device_id(), device);
         assert_all_changes_are_by(&scratch, &device);
     }
@@ -2404,7 +2504,6 @@ mod tests {
         let second = add_import(&library, &document.id, u64::MAX / 2);
         let other = a_highlight("other");
         let other_state = state::update(None, &ActorId::random(), |doc| {
-            progress::put_progress(doc, &progress(9, 2_000));
             markup::put_highlight(doc, &other);
         });
         let folder = document.path.parent().unwrap();
@@ -2416,7 +2515,7 @@ mod tests {
 
         let documents = library.documents().unwrap();
         assert_eq!(documents.len(), 1);
-        assert_eq!(documents[0].progress, Some(progress(9, 2_000)));
+        assert_eq!(documents[0].progress, Some(progress(3, 1_000)));
         assert_eq!(library.markup(&document.id).unwrap().highlights.len(), 2);
 
         // Edits reach the Import that holds what they change.
@@ -2507,7 +2606,7 @@ mod tests {
     }
 
     #[test]
-    fn a_documents_state_stays_under_64_kb_after_1000_saves() {
+    fn saving_reading_progress_keeps_no_history() {
         let scratch = Scratch::new();
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
@@ -2518,8 +2617,13 @@ mod tests {
                 .unwrap();
         }
 
-        let state = fs::read(state_path(&library, &document)).unwrap();
-        assert!(state.len() < 64 * 1024, "state is {} bytes", state.len());
+        assert!(!state_path(&library, &document).exists());
+        let stored = fs::read(first_progress_path(&library, &document.id)).unwrap();
+        assert!(stored.len() < 64, "progress is {} bytes", stored.len());
+        assert_eq!(
+            listed_progress(&library, &document.id),
+            Some(progress(999 % 300, 1_000))
+        );
     }
 
     /// Debug timings mean nothing: run with

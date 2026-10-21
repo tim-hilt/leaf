@@ -4,9 +4,13 @@
 //! A step runs
 //!
 //! - once `Intervals::debounce` after the last local change,
+//! - once `Intervals::progress` after the first unsent Reading Progress,
 //! - at once on start and `foreground`,
-//! - every `Intervals::poll` while in the foreground,
+//! - every `Intervals::poll` while in the foreground, backing off towards
+//!   `Intervals::idle_poll` while polls find nothing new,
 //! - once more at `background`, to flush; then the loop idles.
+//!
+//! Polls report no `Status::Syncing`, so an idle loop stays quiet.
 //!
 //! A step that is blocked (`Status::is_blocked`) pauses the loop for good: it
 //! sends no request until `SyncLoop::use_storage` brings new credentials, and
@@ -54,7 +58,8 @@ impl Status {
 pub trait Observer: Send + Sync {
     fn status(&self, status: Status);
     /// A step changed the Documents (Reading Progress included) or the
-    /// Highlight Colors: they are worth listing again.
+    /// Highlight Colors: they are worth listing again. Called before
+    /// `markup_changed` and the step's final `status`.
     fn library_changed(&self);
     /// A step changed the Markup of Document `id`: it is worth reading again.
     fn markup_changed(&self, id: &str);
@@ -70,15 +75,23 @@ pub trait Observer: Send + Sync {
 pub struct Intervals {
     /// How long after the last local change a step runs.
     pub debounce: Duration,
+    /// How long after the first Reading Progress no step has sent a step
+    /// runs: saved often while reading, it is sent less eagerly.
+    pub progress: Duration,
     /// How long after a step the next one runs, in the foreground.
     pub poll: Duration,
+    /// The longest `poll` grows to, doubling after each poll that finds
+    /// nothing new.
+    pub idle_poll: Duration,
 }
 
 impl Default for Intervals {
     fn default() -> Self {
         Self {
             debounce: Duration::from_secs(3),
+            progress: Duration::from_secs(60),
             poll: Duration::from_secs(10),
+            idle_poll: Duration::from_secs(300),
         }
     }
 }
@@ -108,8 +121,13 @@ struct State {
     immediate: bool,
     /// The latest local change no step has sent yet.
     changed: Option<Instant>,
+    /// The first Reading Progress no step has sent yet.
+    progress: Option<Instant>,
     /// When the next step is due on its own; only in the foreground.
     poll: Option<Instant>,
+    /// How long after a step the next poll runs; grows while polls find
+    /// nothing.
+    poll_interval: Duration,
 }
 
 impl State {
@@ -124,10 +142,20 @@ impl State {
         if !self.foreground {
             return None;
         }
-        [self.changed.map(|at| at + intervals.debounce), self.poll]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            self.changed.map(|at| at + intervals.debounce),
+            self.progress.map(|at| at + intervals.progress),
+            self.poll,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    /// Whether a step due now is a mere poll: nothing local to send, no
+    /// reason to sync at once.
+    fn polls(&self) -> bool {
+        !self.immediate && self.changed.is_none() && self.progress.is_none()
     }
 }
 
@@ -152,7 +180,9 @@ impl SyncLoop {
                 foreground: true,
                 immediate: true,
                 changed: None,
+                progress: None,
                 poll: None,
+                poll_interval: intervals.poll,
             }),
             wake: Condvar::new(),
             cancelled,
@@ -172,6 +202,15 @@ impl SyncLoop {
     /// out as one.
     pub fn local_change(&self) {
         self.update(|state| state.changed = Some(Instant::now()));
+    }
+
+    /// Reading Progress was saved: a step sends it after the progress interval,
+    /// or with the next other change, or at `background`. Later saves don't
+    /// restart the interval, so reading on doesn't hold it back.
+    pub fn progress_change(&self) {
+        self.update(|state| {
+            state.progress.get_or_insert_with(Instant::now);
+        });
     }
 
     /// Syncs with `storage` from now on: new credentials, after Sync was
@@ -256,31 +295,47 @@ impl Shared {
                         .0;
                 }
                 Some(_) => {
+                    let polls = state.polls();
                     state.immediate = false;
                     state.changed = None;
+                    state.progress = None;
                     let (storage, storage_changes) = (state.storage.clone(), state.storage_changes);
                     drop(state);
-                    let status = self.step(library, &*storage, observer);
+                    let step = self.step(library, &*storage, observer, polls);
                     state = self.lock();
                     // New credentials since the step began aren't blocked yet.
-                    state.blocked = status.is_some_and(Status::is_blocked)
+                    state.blocked = step.is_some_and(|(status, _)| status.is_blocked())
                         && state.storage_changes == storage_changes;
-                    state.poll = state.foreground.then(|| Instant::now() + intervals.poll);
+                    state.poll_interval = match step {
+                        Some((_, false)) if polls => {
+                            (state.poll_interval * 2).min(intervals.idle_poll)
+                        }
+                        _ => intervals.poll,
+                    };
+                    state.poll = state
+                        .foreground
+                        .then(|| Instant::now() + state.poll_interval);
                 }
             }
         }
     }
 
-    /// Runs a step and tells how it ended; `None` if it was cancelled.
+    /// Runs a step and tells how it ended and whether it brought anything
+    /// new; `None` if it was cancelled. A `poll` reports no `Syncing`.
     fn step(
         &self,
         library: &Library,
         storage: &dyn Storage,
         observer: &dyn Observer,
-    ) -> Option<Status> {
-        observer.status(Status::Syncing);
+        poll: bool,
+    ) -> Option<(Status, bool)> {
+        if !poll {
+            observer.status(Status::Syncing);
+        }
         let changes = library.sync_changes();
+        let transferred = AtomicBool::new(false);
         let result = library.sync_reporting(storage, &|done, total| {
+            transferred.store(true, Relaxed);
             if !self.is_cancelled() {
                 observer.transfer(done, total);
             }
@@ -288,10 +343,13 @@ impl Shared {
         if self.is_cancelled() {
             return None;
         }
+        let mut news = transferred.into_inner();
         if library.sync_changes() != changes {
+            news = true;
             observer.library_changed();
         }
         for id in library.take_markup_changes() {
+            news = true;
             observer.markup_changed(&id);
         }
         let status = match result {
@@ -303,7 +361,7 @@ impl Shared {
             },
         };
         observer.status(status);
-        Some(status)
+        Some((status, news))
     }
 }
 
@@ -385,8 +443,14 @@ mod tests {
     const HOUR: Duration = Duration::from_secs(3600);
     const MS: Duration = Duration::from_millis(1);
 
+    /// Without a longer interval for Reading Progress, and without backoff.
     fn intervals(debounce: Duration, poll: Duration) -> Intervals {
-        Intervals { debounce, poll }
+        Intervals {
+            debounce,
+            progress: debounce,
+            poll,
+            idle_poll: poll,
+        }
     }
 
     /// Waits until `condition` holds, for at most 5 seconds.
@@ -571,8 +635,10 @@ mod tests {
         .unwrap();
         b_loop.local_change();
 
-        eventually("the report on A", || {
+        // A may poll between B sending the Markup and the Reading Progress.
+        eventually("the reports on A", || {
             !a_events.markup_changed.lock().unwrap().is_empty()
+                && a.documents().unwrap()[0].progress.is_some()
         });
         assert_eq!(
             *a_events.markup_changed.lock().unwrap(),
@@ -603,6 +669,55 @@ mod tests {
         eventually("the step after the burst", || events.steps() == 2);
         sleep(Duration::from_millis(500));
         assert_eq!(events.steps(), 2, "one step for the whole burst");
+    }
+
+    #[test]
+    fn reading_progress_is_sent_after_the_progress_interval_however_often_it_is_saved() {
+        let home = Home::new();
+        let a = home.device("a");
+        let progress = Duration::from_millis(300);
+        let (sync_loop, events) = start(
+            &a,
+            home.cloud(),
+            Intervals {
+                progress,
+                ..intervals(MS, HOUR)
+            },
+        );
+        eventually("the first step", || events.steps() == 1);
+        let saved = Instant::now();
+
+        // Saved every 40 ms while reading on.
+        while events.steps() == 1 {
+            sync_loop.progress_change();
+            assert!(saved.elapsed() < 5 * progress, "never sent");
+            sleep(40 * MS);
+        }
+
+        assert!(saved.elapsed() >= progress, "sent too early");
+    }
+
+    #[test]
+    fn polls_back_off_while_they_find_nothing_and_report_no_syncing() {
+        let home = Home::new();
+        let a = home.device("a");
+        let (_loop, events) = start(
+            &a,
+            home.cloud(),
+            Intervals {
+                idle_poll: 80 * MS,
+                ..intervals(HOUR, 10 * MS)
+            },
+        );
+
+        // Without backing off, 30 polls.
+        sleep(300 * MS);
+
+        let steps = events.steps();
+        assert!((2..10).contains(&steps), "{steps} steps");
+        let statuses = events.statuses.lock().unwrap();
+        let syncing = statuses.iter().filter(|s| **s == Status::Syncing).count();
+        assert_eq!(syncing, 1, "only the first step");
     }
 
     #[test]

@@ -9,7 +9,10 @@
 //! - `library.<device>-<number>`: chunks of the Library document, see
 //!   `chunks`.
 //! - `state.<import>.<device>-<number>`: chunks of the state of each Import
-//!   (Reading Progress and Markup).
+//!   (Markup).
+//! - `progress.<import>.<device>-<last read>`: a Device's latest Reading
+//!   Progress of a Document, under its first Import (ADR-0020). Each Device
+//!   keeps one per Document, replacing it when it saves a newer one.
 //! - `preferences.<device>-<number>`: chunks of the Preferences.
 //! - `file.<sha256>`: each File once, whichever Device uploaded it first.
 //!
@@ -20,12 +23,13 @@
 
 use super::*;
 use crate::chunks::{self, Outgoing};
-use crate::storage::{Blob, Storage};
+use crate::storage::{Blob, Storage, get_bytes};
 
 const REMOTE_DIR: &str = "v1";
 const LIBRARY_PREFIX: &str = "library.";
 const STATE_PREFIX: &str = "state.";
 const PREFERENCES_PREFIX: &str = "preferences.";
+const PROGRESS_PREFIX: &str = "progress.";
 const FILE_PREFIX: &str = "file.";
 /// What `Exchanges` calls the Library document, as `PREFERENCES_KEY` does for
 /// the Preferences.
@@ -105,6 +109,27 @@ struct Outbound {
     outgoing: Outgoing,
 }
 
+/// A Device's Reading Progress of an Import, as the remote directory lists it.
+struct RemoteProgress<'a> {
+    name: &'a str,
+    import: &'a str,
+    device: &'a str,
+    last_read: u64,
+}
+
+impl<'a> RemoteProgress<'a> {
+    fn of(blob: &'a Blob) -> Option<Self> {
+        let (import, rest) = blob.name.strip_prefix(PROGRESS_PREFIX)?.split_once('.')?;
+        let (device, last_read) = rest.rsplit_once('-')?;
+        Some(Self {
+            name: &blob.name,
+            import,
+            device,
+            last_read: last_read.parse().ok()?,
+        })
+    }
+}
+
 /// What a merge changed in a document: its stored bytes before and after.
 struct Merged {
     before: Option<Vec<u8>>,
@@ -151,6 +176,7 @@ impl Library {
         let result = storage.list(REMOTE_DIR).and_then(|listing| {
             self.merge_documents(storage, &listing, &mut exchanges, everything, &mut pending)?;
             self.send(storage, &mut exchanges, &mut pending)?;
+            self.exchange_progress(storage, &listing)?;
             Ok(listing)
         });
         if result.is_err() {
@@ -304,7 +330,8 @@ impl Library {
             path: self.preferences(),
             cursor_path: self.root.join(PREFERENCES_CURSOR),
         };
-        let dirty = everything || self.dirty().keys.remove(PREFERENCES_KEY);
+        // Not `||`: the key is cleared either way.
+        let dirty = self.dirty().keys.remove(PREFERENCES_KEY) | everything;
         let cursor = exchanges.cursor(PREFERENCES_KEY, &target.cursor_path);
         let merged = self
             .exchange_doc(storage, &target, listing, cursor, dirty, pending, |bytes| {
@@ -369,22 +396,93 @@ impl Library {
                 cursor_path: folder.join(cursor_name(&import)),
             };
             let blobs = remote.get(import.as_str()).map_or(&[][..], Vec::as_slice);
-            let dirty = everything || self.dirty().keys.remove(&import);
+            let dirty = self.dirty().keys.remove(&import) | everything;
             let cursor = exchanges.cursor(&import, &target.cursor_path);
             let merged = self
                 .exchange_doc(storage, &target, blobs, cursor, dirty, pending, |bytes| {
                     self.store_state(&folder, &import, &target.path, bytes)
                 })
                 .inspect_err(|_| self.mark_dirty(&import))?;
-            if let Some(merged) = merged {
-                self.report_merged_state(&hash, &merged);
+            if merged.is_some() {
+                self.report_markup_change(&hash);
             }
         }
         Ok(())
     }
 
-    /// The names of this Device's chunks among `listing`, the blobs of the
-    /// remote directory, of the Imports `removed`. Other Devices delete theirs.
+    /// Exchanges the Reading Progress of every Document the Library document
+    /// lists, `listing` being the blobs of the remote directory: fetches
+    /// another Device's if it is newer than the one here, else sends the one
+    /// here if it is newer than any there, replacing this Device's older ones.
+    fn exchange_progress(&self, storage: &dyn Storage, listing: &[Blob]) -> io::Result<()> {
+        let device = self.device_id();
+        let mut by_import: HashMap<&str, Vec<RemoteProgress>> = HashMap::new();
+        for remote in listing.iter().filter_map(RemoteProgress::of) {
+            by_import.entry(remote.import).or_default().push(remote);
+        }
+        for entry in self.entries() {
+            let remote: Vec<&RemoteProgress> = entry
+                .imports
+                .iter()
+                .filter_map(|import| by_import.get(import.as_str()))
+                .flatten()
+                .collect();
+            let newest = remote.iter().max_by_key(|r| (r.last_read, r.device));
+            let local = self.progress_of(&entry);
+            let mut keep = newest.filter(|r| r.device == device).map(|r| r.name);
+            if let Some(newest) = newest
+                && Some(newest.last_read) > local.map(|p| p.last_read)
+            {
+                let name = format!("{REMOTE_DIR}/{}", newest.name);
+                let fetched = get_bytes(storage, &name)?.and_then(|b| progress::decode(&b));
+                if let Some(fetched) = fetched {
+                    self.store_progress(&entry, fetched)?;
+                }
+            } else if let Some(local) = local
+                && newest.is_none_or(|r| local.last_read > r.last_read)
+            {
+                let name = format!(
+                    "{PROGRESS_PREFIX}{}.{device}-{}",
+                    entry.imports[0], local.last_read
+                );
+                storage.put(
+                    &format!("{REMOTE_DIR}/{name}"),
+                    &mut progress::encode(&local).as_slice(),
+                )?;
+                keep = None;
+            }
+            for own in remote.iter().filter(|r| r.device == device) {
+                if keep != Some(own.name) {
+                    storage.delete(&format!("{REMOTE_DIR}/{}", own.name))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Stores `progress`, fetched from another Device, as the Reading Progress
+    /// of the Document of `entry`, unless it was Removed or a newer one was
+    /// saved meanwhile.
+    fn store_progress(&self, entry: &Entry, progress: ReadingProgress) -> io::Result<()> {
+        let _writing = self.writing();
+        let saved = self.progress_of(entry);
+        if saved.is_some_and(|s| s.last_read >= progress.last_read) {
+            return Ok(());
+        }
+        let doc = self.catalog();
+        if doc.live(&entry.id).next().is_none() {
+            return Ok(());
+        }
+        // The File may not be here yet.
+        fs::create_dir_all(self.root.join(&entry.id))?;
+        self.write_progress(entry, &progress)?;
+        self.sync_changes.fetch_add(1, Relaxed);
+        Ok(())
+    }
+
+    /// The names of this Device's chunks and Reading Progress among `listing`,
+    /// the blobs of the remote directory, of the Imports `removed`. Other
+    /// Devices delete theirs.
     fn own_chunks_of<'a>(
         &'a self,
         listing: &'a [Blob],
@@ -392,7 +490,9 @@ impl Library {
     ) -> impl Iterator<Item = String> + 'a {
         let device = self.device_id();
         listing.iter().filter_map(move |blob| {
-            let (import, chunk) = blob.name.strip_prefix(STATE_PREFIX)?.split_once('.')?;
+            let (import, chunk) = (blob.name.strip_prefix(STATE_PREFIX))
+                .or_else(|| blob.name.strip_prefix(PROGRESS_PREFIX))?
+                .split_once('.')?;
             let own = chunk.rsplit_once('-')?.0 == device;
             (own && removed.contains(import)).then(|| format!("{REMOTE_DIR}/{}", blob.name))
         })
@@ -440,23 +540,15 @@ impl Library {
         Ok(true)
     }
 
-    /// Tells what a merge of a state changed: Reading Progress is part of the
-    /// Documents, Markup is reported by Document.
-    fn report_merged_state(&self, hash: &str, merged: &Merged) {
-        let before = merged.before.as_deref();
-        let progress = |bytes: Option<&[u8]>| bytes.and_then(progress::read);
-        if progress(before) != progress(Some(&merged.after)) {
-            self.sync_changes.fetch_add(1, Relaxed);
-        }
-        let markup = |bytes: Option<&[u8]>| markup::read_all(bytes);
-        if markup(before) != markup(Some(&merged.after)) {
-            let mut changed = self
-                .markup_changes
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if !changed.iter().any(|id| id == hash) {
-                changed.push(hash.to_owned());
-            }
+    /// Reports that a merge changed the state of Document `hash`, which holds
+    /// little but its Markup, without reading what changed.
+    fn report_markup_change(&self, hash: &str) {
+        let mut changed = self
+            .markup_changes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !changed.iter().any(|id| id == hash) {
+            changed.push(hash.to_owned());
         }
     }
 
@@ -587,11 +679,9 @@ impl Library {
         Ok(())
     }
 
-    /// When the Document of `entry` was last read, if ever, according to the
-    /// state stored here.
+    /// When the Document of `entry` was last read, if ever.
     fn last_read(&self, entry: &Entry) -> Option<u64> {
-        let states = self.read_states(&entry.id, &entry.imports);
-        progress::read_all(states.iter().map(Vec::as_slice)).map(|p| p.last_read)
+        self.progress_of(entry).map(|p| p.last_read)
     }
 
     /// Downloads the File of `entry` into its folder, unless the Document was
@@ -1401,6 +1491,79 @@ mod tests {
         assert_eq!(b.document(&first.id).progress, Some(progress(0, 300)));
     }
 
+    /// The names of the Reading Progress blobs in the cloud.
+    fn progress_blobs(cloud: &Cloud) -> Vec<String> {
+        let mut blobs = cloud.storage().list(REMOTE_DIR).unwrap();
+        blobs.retain(|blob| blob.name.starts_with(PROGRESS_PREFIX));
+        blobs.into_iter().map(|blob| blob.name).collect()
+    }
+
+    #[test]
+    fn a_device_keeps_one_reading_progress_per_document_in_the_cloud_and_no_state() {
+        let mut cloud = Cloud::new();
+        let (a, b, id) = two_devices_with_a_document(&mut cloud);
+        let before = cloud.storage().list(REMOTE_DIR).unwrap().len();
+
+        for n in 1..=20 {
+            a.library
+                .save_progress(&id, &progress(n, u64::from(n)))
+                .unwrap();
+            a.sync();
+        }
+        b.sync();
+
+        assert_eq!(progress_blobs(&cloud).len(), 1);
+        assert_eq!(cloud.storage().list(REMOTE_DIR).unwrap().len(), before + 1);
+        assert_eq!(b.document(&id).progress, Some(progress(20, 20)));
+        // B read it, it sends nothing back.
+        b.sync();
+        assert_eq!(progress_blobs(&cloud).len(), 1);
+    }
+
+    #[test]
+    fn a_step_after_reading_progress_has_synced_reads_nothing() {
+        let mut cloud = Cloud::new();
+        let (a, b, id) = two_devices_with_a_document(&mut cloud);
+        a.library.save_progress(&id, &progress(4, 100)).unwrap();
+        settle(&a, &b);
+
+        let recording = Recording::new(cloud.storage());
+        a.library.sync(&recording).unwrap();
+        b.library.sync(&recording).unwrap();
+
+        assert!(recording.gets.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_reading_progress_of_a_removed_document_leaves_the_cloud() {
+        let mut cloud = Cloud::new();
+        let (a, b, id) = two_devices_with_a_document(&mut cloud);
+        a.library.save_progress(&id, &progress(4, 100)).unwrap();
+        b.library.save_progress(&id, &progress(5, 200)).unwrap();
+        settle(&a, &b);
+
+        a.library.remove(&id).unwrap();
+        settle(&a, &b);
+
+        assert!(progress_blobs(&cloud).is_empty());
+    }
+
+    #[test]
+    fn changes_made_before_the_first_step_are_sent_once() {
+        let mut cloud = Cloud::new();
+        let (a, _b, id) = two_devices_with_a_document(&mut cloud);
+        let root = a.home.join("library");
+        drop(a);
+        let library = Library::open(&root).unwrap();
+        library
+            .add_highlight(&id, vec![], "q", Rgb { r: 1, g: 2, b: 3 }, 1)
+            .unwrap();
+
+        library.sync(&cloud.storage()).unwrap();
+
+        assert!(library.dirty().keys.is_empty());
+    }
+
     #[test]
     fn a_step_after_markup_has_synced_reads_nothing() {
         let mut cloud = Cloud::new();
@@ -1704,7 +1867,7 @@ mod tests {
     fn local_state_of_a_newer_schema_version_is_never_stamped_lower_and_pauses_sync() {
         let mut cloud = Cloud::new();
         let (a, _b, id) = two_devices_with_a_document(&mut cloud);
-        a.library.save_progress(&id, &progress(1, 1)).unwrap();
+        highlight(&a, &id, "q");
         let import = a.library.import_ids(&id)[0].clone();
         let path = a.home.join("library").join(&id).join(state_name(&import));
         let mut newer = AutoCommit::load(&fs::read(&path).unwrap()).unwrap();

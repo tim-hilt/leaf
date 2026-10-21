@@ -1,9 +1,10 @@
 //! A Document's Automerge document (ADR-0008): the synced state kept next to
-//! its File, shared by Reading Progress (`progress`) and Markup (`markup`).
+//! its File, holding its Markup (`markup`).
 //!
-//! Schema, version 2: the root holds `version`, a `progress` map (see
-//! `progress`), and `highlights` and `page_notes` maps (see `markup`). Version
-//! 1 had no Markup; its first write makes it version 2.
+//! Schema, version 2: the root holds `version`, and `highlights` and
+//! `page_notes` maps (see `markup`). Older versions also wrote a `progress` map
+//! (see `progress`), now only read (ADR-0020). Version 1 had no Markup; its
+//! first write makes it version 2.
 //!
 //! Also the Automerge helpers shared with Preferences (`preferences`). Every
 //! local change is made as the Library's Device ID, see `library`.

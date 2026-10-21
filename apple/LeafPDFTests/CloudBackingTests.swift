@@ -7,7 +7,7 @@ import Testing
 /// Cloud Backing through `LibraryModel`: two models, each a Device, share a
 /// directory as their cloud.
 extension LibraryModelTests {
-    private static let fast = SyncIntervals(debounceMs: 10, pollMs: 30)
+    private static let fast = SyncIntervals(debounceMs: 10, progressMs: 10, pollMs: 30, idlePollMs: 30)
 
     /// The shared cloud directory of this test.
     private var cloud: URL { root.deletingLastPathComponent().appending(path: "\(root.lastPathComponent)-cloud") }

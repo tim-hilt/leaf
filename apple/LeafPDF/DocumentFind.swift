@@ -183,6 +183,9 @@
         private var listed: DocumentSearch.Query?
         private var barObservation: NSKeyValueObservation?
         private var watch: Timer?
+        /// The find pasteboard's change count when the list was made, so an
+        /// unchanged pasteboard isn't read again.
+        private var listedChange: Int?
 
         init(view: ReaderPDFView, results: SearchResults) {
             self.view = view
@@ -226,6 +229,7 @@
                 watch?.invalidate()
                 watch = nil
                 listed = nil
+                listedChange = nil
                 search.cancel()
                 results.removeAll()
                 return
@@ -240,7 +244,10 @@
 
         /// Lists the matches of the bar's search, if it has changed since the list was made.
         private func refreshList() {
-            let query = DocumentSearch.Query(findPasteboard: NSPasteboard(name: .find))
+            let pasteboard = NSPasteboard(name: .find)
+            guard pasteboard.changeCount != listedChange else { return }
+            listedChange = pasteboard.changeCount
+            let query = DocumentSearch.Query(findPasteboard: pasteboard)
             guard query != listed else { return }
             listed = query
             results.removeAll()

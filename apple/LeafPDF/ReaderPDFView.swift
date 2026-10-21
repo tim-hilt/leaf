@@ -352,6 +352,9 @@ final class ReaderPDFView: PDFView {
         pageNotes.last { noteIconRect(of: $0)?.contains(point) == true }
     }
 
+    /// Whether any Highlight or page Note has a Note icon.
+    var hasNoteIcons: Bool { !pageNotes.isEmpty || highlights.contains { $0.note != nil } }
+
     /// Every Note icon, in the view's coordinates, in its color; also those
     /// scrolled out of view.
     var noteIconsToDraw: [(rect: CGRect, color: RGB)] {

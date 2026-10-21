@@ -61,5 +61,14 @@ struct LeafPDFApp: App {
                 default: break
                 }
             }
+            #if os(macOS)
+                // A Mac app's windows rarely reach the background: Sync rests while another app is active.
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+                    library.background()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                    library.foreground()
+                }
+            #endif
     }
 }

@@ -11,3 +11,4 @@ The library (the list of imported files) is one Automerge document. Each file's 
 
 - Version the document schema from day one; the binary format makes migrations harder.
 - History grows, so devices compact it periodically (see ADR-0009).
+- Superseded for reading progress by ADR-0020: its history grew with every save.

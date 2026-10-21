@@ -114,8 +114,15 @@ private final class ProgressRelay: ImportProgress {
 
     init(_ update: @escaping @Sendable @MainActor (Double) -> Void) { self.update = update }
 
+    /// The last whole percent forwarded; reported on the Import's thread only.
+    private nonisolated(unsafe) var forwarded = -1
+
+    /// Forwards whole percent steps only, not every chunk copied.
     func report(copied: UInt64, total: UInt64) {
         let fraction = total == 0 ? 1 : Double(copied) / Double(total)
+        let percent = Int(fraction * 100)
+        guard percent != forwarded else { return }
+        forwarded = percent
         Task { @MainActor [update] in update(fraction) }
     }
 }
@@ -263,7 +270,10 @@ private final class SyncRelay: SyncObserver {
 @MainActor @Observable
 final class LibraryModel {
     /// Every Document, newest Import first.
-    private(set) var documents: [LibraryDocument] = [] { didSet { relist() } }
+    private(set) var documents: [LibraryDocument] = [] {
+        // Saving Reading Progress changes a Document often; it orders nothing unless sorted by it.
+        didSet { if listed(documents) != listed(oldValue) { relist() } }
+    }
     /// How the Gallery orders its Documents. Remembered on this device (user
     /// defaults, not synced) and shared by all windows; setting it re-orders at once.
     var sort: LibrarySort {
@@ -312,6 +322,14 @@ final class LibraryModel {
     @ObservationIgnored private var lastImportFiles: Task<Void, Never>?
     /// The latest access to a Document's state in the core; the next one waits for it.
     @ObservationIgnored private var lastStateAccess: Task<Void, Never>?
+    /// Counts `reload` calls, so a listing overtaken by a newer one is dropped.
+    @ObservationIgnored private var reloads = 0
+    /// Covers decoded lately, by Document ID; the system evicts them as memory gets tight.
+    @ObservationIgnored private let decodedCovers = {
+        let cache = NSCache<NSString, CGImage>()
+        cache.totalCostLimit = 64 << 20
+        return cache
+    }()
 
     /// Opens the Library folder at `root`, creating it if needed, with Covers
     /// in `coversFolder` and the sort choice in `defaults`. Documents whose
@@ -323,7 +341,7 @@ final class LibraryModel {
     /// copies, deleted after `importFiles`.
     init(
         root: URL, coversFolder: URL, defaults: UserDefaults, credentials: CloudCredentials,
-        syncIntervals: SyncIntervals = SyncIntervals(debounceMs: 3000, pollMs: 10000), inbox: URL? = nil
+        syncIntervals: SyncIntervals = .standard, inbox: URL? = nil
     ) throws {
         core = try LeafCore.Library.open(root: root.path)
         covers = CoverStore(folder: coversFolder)
@@ -464,8 +482,10 @@ final class LibraryModel {
             },
             libraryChanged: { [weak self] in
                 guard let self, connectionID == id else { return }
-                refresh()
-                readMissingDetails()
+                Task {
+                    await self.reload()
+                    self.readMissingDetails()
+                }
                 Task { await self.reloadHighlightColors() }
             },
             markupChanged: { [weak self] document in
@@ -503,7 +523,20 @@ final class LibraryModel {
     func savedCover(for document: LibraryDocument) async -> CGImage? {
         let covers = covers
         let id = document.id
-        return await Task.detached { covers.saved(id) }.value
+        if let decoded = decodedCovers.object(forKey: id as NSString) { return decoded }
+        return keepDecoded(await Task.detached { covers.saved(id) }.value, id: id)
+    }
+
+    /// Keeps `cover` of Document `id` in memory, so cells scrolled back into
+    /// view don't decode it again.
+    private func keepDecoded(_ cover: CGImage?, id: String) -> CGImage? {
+        if let cover { decodedCovers.setObject(cover, forKey: id as NSString, cost: cover.bytesPerRow * cover.height) }
+        return cover
+    }
+
+    private func removeCover(_ id: String) {
+        decodedCovers.removeObject(forKey: id as NSString)
+        covers.remove(id)
     }
 
     /// The Cover of `document`: the saved one, or page 1 rendered off the main
@@ -516,11 +549,12 @@ final class LibraryModel {
         let id = document.id
         let file = document.file
         let loading = Task.detached(priority: .utility) { Task.isCancelled ? nil : covers.cover(id: id, file: file) }
-        return await withTaskCancellationHandler {
+        let cover = await withTaskCancellationHandler {
             await loading.value
         } onCancel: {
             loading.cancel()
         }
+        return keepDecoded(cover, id: id)
     }
 
     /// Copies the File at `url` into the Library without blocking the main
@@ -562,9 +596,17 @@ final class LibraryModel {
                 return (stored, isNew)
             }.value
             if let cover = read?.cover { covers.save(cover, id: stored.id) }
-            refresh()
-            guard let document = documents.first(where: { $0.id == stored.id }) else {
+            let id = stored.id
+            // With its details.
+            guard let listed = await Task.detached(operation: { try? core.document(id: id) }).value else {
                 return .failed("The imported file couldn't be opened.")
+            }
+            let document = LibraryDocument(listed)
+            if let index = documents.firstIndex(where: { $0.id == id }) {
+                documents[index] = document
+            } else {
+                // The newest Import.
+                documents.insert(document, at: 0)
             }
             return isNew ? .opened(document) : .duplicate(document)
         } catch LibraryError.Failed(let message) {
@@ -619,8 +661,9 @@ final class LibraryModel {
     /// Deletes the Document, its File, its details and its Cover. If that
     /// fails, the Document stays in `documents`.
     func remove(_ document: LibraryDocument) {
-        if (try? core.remove(id: document.id)) != nil { covers.remove(document.id) }
-        refresh()
+        guard (try? core.remove(id: document.id)) != nil else { return }
+        removeCover(document.id)
+        documents.removeAll { $0.id == document.id }
     }
 
     /// Saves `place` as Reading Progress of `document`, read `lastRead`. The
@@ -640,14 +683,18 @@ final class LibraryModel {
             })
     }
 
-    /// The Highlights of `document`, oldest first. Empty if there are none or
-    /// the Document was Removed.
-    func highlights(of document: LibraryDocument) async -> [Highlight] {
+    /// The Highlights and page Notes of `document`, each oldest first, read at
+    /// once. Empty if there are none or the Document was Removed.
+    func markup(of document: LibraryDocument) async -> (highlights: [Highlight], pageNotes: [PageNote]) {
         let core = core
         let id = document.id
         let markup = await inStateOrder { try? core.markup(id: id) }
-        return markup?.highlights.map(Highlight.init) ?? []
+        return (markup?.highlights.map(Highlight.init) ?? [], markup?.pageNotes.map(PageNote.init) ?? [])
     }
+
+    /// The Highlights of `document`, oldest first. Empty if there are none or
+    /// the Document was Removed.
+    func highlights(of document: LibraryDocument) async -> [Highlight] { await markup(of: document).highlights }
 
     /// Adds a Highlight over `anchor` in the Default Highlight Color to `document`,
     /// `created` now. The core writes off the main thread, in order, and this
@@ -705,12 +752,7 @@ final class LibraryModel {
 
     /// The page Notes of `document`, oldest first. Empty if there are none or
     /// the Document was Removed.
-    func pageNotes(of document: LibraryDocument) async -> [PageNote] {
-        let core = core
-        let id = document.id
-        let markup = await inStateOrder { try? core.markup(id: id) }
-        return markup?.pageNotes.map(PageNote.init) ?? []
-    }
+    func pageNotes(of document: LibraryDocument) async -> [PageNote] { await markup(of: document).pageNotes }
 
     /// Adds a page Note without text at `place` to `document`, `created` now. The
     /// core writes off the main thread, in order, and this returns the stored
@@ -823,25 +865,66 @@ final class LibraryModel {
 
     private func relist() { listing = Listing(documents: documents.map(\.stored), sort: sort.core) }
 
+    /// What of `documents` decides `listing`: the Library Search fields, and the
+    /// fields `sort` orders by.
+    private func listed(_ documents: [LibraryDocument]) -> [ListedFields] {
+        let byLastRead = sort.key == .recentlyRead
+        return documents.map {
+            ListedFields(
+                id: $0.id, title: $0.title, fileName: $0.fileName, author: $0.author, imported: $0.stored.imported,
+                lastRead: byLastRead ? $0.lastRead : nil)
+        }
+    }
+
+    private struct ListedFields: Equatable {
+        let id: String
+        let title: String
+        let fileName: String
+        let author: String?
+        let imported: UInt64
+        let lastRead: Date?
+    }
+
     /// Reloads `documents` from the core. If the listing fails, `documents`
     /// stays as it was rather than looking as if everything was Removed.
-    private func refresh() {
-        guard let stored = try? core.documents() else { return }
+    private func refresh() { apply(try? core.documents()) }
+
+    /// `refresh`, listing off the main thread. A reload overtaken by a newer
+    /// one changes nothing.
+    private func reload() async {
+        reloads += 1
+        let reload = reloads
+        let core = core
+        let stored = await Task.detached(priority: .userInitiated) { try? core.documents() }.value
+        guard reload == reloads else { return }
+        apply(stored)
+    }
+
+    private func apply(_ stored: [LeafCore.Document]?) {
+        guard let stored else { return }
         let kept = Set(stored.map(\.id))
         // Removed on another Device.
-        for gone in documents where !kept.contains(gone.id) { covers.remove(gone.id) }
-        documents = stored.map(LibraryDocument.init)
+        for gone in documents where !kept.contains(gone.id) { removeCover(gone.id) }
+        let reloaded = stored.map(LibraryDocument.init)
+        if reloaded != documents { documents = reloaded }
     }
 
     /// Replaces a Document in `documents` with `stored`, its newer copy from
     /// the core; nothing if it was Removed meanwhile.
-    private func update(_ stored: LeafCore.Document?) {
-        guard let stored, let index = documents.firstIndex(where: { $0.id == stored.id }) else { return }
-        documents[index] = LibraryDocument(stored)
+    private func update(_ stored: LeafCore.Document?) { update(stored.map { [$0] } ?? []) }
+
+    /// `update` for several Documents at once, so the listing is made once.
+    private func update(_ stored: [LeafCore.Document]) {
+        var updated = documents
+        for stored in stored {
+            guard let index = updated.firstIndex(where: { $0.id == stored.id }) else { continue }
+            updated[index] = LibraryDocument(stored)
+        }
+        if updated != documents { documents = updated }
     }
 
     /// Reads the details of Documents the core has none of from their PDFs,
-    /// one at a time at background priority, publishing each as it arrives.
+    /// one at a time at background priority, publishing them in small batches.
     /// A PDF that can't be read is skipped and tried again at the next launch.
     private func readMissingDetails() {
         let missing = documents.filter { $0.pageCount == nil && !readingDetails.contains($0.id) }.map {
@@ -850,20 +933,35 @@ final class LibraryModel {
         guard !missing.isEmpty else { return }
         readingDetails.formUnion(missing.map(\.0))
         Task(priority: .utility) { [weak self] in
+            // Each publish lists every Document again, so not one by one.
+            var read: [LeafCore.Document] = []
+            var published = ContinuousClock.now
             for (id, file) in missing {
-                let read = await Task.detached(priority: .utility) { PDFDocument(url: file)?.details }.value
+                let details = await Task.detached(priority: .utility) { PDFDocument(url: file)?.details }.value
                 guard let self else { return }
                 readingDetails.remove(id)
-                guard let read else { continue }
+                guard let details else { continue }
                 let core = core
-                update(
-                    await inStateOrder {
-                        try? core.setDetails(id, read)
-                        return try? core.document(id: id)
-                    })
+                let stored = await inStateOrder {
+                    try? core.setDetails(id, details)
+                    return try? core.document(id: id)
+                }
+                read += stored.map { [$0] } ?? []
+                if read.count >= 16 || published.duration(to: .now) > .milliseconds(500) {
+                    update(read)
+                    read = []
+                    published = .now
+                }
             }
+            self?.update(read)
         }
     }
+}
+
+extension SyncIntervals {
+    /// Local changes sync within seconds, Reading Progress within a minute;
+    /// polls run every 10 seconds, backing off to every 5 minutes while idle.
+    static let standard = SyncIntervals(debounceMs: 3000, progressMs: 60000, pollMs: 10000, idlePollMs: 300_000)
 }
 
 extension LeafCore.Library {

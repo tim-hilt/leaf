@@ -73,6 +73,26 @@ pub(crate) fn get_bytes(storage: &dyn Storage, name: &str) -> io::Result<Option<
         .transpose()
 }
 
+/// Makes the bytes written to `file` reach the disk before any later write
+/// does, e.g. the rename that puts it in place: a crash then leaves the old
+/// file or the new one, never a torn one. Doesn't wait for the disk itself,
+/// so the latest writes may be lost, which is far cheaper on Apple's
+/// platforms (`F_BARRIERFSYNC` rather than `F_FULLFSYNC`).
+pub(crate) fn flush_ordered(file: &File) -> io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: `fcntl` with a command that takes no argument, on a
+        // descriptor `file` keeps open.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    file.sync_data()
+}
+
 /// A storage in a directory of the file system.
 #[derive(Debug)]
 pub struct DirStorage {
@@ -123,7 +143,7 @@ impl Storage for DirStorage {
         let written = (|| {
             let mut file = File::create_new(&incoming)?;
             io::copy(data, &mut file)?;
-            file.sync_all()?;
+            flush_ordered(&file)?;
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }

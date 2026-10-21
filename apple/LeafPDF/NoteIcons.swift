@@ -13,6 +13,8 @@ final class NoteIconsView: PlatformView {
     static let size: CGFloat = 18
 
     private weak var reader: ReaderPDFView?
+    /// Whether the last drawing drew no icons, so another without any can be skipped.
+    private var isBlank = true
 
     init(reader: ReaderPDFView) {
         self.reader = reader
@@ -32,7 +34,11 @@ final class NoteIconsView: PlatformView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     /// Draws the icons again, after the pages moved or the Highlights changed.
+    /// Cheap while there are none: it is called on every scroll.
     func refresh() {
+        let blank = reader?.hasNoteIcons != true
+        guard !(blank && isBlank) else { return }
+        isBlank = blank
         #if os(iOS)
             setNeedsDisplay()
         #else

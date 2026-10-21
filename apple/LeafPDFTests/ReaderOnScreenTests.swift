@@ -14,7 +14,7 @@
             let library = try LibraryModel(
                 root: root, coversFolder: root.appending(path: "covers"), defaults: defaults,
                 credentials: CloudCredentials(defaults: defaults, service: "leafpdf-test-\(root.lastPathComponent)"),
-                syncIntervals: SyncIntervals(debounceMs: 3000, pollMs: 10000), inbox: nil)
+                syncIntervals: .standard, inbox: nil)
             guard case .opened(let first) = await library.import(try writePDF(named: "a.pdf", pageCount: 2)),
                 case .opened(let second) = await library.import(try writePDF(named: "b.pdf", pageCount: 3))
             else { throw ImportFailure() }

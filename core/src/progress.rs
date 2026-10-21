@@ -1,15 +1,13 @@
-//! Reading Progress and how it is kept in a Document's Automerge document
-//! (ADR-0008).
+//! Reading Progress, kept as one plain value (ADR-0020): `encode` and `decode`
+//! store it as one line, `<page_index> <x> <y> <last_read>`.
 //!
-//! The root's `progress` map holds `page_index`, `x`, `y` and `last_read`
-//! (see `state` for the schema). The whole map is written as one value on
-//! every save, so a Place and its Last Read never mix between devices. When
-//! devices wrote concurrently, reading picks the newest Last Read.
+//! Older versions kept it in a Document's Automerge document (ADR-0008), which
+//! `read` still understands: the root's `progress` map holds `page_index`, `x`,
+//! `y` and `last_read`. When devices wrote concurrently, the newest Last Read
+//! wins.
 
 use crate::state;
-use automerge::{
-    AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
-};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
 /// Where in a Document the user last left off, and when.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -23,6 +21,29 @@ pub struct ReadingProgress {
     /// Last Read: when the Reader showed the Document, in milliseconds since
     /// the Unix epoch.
     pub last_read: u64,
+}
+
+/// `progress` as stored.
+pub(crate) fn encode(progress: &ReadingProgress) -> Vec<u8> {
+    let ReadingProgress {
+        page_index,
+        x,
+        y,
+        last_read,
+    } = progress;
+    format!("{page_index} {x} {y} {last_read}").into_bytes()
+}
+
+/// The Reading Progress stored in `bytes`; none if they aren't one.
+pub(crate) fn decode(bytes: &[u8]) -> Option<ReadingProgress> {
+    let mut fields = std::str::from_utf8(bytes).ok()?.split(' ');
+    let progress = ReadingProgress {
+        page_index: fields.next()?.parse().ok()?,
+        x: fields.next()?.parse().ok()?,
+        y: fields.next()?.parse().ok()?,
+        last_read: fields.next()?.parse().ok()?,
+    };
+    fields.next().is_none().then_some(progress)
 }
 
 /// The Reading Progress in a stored Automerge document. None if `bytes` aren't
@@ -67,8 +88,10 @@ fn read_map(doc: &AutoCommit, map: &ObjId) -> Option<ReadingProgress> {
 }
 
 /// Writes `progress` into `doc` as one new `progress` map, replacing every
-/// value (also concurrent ones) the key held.
+/// value (also concurrent ones) the key held, as older versions did.
+#[cfg(test)]
 pub(crate) fn put_progress(doc: &mut AutoCommit, progress: &ReadingProgress) {
+    use automerge::{ScalarValue, transaction::Transactable};
     let map = doc
         .put_object(ROOT, "progress", ObjType::Map)
         .expect("a root map accepts new keys");
@@ -134,6 +157,20 @@ mod tests {
             read(&a.save())
         };
         [merge(1, 2), merge(2, 1)]
+    }
+
+    #[test]
+    fn progress_reads_back_as_encoded_and_anything_else_reads_as_none() {
+        let exact = ReadingProgress {
+            page_index: 7,
+            x: 0.1 + 0.2,
+            y: -3.75,
+            last_read: u64::MAX,
+        };
+        assert_eq!(decode(&encode(&exact)), Some(exact));
+        for bad in [&b""[..], b"1 2 3", b"1 2 3 4 5", b"a 2 3 4", &[0xff]] {
+            assert_eq!(decode(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

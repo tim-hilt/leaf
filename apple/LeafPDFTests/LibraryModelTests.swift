@@ -22,7 +22,7 @@ import UniformTypeIdentifiers
     /// Opens the Library at `root`, keeping its Covers in `coversFolder`, its
     /// sort choice in `defaults` and its Cloud Backing credentials in `credentials`.
     func openLibrary(
-        syncIntervals: SyncIntervals = SyncIntervals(debounceMs: 3000, pollMs: 10000), inbox: URL? = nil
+        syncIntervals: SyncIntervals = .standard, inbox: URL? = nil
     ) throws -> LibraryModel {
         try LibraryModel(
             root: root, coversFolder: coversFolder, defaults: defaults,
@@ -542,9 +542,10 @@ import UniformTypeIdentifiers
         }
         #expect(await library.savedCover(for: document) != nil)
 
+        // Decoded Covers stay in memory, so after a relaunch.
         try FileManager.default.removeItem(at: coversFolder)
 
-        #expect(await library.savedCover(for: document) == nil)
+        #expect(await (try openLibrary()).savedCover(for: document) == nil)
         #expect(savedCovers().isEmpty)
     }
 

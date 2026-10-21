@@ -14,6 +14,8 @@ final class ReadingProgressSaver {
     private let handle: ReaderHandle
     private let quietPeriod: Duration
     private var settling: Task<Void, Never>?
+    /// When the viewport last moved.
+    private var lastScroll = ContinuousClock.now
     /// The Place saved last; nil before the first save.
     private var saved: Place?
 
@@ -28,12 +30,23 @@ final class ReadingProgressSaver {
     /// The Reader opened the Document: saves now, which counts as reading it.
     func opened() { save(unlessUnmoved: false) }
 
-    /// The viewport moved: saves once it has stopped for `quietPeriod`.
+    /// The viewport moved: saves once it has stopped for `quietPeriod`. Called on
+    /// every frame of a scroll, so it only notes the time while a wait runs.
     func scrolled() {
-        settling?.cancel()
+        lastScroll = .now
+        guard settling == nil else { return }
         settling = Task {
-            guard (try? await Task.sleep(for: quietPeriod)) != nil else { return }
-            saveIfMoved()
+            var due = lastScroll + quietPeriod
+            while (try? await Task.sleep(until: due)) != nil {
+                // Moved again meanwhile: wait for the rest.
+                guard lastScroll + quietPeriod <= .now else {
+                    due = lastScroll + quietPeriod
+                    continue
+                }
+                settling = nil
+                saveIfMoved()
+                return
+            }
         }
     }
 
@@ -43,6 +56,7 @@ final class ReadingProgressSaver {
     /// Saves the Place at the top of the viewport; nothing if the Reader has none.
     private func save(unlessUnmoved: Bool) {
         settling?.cancel()
+        settling = nil
         guard let place = handle.view?.topOfViewport, !(unlessUnmoved && place == saved) else { return }
         saved = place
         let library = library
