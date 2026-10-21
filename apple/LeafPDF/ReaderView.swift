@@ -183,14 +183,14 @@ struct ReaderView: View {
                     pageNotes: pageNotes, pageNoteColor: library.highlightColors[0].color,
                     handle: handle, results: results,
                     state: tabs.viewState(of: document.id) ?? document.place.map { ReaderViewState(place: $0) },
-                    contents: contents ?? TableOfContents(),
+                    contents: contents ?? TableOfContents(), textSize: settings.epubTextSize,
                     callbacks: ReaderCallbacks(
                         onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
                         onHighlight: highlight,
                         onHighlightTap: { openMarkup = OpenMarkup(target: .highlight($0.id), point: $1) },
                         onAddNote: addPageNote,
                         onPageNoteTap: { openMarkup = OpenMarkup(target: .pageNote($0.id), point: $1) },
-                        onBackChange: { backTarget = $0 }),
+                        onTextSizeChange: { settings.epubTextSize = $0 }, onBackChange: { backTarget = $0 }),
                     onShowResults: { isShowingResults = true }
                 )
                 #if os(iOS)

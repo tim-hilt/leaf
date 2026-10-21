@@ -1,3 +1,5 @@
+import CoreGraphics
+
 /// The script `ReaderEPUBView` injects into the page that stacks the chapter frames.
 ///
 /// It owns the conversion between the DOM and the core's positions (ADR-0022): the
@@ -9,16 +11,22 @@
 /// out, "tap" for a tap on text that isn't a link, and `[chapter, offset]` for the
 /// position at the top of the viewport: once before "opened", then as the page
 /// scrolls. Tests and later features call `window.leaf` in the same content world.
+///
+/// The text size is a CSS `zoom` on each chapter's body, so the book's own sizes scale
+/// with it while the side margin on the page stays as it is. `leaf.setTextSize` keeps
+/// the position at the top of the viewport.
 enum ReaderEPUBScript {
     static let channel = "reader"
 
-    /// The script for `frameCount` chapters; it scrolls to the position `start`
-    /// (chapter index, offset) once all are laid out.
-    static func source(frameCount: Int, start: (chapter: Int, offset: Int)?) -> String {
+    /// The script for `frameCount` chapters at `textSize` (`TextSize`); it scrolls to
+    /// the position `start` (chapter index, offset) once all are laid out.
+    static func source(frameCount: Int, start: (chapter: Int, offset: Int)?, textSize: CGFloat) -> String {
         let start = start.map { "[\($0.chapter), \($0.offset)]" } ?? "null"
         return """
             (() => {
               const style = ':where(html) { padding: 0 24px } :where(img, svg, video) { max-width: 100% }';
+              let textSize = \(textSize);
+              const sheets = [];
               const post = message => window.webkit.messageHandlers.\(channel).postMessage(message);
               const frames = () => [...document.querySelectorAll('iframe')];
 
@@ -106,9 +114,24 @@ enum ReaderEPUBScript {
                 if (frame) window.scrollTo(0, window.scrollY + frame.getBoundingClientRect().top + lineTop(frame, offset));
               };
 
+              const fit = frame => {
+                frame.style.height = frame.contentDocument.documentElement.offsetHeight + 'px';
+              };
+
+              // Reflows every chapter at the new size and keeps the position.
+              const setTextSize = size => {
+                const place = ready ? position() : null;
+                textSize = size;
+                sheets.forEach(sheet => { sheet.textContent = css(); });
+                frames().forEach(fit);
+                if (place) scrollToPosition(place);
+                if (ready) post(position());
+              };
+
               window.leaf = {
                 position,
                 scrollToPosition,
+                setTextSize,
                 text: index => textOf(frames()[index].contentDocument).nodes.map(node => node.data).join(''),
                 offset: (index, node, k) => {
                   const { nodes, starts } = textOf(frames()[index].contentDocument);
@@ -116,6 +139,7 @@ enum ReaderEPUBScript {
                 },
               };
 
+              const css = () => style + ' body { zoom: ' + textSize + ' }';
               let loaded = 0, ready = false, queued = false;
               window.addEventListener('scroll', () => {
                 if (!ready || queued) return;
@@ -127,11 +151,11 @@ enum ReaderEPUBScript {
                 if (frame.tagName !== 'IFRAME') return;
                 const doc = frame.contentDocument;
                 const sheet = doc.createElement('style');
-                sheet.textContent = style;
+                sheet.textContent = css();
+                sheets.push(sheet);
                 (doc.head || doc.documentElement).append(sheet);
-                const fit = () => { frame.style.height = doc.documentElement.offsetHeight + 'px'; };
-                fit();
-                new ResizeObserver(fit).observe(doc.documentElement);
+                fit(frame);
+                new ResizeObserver(() => fit(frame)).observe(doc.documentElement);
                 doc.addEventListener('click', click => {
                   if (!click.target.closest('a[href]') && doc.getSelection().isCollapsed) post('tap');
                 });

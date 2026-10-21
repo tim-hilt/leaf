@@ -6,23 +6,25 @@ struct ReaderEPUBContent {
     let book: EpubBook
     /// How to open; nil opens at the start.
     let state: ReaderViewState?
+    /// The text size to show; see `TextSize`.
+    let textSize: CGFloat
     let handle: ReaderHandle
     let callbacks: ReaderCallbacks
 
     @MainActor
     fileprivate func makeEPUBView() -> ReaderEPUBView {
-        ReaderEPUBView(book: book, state: state, handle: handle, callbacks: callbacks)
+        ReaderEPUBView(book: book, state: state, textSize: textSize, handle: handle, callbacks: callbacks)
     }
 }
 
 #if os(iOS)
     extension ReaderEPUBContent: UIViewRepresentable {
         func makeUIView(context: Context) -> ReaderEPUBView { makeEPUBView() }
-        func updateUIView(_ view: ReaderEPUBView, context: Context) {}
+        func updateUIView(_ view: ReaderEPUBView, context: Context) { view.textSize = textSize }
     }
 #else
     extension ReaderEPUBContent: NSViewRepresentable {
         func makeNSView(context: Context) -> ReaderEPUBView { makeEPUBView() }
-        func updateNSView(_ view: ReaderEPUBView, context: Context) {}
+        func updateNSView(_ view: ReaderEPUBView, context: Context) { view.textSize = textSize }
     }
 #endif

@@ -20,9 +20,12 @@ import WebKit
 /// `onSingleTap`. The page reports the position at the top of the viewport as it
 /// scrolls (`ReaderEPUBScript`), which `topOfViewport` gives and `onScroll` announces.
 ///
-/// Not yet there for EPUBs: zoom, Jumps, Markup and the find bar, so the
+/// Zooming is changing the text size (`TextSize`): pinching, ⌘+ and ⌘− reflow the
+/// text, keep its place and announce the new size through `onTextSizeChange`. The
+/// side margin keeps its size.
+///
+/// Not yet there for EPUBs: Jumps, Markup and the find bar, so the
 /// parts of `ReaderDocumentView` for them do nothing.
-/// The text doesn't keep its place when it reflows yet.
 final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// Opens a web link outside the Reader.
     var openExternally: (URL) -> Void = { url in
@@ -37,11 +40,23 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// The position at the top of the viewport, as last reported; nil until opened.
     private var top: Place?
     private var isOpen = false
+    /// The text size the page has been told, to tell it only what changed.
+    private var pageTextSize: CGFloat
 
-    /// Opens `book` at the place of `state`, else at its start, and registers as the
-    /// `handle`'s view.
-    init(book: EpubBook, state: ReaderViewState?, handle: ReaderHandle, callbacks: ReaderCallbacks) {
+    /// The text size of the book. Setting it reflows the text, keeping the place.
+    var textSize: CGFloat {
+        didSet { syncTextSize() }
+    }
+
+    /// Opens `book` at the place of `state`, else at its start, at `textSize`, and
+    /// registers as the `handle`'s view.
+    init(
+        book: EpubBook, state: ReaderViewState?, textSize: CGFloat, handle: ReaderHandle,
+        callbacks: ReaderCallbacks
+    ) {
         self.callbacks = callbacks
+        self.textSize = textSize
+        pageTextSize = textSize
         let spine = book.spine()
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(
@@ -54,13 +69,20 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         if case .epub(let spineIndex, let offset) = state?.place { start = (spineIndex, offset) }
         configuration.userContentController.addUserScript(
             WKUserScript(
-                source: ReaderEPUBScript.source(frameCount: spine.count, start: start),
+                source: ReaderEPUBScript.source(frameCount: spine.count, start: start, textSize: textSize),
                 injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .defaultClient))
         super.init(frame: .zero, configuration: configuration)
         messages.view = self
         navigationDelegate = self
         uiDelegate = self
         handle.view = self
+        #if os(iOS)
+            // The text size takes the pinch, not the page's scale.
+            scrollView.pinchGestureRecognizer?.isEnabled = false
+            let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched))
+            pinch.delegate = self
+            addGestureRecognizer(pinch)
+        #endif
         load(URLRequest(url: EPUBSchemeHandler.rootURL))
     }
 
@@ -81,6 +103,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
                 if view.isOpen { view.callbacks.onScroll() }
             case let text as String where text == "opened":
                 view.isOpen = true
+                view.syncTextSize()
                 view.callbacks.onOpen()
             case let text as String where text == "tap":
                 view.callbacks.onSingleTap()
@@ -96,9 +119,9 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
 
     func jump(to place: Place) {}
     func goBack() {}
-    func zoomIn() {}
-    func zoomOut() {}
-    func zoomToFitWidth() {}
+    func zoomIn() { changeTextSize(to: TextSize.zoomedIn(from: textSize)) }
+    func zoomOut() { changeTextSize(to: TextSize.zoomedOut(from: textSize)) }
+    func zoomToFitWidth() { changeTextSize(to: TextSize.normal) }
     func highlightSelection() {}
     func presentFind() {}
     #if os(macOS)
@@ -106,7 +129,45 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         func findPrevious() {}
     #endif
     func popoverPoint(of note: PageNote) -> CGPoint? { nil }
+
+    // MARK: Text size
+
+    private func changeTextSize(to size: CGFloat) {
+        guard size != textSize else { return }
+        textSize = size
+        callbacks.onTextSizeChange(size)
+    }
+
+    /// Tells the page the text size once it is open; it reflows and keeps its place.
+    private func syncTextSize() {
+        guard isOpen, textSize != pageTextSize else { return }
+        pageTextSize = textSize
+        let script = "leaf.setTextSize(\(textSize))"
+        Task { _ = try? await evaluateJavaScript(script, in: nil, contentWorld: .defaultClient) }
+    }
+
+    #if os(iOS)
+        private var sizeBeforePinch = TextSize.normal
+
+        @objc private func pinched(_ pinch: UIPinchGestureRecognizer) {
+            if pinch.state == .began { sizeBeforePinch = textSize }
+            changeTextSize(to: TextSize.clamped(sizeBeforePinch * pinch.scale))
+        }
+    #else
+        override func magnify(with event: NSEvent) {
+            changeTextSize(to: TextSize.clamped(textSize * (1 + event.magnification)))
+        }
+    #endif
 }
+
+#if os(iOS)
+    extension ReaderEPUBView: UIGestureRecognizerDelegate {
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool { true }
+    }
+#endif
 
 extension ReaderEPUBView: WKNavigationDelegate {
     /// Web links go to the browser. Nothing else navigates a frame away from its Chapter.

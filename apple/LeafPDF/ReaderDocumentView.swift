@@ -60,6 +60,8 @@ struct ReaderCallbacks {
     /// Called when the reader clicks or taps the icon of a page Note, with the
     /// point as for `onHighlightTap`.
     var onPageNoteTap: (PageNote, CGPoint) -> Void = { _, _ in }
+    /// Called when the reader changes the text size of EPUBs by zooming, with the new size (`TextSize`).
+    var onTextSizeChange: (CGFloat) -> Void = { _ in }
     /// Called when the Back place appears, changes or goes; nil when there is none.
     var onBackChange: (BackTarget?) -> Void = { _ in }
 }

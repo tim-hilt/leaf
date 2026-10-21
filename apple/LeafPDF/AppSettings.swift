@@ -33,6 +33,11 @@ final class AppSettings {
         didSet { defaults.set(pageColors.components, forKey: Self.pageColorsName) }
     }
 
+    /// The text size of all EPUBs (`TextSize`). Changing it reflows open Readers at once and is saved.
+    var epubTextSize: CGFloat {
+        didSet { defaults.set(Double(epubTextSize), forKey: Self.epubTextSizeName) }
+    }
+
     func resetPageColors() { pageColors = .default }
 
     /// Whether pages are dark under the current Page Style. Match Theme follows
@@ -63,11 +68,15 @@ final class AppSettings {
     private static let themeName = "settings.theme"
     private static let pageStyleName = "settings.pageStyle"
     private static let pageColorsName = "settings.pageColors"
+    private static let epubTextSizeName = "settings.epubTextSize"
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
         theme = defaults.string(forKey: Self.themeName).flatMap(Theme.init) ?? .system
         pageStyle = defaults.string(forKey: Self.pageStyleName).flatMap(PageStyle.init) ?? .light
         pageColors = (defaults.array(forKey: Self.pageColorsName) as? [Double]).flatMap(PageColors.init) ?? .default
+        epubTextSize =
+            defaults.object(forKey: Self.epubTextSizeName) is Double
+            ? TextSize.clamped(defaults.double(forKey: Self.epubTextSizeName)) : TextSize.normal
     }
 }

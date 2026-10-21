@@ -129,6 +129,22 @@ extension AppSettingsTests {
     }
 }
 
+extension AppSettingsTests {
+    @Test func epubTextSizeDefaultsToTheDesignedSize() {
+        #expect(AppSettings(defaults: defaults).epubTextSize == 1)
+    }
+
+    @Test func epubTextSizeSurvivesARestart() {
+        AppSettings(defaults: defaults).epubTextSize = 1.5
+        #expect(AppSettings(defaults: defaults).epubTextSize == 1.5)
+    }
+
+    @Test func aSavedEPUBTextSizeOutOfRangeIsClamped() {
+        defaults.set(40.0, forKey: "settings.epubTextSize")
+        #expect(AppSettings(defaults: defaults).epubTextSize == 3)
+    }
+}
+
 extension PageColors {
     fileprivate static let sepia = PageColors(
         paper: RGB(0x2B / 255, 0x21 / 255, 0x16 / 255), ink: RGB(0xE0 / 255, 0xC8 / 255, 0xA0 / 255))

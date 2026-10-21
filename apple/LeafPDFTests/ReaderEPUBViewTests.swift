@@ -171,6 +171,57 @@ import WebKit
         #expect(second.topOfViewport == reported.place)
     }
 
+    // MARK: Text size
+
+    @Test func aLargerTextSizeReflowsTheTextAndKeepsTheMargin() async throws {
+        let book = try await importedBook(chapters: [paragraphs(20)])
+        let normal = try await openReader(book: book).scrollHeight()
+
+        let large = try await openReader(book: book, textSize: 2)
+        #expect(try await large.scrollHeight() > normal * 1.5)
+        #expect(
+            try await large.evaluate("frame(0).defaultView.getComputedStyle(frame(0).documentElement).paddingLeft")
+                == "24px")
+    }
+
+    @Test func changingTheTextSizeKeepsThePlace() async throws {
+        let book = try await importedBook(chapters: [paragraphs(20), paragraphs(60), paragraphs(5)])
+        let place = Place.epub(spineIndex: 1, offset: try offset(of: "Paragraph 30 ", in: 1, of: book))
+        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        let height = try await reader.scrollHeight()
+
+        for size in [2, 0.75, 1] as [CGFloat] {
+            reader.textSize = size
+            try await reader.settle()
+            #expect(reader.topOfViewport == place, "at size \(size)")
+        }
+
+        reader.textSize = 2
+        try await reader.settle()
+        #expect(try await reader.scrollHeight() > height)
+        // The line of the paragraph is still at the top of the viewport.
+        let top = try await reader.evaluate(
+            "document.querySelectorAll('iframe')[1].getBoundingClientRect().top + frame(1).querySelectorAll('p')[30].getBoundingClientRect().top"
+        )
+        let distance = try #require(Double(top))
+        #expect(abs(distance) < 4)
+    }
+
+    @Test func theKeyboardStepsChangeTheTextSizeAndAnnounceIt() async throws {
+        var announced: [CGFloat] = []
+        let reader = try await openReader(
+            book: importedBook(chapters: [paragraphs(5)]), onTextSizeChange: { announced.append($0) })
+
+        reader.zoomIn()
+        reader.zoomIn()
+        reader.zoomOut()
+        #expect(announced == [1.25, 1.5625, 1.25])
+        #expect(reader.textSize == 1.25)
+
+        reader.zoomToFitWidth()
+        #expect(reader.textSize == TextSize.normal)
+    }
+
     // MARK: The core's text
 
     @Test func offsetsInTheDOMEqualTheCoresOffsets() async throws {
@@ -245,21 +296,22 @@ private func openReader(
 @MainActor
 private func openReader(
     book: EpubBook, state: ReaderViewState? = nil, size: CGSize = CGSize(width: 400, height: 800),
-    onScreen: Bool = false, onSingleTap: @escaping () -> Void = {}, onScroll: @escaping () -> Void = {},
+    textSize: CGFloat = TextSize.normal, onScreen: Bool = false, onSingleTap: @escaping () -> Void = {},
+    onScroll: @escaping () -> Void = {}, onTextSizeChange: @escaping (CGFloat) -> Void = { _ in },
     openExternally: @escaping (URL) -> Void = { _ in }
 ) async throws -> ReaderEPUBView {
     var reader: ReaderEPUBView?
     await withCheckedContinuation { opened in
         var once: CheckedContinuation<Void, Never>? = opened
         reader = ReaderEPUBView(
-            book: book, state: state, handle: ReaderHandle(),
+            book: book, state: state, textSize: textSize, handle: ReaderHandle(),
             callbacks: ReaderCallbacks(
                 onSingleTap: onSingleTap,
                 onOpen: {
                     once?.resume()
                     once = nil
                 },
-                onScroll: onScroll))
+                onScroll: onScroll, onTextSizeChange: onTextSizeChange))
         reader?.openExternally = openExternally
         reader?.frame = CGRect(origin: .zero, size: size)
         if onScreen, let reader { show(reader) }

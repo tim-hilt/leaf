@@ -43,6 +43,8 @@ struct ReaderContent: View {
     /// How to open; nil opens at the start.
     let state: ReaderViewState?
     let contents: TableOfContents
+    /// The text size of EPUBs; see `TextSize`.
+    let textSize: CGFloat
     let callbacks: ReaderCallbacks
     /// Called when the reader asks for the list of matches in the find bar (iOS only).
     let onShowResults: () -> Void
@@ -55,7 +57,7 @@ struct ReaderContent: View {
                 pageNoteColor: pageNoteColor, handle: handle, results: results, state: state, contents: contents,
                 callbacks: callbacks, onShowResults: onShowResults)
         case .epub(let book):
-            ReaderEPUBContent(book: book, state: state, handle: handle, callbacks: callbacks)
+            ReaderEPUBContent(book: book, state: state, textSize: textSize, handle: handle, callbacks: callbacks)
         }
     }
 }
