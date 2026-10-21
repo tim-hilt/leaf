@@ -35,7 +35,7 @@ struct LibraryDocument: Identifiable, Hashable {
         progress.map { Place(pageIndex: Int($0.pageIndex), point: CGPoint(x: $0.x, y: $0.y)) }
     }
     /// When the Reader last showed the Document; nil if never.
-    var lastRead: Date? { progress.map { Date(timeIntervalSince1970: Double($0.lastRead) / 1000) } }
+    var lastRead: Date? { progress.map { Date(milliseconds: $0.lastRead) } }
 
     /// A Document with no details or progress, Imported at the Unix epoch.
     init(id: String, file: URL) {
@@ -127,32 +127,23 @@ private final class ProgressRelay: ImportProgress {
     }
 }
 
-/// Where Sync stands, while Connected.
-enum SyncState: Equatable {
-    case syncing
-    /// The last Sync step succeeded then.
-    case synced(Date)
-    /// The last Sync step failed; the next one retries.
-    case offline
-    /// Blocked: the server rejected the password. Still Connected; Sync resumes
-    /// once Settings gets the new one.
-    case wrongPassword
-    /// Blocked: another Device synced a newer version than this app knows, so
-    /// nothing is written until the app is updated.
-    case updateNeeded
+extension Date {
+    /// The core's time: milliseconds since the Unix epoch.
+    init(milliseconds: UInt64) { self.init(timeIntervalSince1970: Double(milliseconds) / 1000) }
+}
 
-    /// Whether the user has to act for Sync to go on. Being offline isn't blocked.
-    var isBlocked: Bool { self == .wrongPassword || self == .updateNeeded }
-
+/// Where Sync stands, while Connected; the core's `Status`.
+extension Status {
     /// What Settings says.
     func line(now: Date = .now) -> String {
         switch self {
-        case .syncing: "Syncing…"
-        case .offline: "Offline"
-        case .wrongPassword: "Wrong password"
-        case .updateNeeded: "Update LeafPDF to keep syncing"
-        case .synced(let date):
-            now.timeIntervalSince(date) < 60
+        case .syncing: return "Syncing…"
+        case .offline: return "Offline"
+        case .wrongPassword: return "Wrong password"
+        case .updateNeeded: return "Update LeafPDF to keep syncing"
+        case .synced(let at):
+            let date = Date(milliseconds: at)
+            return now.timeIntervalSince(date) < 60
                 ? "Synced just now" : "Synced \(date.formatted(.relative(presentation: .named)))"
         }
     }
@@ -165,10 +156,10 @@ enum SyncIndicator: Equatable {
     /// Trying again can help unless Sync is blocked; then Settings has to.
     case failed(canRetry: Bool)
 
-    init(_ state: SyncState) {
+    init(_ state: Status) {
         switch state {
         case .syncing: self = .syncing
-        case .synced(let date): self = .synced(date)
+        case .synced(let at): self = .synced(Date(milliseconds: at))
         case .offline: self = .failed(canRetry: true)
         case .wrongPassword, .updateNeeded: self = .failed(canRetry: false)
         }
@@ -222,13 +213,13 @@ extension ConnectError {
 
 /// Forwards what the core's Sync loop reports, on its thread, to the main actor.
 private final class SyncRelay: SyncObserver {
-    private let onStatus: @Sendable @MainActor (SyncState) -> Void
+    private let onStatus: @Sendable @MainActor (Status) -> Void
     private let onTransfer: @Sendable @MainActor (FileTransfer?) -> Void
     private let onLibraryChanged: @Sendable @MainActor () -> Void
     private let onMarkupChanged: @Sendable @MainActor (String) -> Void
 
     init(
-        status: @escaping @Sendable @MainActor (SyncState) -> Void,
+        status: @escaping @Sendable @MainActor (Status) -> Void,
         transfer: @escaping @Sendable @MainActor (FileTransfer?) -> Void,
         libraryChanged: @escaping @Sendable @MainActor () -> Void,
         markupChanged: @escaping @Sendable @MainActor (String) -> Void
@@ -239,16 +230,8 @@ private final class SyncRelay: SyncObserver {
         onMarkupChanged = markupChanged
     }
 
-    func statusChanged(status: SyncStatus) {
-        let state: SyncState =
-            switch status {
-            case .syncing: .syncing
-            case .synced(let at): .synced(Date(timeIntervalSince1970: Double(at) / 1000))
-            case .offline: .offline
-            case .wrongPassword: .wrongPassword
-            case .updateNeeded: .updateNeeded
-            }
-        Task { @MainActor [onStatus] in onStatus(state) }
+    func statusChanged(status: Status) {
+        Task { @MainActor [onStatus] in onStatus(status) }
     }
 
     func transferProgress(done: UInt64, total: UInt64) {
@@ -297,7 +280,7 @@ final class LibraryModel {
     /// The Cloud Provider Connected to; nil while Cloud Backing is off.
     private(set) var connection: CloudConnection?
     /// Where Sync stands. Only meaningful while `connection` isn't nil.
-    private(set) var syncState = SyncState.syncing
+    private(set) var syncState = Status.syncing
     /// What the Gallery's toolbar shows of Sync; nil while not Connected.
     var syncIndicator: SyncIndicator? { connection == nil ? nil : SyncIndicator(syncState) }
     /// The File transfers of the running Sync; nil while none runs. Reading

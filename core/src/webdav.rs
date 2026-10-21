@@ -39,14 +39,10 @@ pub enum ConnectError {
     NotWebDav,
 }
 
+/// The variant's name; clients word the message for the user.
 impl fmt::Display for ConnectError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(match self {
-            Self::WrongCredentials => "Wrong username or password",
-            Self::Unreachable => "Server not reachable",
-            Self::NotHttps => "URL must start with https://",
-            Self::NotWebDav => "Not a WebDAV server",
-        })
+        write!(f, "{self:?}")
     }
 }
 

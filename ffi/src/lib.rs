@@ -5,10 +5,15 @@
 //! its Sync loop, so every write is sent without the client asking. Keep
 //! domain logic in `leafpdf-core` so it stays testable without bindings.
 
-use leafpdf_core::listing;
+use leafpdf_core::library::Document as CoreDocument;
+use leafpdf_core::library::ImportResult;
+use leafpdf_core::listing::{self, Sort, SortKey};
+use leafpdf_core::markup::{Highlight, Markup, PageNote, PageRects, Rect, Rgb};
+use leafpdf_core::preferences::{HighlightColor, HighlightColors};
+use leafpdf_core::progress::ReadingProgress;
 use leafpdf_core::storage::{DirStorage, Storage};
-use leafpdf_core::sync_loop::{self, SyncLoop};
-use leafpdf_core::webdav::WebDavStorage;
+use leafpdf_core::sync_loop::{self, Status, SyncLoop};
+use leafpdf_core::webdav::{ConnectError, WebDavStorage};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -41,9 +46,10 @@ impl From<std::io::Error> for LibraryError {
     }
 }
 
-/// Where the user left off, see `leafpdf_core::progress::ReadingProgress`.
-/// `last_read` is milliseconds since the Unix epoch.
-#[derive(uniffi::Record)]
+// The core's types cross the FFI as remote types: declared here, defined (and
+// documented) once in `leafpdf-core`, which stays free of FFI concerns.
+
+#[uniffi::remote(Record)]
 pub struct ReadingProgress {
     pub page_index: u32,
     pub x: f64,
@@ -51,30 +57,7 @@ pub struct ReadingProgress {
     pub last_read: u64,
 }
 
-impl From<leafpdf_core::progress::ReadingProgress> for ReadingProgress {
-    fn from(p: leafpdf_core::progress::ReadingProgress) -> Self {
-        Self {
-            page_index: p.page_index,
-            x: p.x,
-            y: p.y,
-            last_read: p.last_read,
-        }
-    }
-}
-
-impl From<ReadingProgress> for leafpdf_core::progress::ReadingProgress {
-    fn from(p: ReadingProgress) -> Self {
-        Self {
-            page_index: p.page_index,
-            x: p.x,
-            y: p.y,
-            last_read: p.last_read,
-        }
-    }
-}
-
-/// A rectangle in PDF page space, see `leafpdf_core::markup::Rect`.
-#[derive(uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct Rect {
     pub x: f64,
     pub y: f64,
@@ -82,58 +65,33 @@ pub struct Rect {
     pub height: f64,
 }
 
-/// The rectangles of a Highlight on one page, see `leafpdf_core::markup::PageRects`.
-#[derive(uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct PageRects {
     pub page_index: u32,
     pub rects: Vec<Rect>,
 }
 
-/// An sRGB color, 8 bits per channel.
-#[derive(uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct Rgb {
     pub r: u8,
     pub g: u8,
     pub b: u8,
 }
 
-/// See `leafpdf_core::preferences::HighlightColor`.
-#[derive(uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct HighlightColor {
     pub id: String,
     pub rgb: Rgb,
     pub is_custom: bool,
 }
 
-impl From<leafpdf_core::preferences::HighlightColor> for HighlightColor {
-    fn from(c: leafpdf_core::preferences::HighlightColor) -> Self {
-        Self {
-            id: c.id,
-            rgb: c.rgb.into(),
-            is_custom: c.is_custom,
-        }
-    }
-}
-
-/// See `leafpdf_core::preferences::HighlightColors`.
-#[derive(uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct HighlightColors {
     pub colors: Vec<HighlightColor>,
     pub default_color: HighlightColor,
 }
 
-impl From<leafpdf_core::preferences::HighlightColors> for HighlightColors {
-    fn from(c: leafpdf_core::preferences::HighlightColors) -> Self {
-        Self {
-            colors: c.colors.into_iter().map(Into::into).collect(),
-            default_color: c.default_color.into(),
-        }
-    }
-}
-
-/// See `leafpdf_core::markup::Highlight`. `created` is milliseconds since the
-/// Unix epoch.
-#[derive(uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct Highlight {
     pub id: String,
     pub anchor: Vec<PageRects>,
@@ -143,9 +101,7 @@ pub struct Highlight {
     pub note: Option<String>,
 }
 
-/// See `leafpdf_core::markup::PageNote`. `created` is milliseconds since the
-/// Unix epoch.
-#[derive(uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct PageNote {
     pub id: String,
     pub page_index: u32,
@@ -155,106 +111,40 @@ pub struct PageNote {
     pub text: String,
 }
 
-/// See `leafpdf_core::markup::Markup`.
-#[derive(uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct Markup {
     pub highlights: Vec<Highlight>,
     pub page_notes: Vec<PageNote>,
 }
 
-impl From<leafpdf_core::markup::Rect> for Rect {
-    fn from(r: leafpdf_core::markup::Rect) -> Self {
-        Self {
-            x: r.x,
-            y: r.y,
-            width: r.width,
-            height: r.height,
-        }
-    }
+#[uniffi::remote(Enum)]
+pub enum SortKey {
+    DateImported,
+    Title,
+    RecentlyRead,
 }
 
-impl From<Rect> for leafpdf_core::markup::Rect {
-    fn from(r: Rect) -> Self {
-        Self {
-            x: r.x,
-            y: r.y,
-            width: r.width,
-            height: r.height,
-        }
-    }
+#[uniffi::remote(Record)]
+pub struct Sort {
+    pub key: SortKey,
+    pub reversed: bool,
 }
 
-impl From<leafpdf_core::markup::PageRects> for PageRects {
-    fn from(p: leafpdf_core::markup::PageRects) -> Self {
-        Self {
-            page_index: p.page_index,
-            rects: p.rects.into_iter().map(Into::into).collect(),
-        }
-    }
+#[uniffi::remote(Enum)]
+pub enum Status {
+    Syncing,
+    Synced { at: u64 },
+    Offline,
+    WrongPassword,
+    UpdateNeeded,
 }
 
-impl From<PageRects> for leafpdf_core::markup::PageRects {
-    fn from(p: PageRects) -> Self {
-        Self {
-            page_index: p.page_index,
-            rects: p.rects.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
-impl From<leafpdf_core::markup::Rgb> for Rgb {
-    fn from(c: leafpdf_core::markup::Rgb) -> Self {
-        Self {
-            r: c.r,
-            g: c.g,
-            b: c.b,
-        }
-    }
-}
-
-impl From<Rgb> for leafpdf_core::markup::Rgb {
-    fn from(c: Rgb) -> Self {
-        Self {
-            r: c.r,
-            g: c.g,
-            b: c.b,
-        }
-    }
-}
-
-impl From<leafpdf_core::markup::Highlight> for Highlight {
-    fn from(h: leafpdf_core::markup::Highlight) -> Self {
-        Self {
-            id: h.id,
-            anchor: h.anchor.into_iter().map(Into::into).collect(),
-            quoted_text: h.quoted_text,
-            color: h.color.into(),
-            created: h.created,
-            note: h.note,
-        }
-    }
-}
-
-impl From<leafpdf_core::markup::PageNote> for PageNote {
-    fn from(n: leafpdf_core::markup::PageNote) -> Self {
-        Self {
-            id: n.id,
-            page_index: n.page_index,
-            x: n.x,
-            y: n.y,
-            created: n.created,
-            text: n.text,
-        }
-    }
-}
-
-impl From<leafpdf_core::markup::Markup> for Markup {
-    fn from(m: leafpdf_core::markup::Markup) -> Self {
-        Self {
-            highlights: m.highlights.into_iter().map(Into::into).collect(),
-            page_notes: m.page_notes.into_iter().map(Into::into).collect(),
-        }
-    }
+#[uniffi::remote(Error)]
+pub enum ConnectError {
+    WrongCredentials,
+    Unreachable,
+    NotHttps,
+    NotWebDav,
 }
 
 /// A Document in the Library, see `leafpdf_core::library::Document`. Author
@@ -280,37 +170,9 @@ impl From<leafpdf_core::library::Document> for Document {
             id: d.id,
             path: d.path.to_string_lossy().into_owned(),
             imported: d.imported,
-            progress: d.progress.map(Into::into),
+            progress: d.progress,
             author: d.details.as_ref().and_then(|x| x.author.clone()),
             page_count: d.details.map(|x| x.page_count),
-        }
-    }
-}
-
-/// What Documents are ordered by, see `leafpdf_core::listing::SortKey`.
-#[derive(uniffi::Enum)]
-pub enum SortKey {
-    DateImported,
-    Title,
-    RecentlyRead,
-}
-
-/// How a Gallery orders its Documents, see `leafpdf_core::listing::Sort`.
-#[derive(uniffi::Record)]
-pub struct Sort {
-    pub key: SortKey,
-    pub reversed: bool,
-}
-
-impl From<Sort> for listing::Sort {
-    fn from(s: Sort) -> Self {
-        Self {
-            key: match s.key {
-                SortKey::DateImported => listing::SortKey::DateImported,
-                SortKey::Title => listing::SortKey::Title,
-                SortKey::RecentlyRead => listing::SortKey::RecentlyRead,
-            },
-            reversed: s.reversed,
         }
     }
 }
@@ -342,7 +204,7 @@ impl Listing {
     #[uniffi::constructor]
     pub fn new(documents: &[Document], sort: Sort) -> Arc<Self> {
         let items: Vec<_> = documents.iter().map(Into::into).collect();
-        Arc::new(Self(listing::Listing::new(&items, sort.into())))
+        Arc::new(Self(listing::Listing::new(&items, sort)))
     }
 
     /// The positions in `documents` of those matching `search`, in order.
@@ -354,21 +216,18 @@ impl Listing {
     }
 }
 
-/// What an Import did, see `leafpdf_core::library::ImportResult`.
-#[derive(uniffi::Enum)]
-pub enum ImportResult {
-    Imported(Document),
-    AlreadyImported(Document),
-}
+// `Document` is hand-made (computed Title and percent read): the core's
+// crosses as that.
+uniffi::custom_type!(CoreDocument, Document, {
+    remote,
+    lower: |d| d.into(),
+    try_lift: |_document| Err(uniffi::deps::anyhow::anyhow!("Documents only go to the client")),
+});
 
-impl From<leafpdf_core::library::ImportResult> for ImportResult {
-    fn from(r: leafpdf_core::library::ImportResult) -> Self {
-        use leafpdf_core::library::ImportResult as Core;
-        match r {
-            Core::Imported(d) => Self::Imported(d.into()),
-            Core::AlreadyImported(d) => Self::AlreadyImported(d.into()),
-        }
-    }
+#[uniffi::remote(Enum)]
+pub enum ImportResult {
+    Imported(CoreDocument),
+    AlreadyImported(CoreDocument),
 }
 
 /// Receives the progress of an Import. Implemented by the client and called
@@ -379,54 +238,11 @@ pub trait ImportProgress: Send + Sync {
     fn report(&self, copied: u64, total: u64);
 }
 
-/// Why connecting to a WebDAV server failed, see
-/// `leafpdf_core::webdav::ConnectError`.
-#[derive(Debug, uniffi::Error)]
-pub enum ConnectError {
-    WrongCredentials,
-    Unreachable,
-    NotHttps,
-    NotWebDav,
-}
-
-impl From<leafpdf_core::webdav::ConnectError> for ConnectError {
-    fn from(e: leafpdf_core::webdav::ConnectError) -> Self {
-        use leafpdf_core::webdav::ConnectError as Core;
-        match e {
-            Core::WrongCredentials => Self::WrongCredentials,
-            Core::Unreachable => Self::Unreachable,
-            Core::NotHttps => Self::NotHttps,
-            Core::NotWebDav => Self::NotWebDav,
-        }
-    }
-}
-
-impl std::fmt::Display for ConnectError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-
-/// Where Sync stands, see `leafpdf_core::sync_loop::Status`. `at` is
-/// milliseconds since the Unix epoch.
-#[derive(uniffi::Enum)]
-pub enum SyncStatus {
-    Syncing,
-    Synced {
-        at: u64,
-    },
-    Offline,
-    /// Blocked: the server rejected the credentials, see `update_webdav_credentials`.
-    WrongPassword,
-    /// Blocked: another Device synced a newer version than this app knows.
-    UpdateNeeded,
-}
-
 /// Receives what the Sync loop does. Implemented by the client and called from
 /// the loop's thread, not the main thread.
 #[uniffi::export(with_foreign)]
 pub trait SyncObserver: Send + Sync {
-    fn status_changed(&self, status: SyncStatus);
+    fn status_changed(&self, status: Status);
     /// The Documents (Reading Progress included) or the Highlight Colors
     /// changed: read them again.
     fn library_changed(&self);
@@ -461,15 +277,8 @@ impl From<SyncIntervals> for sync_loop::Intervals {
 struct Observer(Arc<dyn SyncObserver>);
 
 impl sync_loop::Observer for Observer {
-    fn status(&self, status: sync_loop::Status) {
-        use sync_loop::Status as Core;
-        self.0.status_changed(match status {
-            Core::Syncing => SyncStatus::Syncing,
-            Core::Synced { at } => SyncStatus::Synced { at },
-            Core::Offline => SyncStatus::Offline,
-            Core::WrongPassword => SyncStatus::WrongPassword,
-            Core::UpdateNeeded => SyncStatus::UpdateNeeded,
-        });
+    fn status(&self, status: Status) {
+        self.0.status_changed(status);
     }
 
     fn library_changed(&self) {
@@ -634,7 +443,7 @@ impl Library {
         let result = self.core.import(source.as_ref(), |copied, total| {
             progress.report(copied, total)
         });
-        Ok(self.written(result)?.into())
+        self.written(result)
     }
 
     pub fn remove(&self, id: String) -> Result<(), LibraryError> {
@@ -642,11 +451,11 @@ impl Library {
     }
 
     pub fn save_progress(&self, id: String, progress: ReadingProgress) -> Result<(), LibraryError> {
-        self.progress_written(self.core.save_progress(&id, &progress.into()))
+        self.progress_written(self.core.save_progress(&id, &progress))
     }
 
     pub fn markup(&self, id: String) -> Result<Markup, LibraryError> {
-        Ok(self.core.markup(&id)?.into())
+        Ok(self.core.markup(&id)?)
     }
 
     pub fn add_highlight(
@@ -657,11 +466,10 @@ impl Library {
         color: Rgb,
         created: u64,
     ) -> Result<Option<Highlight>, LibraryError> {
-        let anchor = anchor.into_iter().map(Into::into).collect();
         let highlight = self
             .core
-            .add_highlight(&id, anchor, &quoted_text, color.into(), created);
-        Ok(self.written(highlight)?.map(Into::into))
+            .add_highlight(&id, anchor, &quoted_text, color, created);
+        self.written(highlight)
     }
 
     pub fn set_highlight_color(
@@ -670,7 +478,7 @@ impl Library {
         highlight: String,
         color: Rgb,
     ) -> Result<(), LibraryError> {
-        self.written(self.core.set_highlight_color(&id, &highlight, color.into()))
+        self.written(self.core.set_highlight_color(&id, &highlight, color))
     }
 
     pub fn set_highlight_note(
@@ -695,7 +503,7 @@ impl Library {
         created: u64,
     ) -> Result<Option<PageNote>, LibraryError> {
         let note = self.core.add_page_note(&id, page_index, x, y, created);
-        Ok(self.written(note)?.map(Into::into))
+        self.written(note)
     }
 
     pub fn set_page_note_text(
@@ -712,7 +520,7 @@ impl Library {
     }
 
     pub fn highlight_colors(&self) -> HighlightColors {
-        self.core.highlight_colors().into()
+        self.core.highlight_colors()
     }
 
     pub fn set_default_highlight_color(&self, id: String) -> Result<(), LibraryError> {
@@ -720,9 +528,7 @@ impl Library {
     }
 
     pub fn add_custom_color(&self, rgb: Rgb, added: u64) -> Result<HighlightColor, LibraryError> {
-        Ok(self
-            .written(self.core.add_custom_color(rgb.into(), added))?
-            .into())
+        self.written(self.core.add_custom_color(rgb, added))
     }
 
     pub fn remove_custom_color(&self, id: String) -> Result<(), LibraryError> {
@@ -766,8 +572,8 @@ mod tests {
     struct Steps(AtomicUsize);
 
     impl SyncObserver for Steps {
-        fn status_changed(&self, status: SyncStatus) {
-            if !matches!(status, SyncStatus::Syncing) {
+        fn status_changed(&self, status: Status) {
+            if !matches!(status, Status::Syncing) {
                 self.0.fetch_add(1, Relaxed);
             }
         }

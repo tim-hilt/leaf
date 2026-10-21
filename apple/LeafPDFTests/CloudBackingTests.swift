@@ -249,21 +249,20 @@ extension LibraryModelTests {
     @Test func theStatusLineSaysHowSyncStands() {
         let now = Date(timeIntervalSince1970: 1_000_000)
 
-        #expect(SyncState.syncing.line(now: now) == "Syncing…")
-        #expect(SyncState.offline.line(now: now) == "Offline")
-        #expect(SyncState.synced(now.addingTimeInterval(-5)).line(now: now) == "Synced just now")
-        #expect(SyncState.synced(now.addingTimeInterval(-300)).line(now: now).hasPrefix("Synced "))
-        #expect(SyncState.synced(now.addingTimeInterval(-300)).line(now: now) != "Synced just now")
+        func synced(_ secondsAgo: Double) -> Status {
+            .synced(at: UInt64(now.addingTimeInterval(-secondsAgo).timeIntervalSince1970 * 1000))
+        }
+
+        #expect(Status.syncing.line(now: now) == "Syncing…")
+        #expect(Status.offline.line(now: now) == "Offline")
+        #expect(synced(5).line(now: now) == "Synced just now")
+        #expect(synced(300).line(now: now).hasPrefix("Synced "))
+        #expect(synced(300).line(now: now) != "Synced just now")
     }
 
     @Test func theStatusLineNamesBothBlockedStates() {
-        #expect(SyncState.wrongPassword.line() == "Wrong password")
-        #expect(SyncState.updateNeeded.line() == "Update LeafPDF to keep syncing")
-        #expect(SyncState.wrongPassword.isBlocked)
-        #expect(SyncState.updateNeeded.isBlocked)
-        #expect(!SyncState.offline.isBlocked)
-        #expect(!SyncState.syncing.isBlocked)
-        #expect(!SyncState.synced(.now).isBlocked)
+        #expect(Status.wrongPassword.line() == "Wrong password")
+        #expect(Status.updateNeeded.line() == "Update LeafPDF to keep syncing")
     }
 
     @Test func theIndicatorShowsHowSyncStandsWhileConnected() async throws {
@@ -282,7 +281,9 @@ extension LibraryModelTests {
         // Blocked: the cloud refuses access, as a server does with a wrong password.
         try await library.connect(directory: cloud)
         #expect(try await eventually { if case .synced = library.syncState { true } else { false } })
-        if case .synced(let date) = library.syncState { #expect(library.syncIndicator == .synced(date)) }
+        if case .synced(let at) = library.syncState {
+            #expect(library.syncIndicator == .synced(Date(milliseconds: at)))
+        }
         try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: cloud.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cloud.path) }
         #expect(try await eventually { library.syncState == .wrongPassword })
