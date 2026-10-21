@@ -13,6 +13,8 @@ publish = false
 lto = "fat"
 codegen-units = 1
 opt-level = "s"
+# A panic is a bug: crash instead of shipping unwind tables.
+panic = "abort"
 
 # Optimised dependencies (Automerge) keep the debug test run fast.
 [profile.dev.package."*"]
