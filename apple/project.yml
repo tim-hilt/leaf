@@ -57,6 +57,9 @@ targets:
         # Ad-hoc sign macOS builds so they run without a development team.
         # Revisit once macOS needs capabilities such as CloudKit.
         "CODE_SIGN_IDENTITY[sdk=macosx*]": "-"
+      configs:
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: -Osize
     scheme:
       testTargets: [LeafPDFTests]
   LeafPDFTests:

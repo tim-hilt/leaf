@@ -40,11 +40,13 @@ apple: apple-core apple-project
 # Builds the core for every Apple target and packages it, together with the
 # generated Swift bindings, into the LeafCore Swift package. Skipped while the
 # Rust sources are unchanged. Deployment targets match apple/project.yml, so C
-# dependencies link without warnings.
+# dependencies link without warnings. The path remap keeps home directories
+# out of panic messages in the shipped binary.
 apple-core: $(CORE_STAMP)
 
 $(CORE_STAMP): $(CORE_SRC)
 	IPHONEOS_DEPLOYMENT_TARGET=18.0 MACOSX_DEPLOYMENT_TARGET=15.0 \
+	RUSTFLAGS="--remap-path-prefix=$(HOME)=~" \
 		cargo build -p leafpdf-ffi --profile $(PROFILE) $(addprefix --target ,$(APPLE_TARGETS))
 	rm -rf $(APPLE_GEN)
 	cargo run -q -p leafpdf-ffi --features cli --bin uniffi-bindgen -- generate \

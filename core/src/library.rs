@@ -864,7 +864,12 @@ fn stream_hashed(
         progress(copied, total);
     }
     output.sync_all()?;
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex(&hasher.finalize()))
+}
+
+/// `bytes` as lowercase hex, e.g. a SHA-256 digest as a Document's id.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Renames the File in the Document folder `folder` to `name`, if it has
