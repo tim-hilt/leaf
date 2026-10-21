@@ -1,8 +1,8 @@
 import PDFKit
 
-/// The Chapters and Sections stored in a Document's outline, in reading order.
-/// Empty when the Document has no outline or the outline has no entries.
-/// Read once from a `PDFDocument`; nothing is stored or synced.
+/// The Chapters and Sections of a Document, in reading order, as `Place`s.
+/// Empty when the Document has none. A PDF's outline is one source of entries;
+/// nothing is stored or synced.
 struct TableOfContents {
     /// A Chapter (top level) or Section (nested under another entry).
     struct Entry: Identifiable {
@@ -10,9 +10,10 @@ struct TableOfContents {
         let id: Int
         let title: String
         /// The printed page number (page label), or the 1-based position in the
-        /// File when the target page has none. Empty without a target.
-        let pageNumber: String
-        /// Where the entry points. Nil when the outline gives it no target page:
+        /// File when the target page has none. Nil when the entry has no page
+        /// number: without a target, or in a Format without pages.
+        let pageNumber: String?
+        /// Where the entry points. Nil when the source gives it no target:
         /// such an entry is listed but can't be chosen.
         let place: Place?
         let sections: [Entry]
@@ -33,6 +34,9 @@ struct TableOfContents {
     /// An empty Table of Contents.
     init() { chapters = [] }
 
+    init(chapters: [Entry]) { self.chapters = chapters }
+
+    /// The entries of `document`'s outline.
     init(_ document: PDFDocument) {
         var nextID = 0
         func entries(under outline: PDFOutline) -> [Entry] {
@@ -41,7 +45,7 @@ struct TableOfContents {
                 nextID += 1
                 let target = Self.target(of: child, in: document)
                 return Entry(
-                    id: id, title: child.label ?? "", pageNumber: target?.pageNumber ?? "", place: target?.place,
+                    id: id, title: child.label ?? "", pageNumber: target?.pageNumber, place: target?.place,
                     sections: entries(under: child))
             }
         }
@@ -72,7 +76,9 @@ struct TableOfContents {
         of outline: PDFOutline, in document: PDFDocument
     ) -> (place: Place, pageNumber: String)? {
         let destination = outline.destination ?? (outline.action as? PDFActionGoTo)?.destination
-        guard let destination, let place = Place(destination, in: document) else { return nil }
-        return (place, document.printedPageNumber(at: place.pageIndex))
+        guard let destination, let place = Place(destination, in: document),
+            let pageIndex = place.pdfPosition?.pageIndex
+        else { return nil }
+        return (place, document.printedPageNumber(at: pageIndex))
     }
 }

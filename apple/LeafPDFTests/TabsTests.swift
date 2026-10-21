@@ -110,8 +110,8 @@ import Testing
     // MARK: View state
 
     let state = ReaderViewState(
-        place: Place(pageIndex: 3, point: CGPoint(x: 0, y: 200)), zoom: 2,
-        backPlace: Place(pageIndex: 1, point: CGPoint(x: 0, y: 700)))
+        place: Place.pdf(pageIndex: 3, point: CGPoint(x: 0, y: 200)), zoom: 2,
+        backPlace: Place.pdf(pageIndex: 1, point: CGPoint(x: 0, y: 700)))
 
     @Test func aTabKeepsItsViewState() {
         let tabs = makeTabs()

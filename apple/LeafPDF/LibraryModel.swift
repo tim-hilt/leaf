@@ -32,7 +32,7 @@ struct LibraryDocument: Identifiable, Hashable {
     var fileName: String { file.lastPathComponent }
     /// Where the user left off, to reopen the Document there.
     var place: Place? {
-        progress.map { Place(pageIndex: Int($0.pageIndex), point: CGPoint(x: $0.x, y: $0.y)) }
+        progress.map { Place.pdf(pageIndex: Int($0.pageIndex), point: CGPoint(x: $0.x, y: $0.y)) }
     }
     /// When the Reader last showed the Document; nil if never.
     var lastRead: Date? { progress.map { Date(milliseconds: $0.lastRead) } }
@@ -545,10 +545,11 @@ final class LibraryModel {
     /// core writes off the main thread, in order; this returns when it has,
     /// with the Document updated in every window. Does nothing for a Document
     /// that was Removed. A failed write is ignored: the next save replaces it.
+    /// Only PDF Places can be stored until the core takes EPUB anchors.
     func saveProgress(_ place: Place, of document: LibraryDocument, at lastRead: Date = .now) async {
+        guard let (pageIndex, point) = place.pdfPosition else { return }
         let progress = ReadingProgress(
-            pageIndex: UInt32(place.pageIndex), x: place.point.x, y: place.point.y,
-            lastRead: lastRead.millisecondsSince1970)
+            pageIndex: UInt32(pageIndex), x: point.x, y: point.y, lastRead: lastRead.millisecondsSince1970)
         let id = document.id
         update(
             await inStateOrder {
@@ -618,13 +619,15 @@ final class LibraryModel {
     /// Adds a page Note without text at `place` to `document`, `created` now. The
     /// core writes off the main thread, in order, and this returns the stored
     /// page Note when it has. It isn't listed by `markup(of:)` until it has
-    /// text (`setText`). Nil for a Document that was Removed, or if the write failed.
+    /// text (`setText`). Nil for a Document that was Removed, or if the write failed,
+    /// and for an EPUB Place, which the core can't store yet.
     func addPageNote(at place: Place, to document: LibraryDocument, at created: Date = .now) async -> PageNote? {
+        guard let (pageIndex, point) = place.pdfPosition else { return nil }
         let id = document.id
         let milliseconds = created.millisecondsSince1970
         let stored = await inStateOrder {
             try? $0.addPageNote(
-                id: id, pageIndex: UInt32(place.pageIndex), x: place.point.x, y: place.point.y, created: milliseconds)
+                id: id, pageIndex: UInt32(pageIndex), x: point.x, y: point.y, created: milliseconds)
         }
         return stored.map(PageNote.init)
     }
@@ -839,7 +842,7 @@ extension Highlight {
 extension PageNote {
     fileprivate init(_ stored: LeafCore.PageNote) {
         self.init(
-            id: stored.id, place: Place(pageIndex: Int(stored.pageIndex), point: CGPoint(x: stored.x, y: stored.y)),
+            id: stored.id, place: Place.pdf(pageIndex: Int(stored.pageIndex), point: CGPoint(x: stored.x, y: stored.y)),
             text: stored.text)
     }
 }

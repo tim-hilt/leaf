@@ -374,7 +374,7 @@ extension LibraryModelTests {
         let opened = try #require(b.documents.first)
 
         await a.saveProgress(
-            Place(pageIndex: 3, point: .zero), of: try #require(a.documents.first),
+            Place.pdf(pageIndex: 3, point: .zero), of: try #require(a.documents.first),
             at: lastRead.addingTimeInterval(60))
 
         #expect(try await eventually { b.documents.first?.place?.pageIndex == 3 })

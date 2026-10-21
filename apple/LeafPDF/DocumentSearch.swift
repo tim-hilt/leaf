@@ -158,7 +158,8 @@ private final class Running: NSObject {
             pageIndex: index, selection: selection, range: range,
             excerpt: DocumentSearch.Excerpt(around: range, in: text),
             pageNumber: document.printedPageNumber(at: index),
-            section: contents.position(at: Place(pageIndex: index, point: CGPoint(x: top.minX, y: top.maxY)))?.current)
+            section: contents.position(at: Place.pdf(pageIndex: index, point: CGPoint(x: top.minX, y: top.maxY)))?
+                .current)
     }
 
     private func text(of page: PDFPage) -> NSString {

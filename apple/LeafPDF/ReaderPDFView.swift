@@ -1,11 +1,5 @@
 import PDFKit
 
-/// Lets window-level commands (macOS menu) reach the Reader's `PDFView`.
-@MainActor
-final class ReaderHandle {
-    fileprivate(set) weak var view: ReaderPDFView?
-}
-
 /// A `PDFView` zoomable from fit-to-width to 5× (`ZoomRange`) that keeps
 /// your place: the content at the top of the viewport stays put when the view
 /// is resized or rotated, and when zooming with the keyboard. PDFKit's own
@@ -31,7 +25,7 @@ final class ReaderHandle {
 /// Following a link to a place in the Document is a Jump; links to web pages
 /// keep PDFKit's behaviour and are not. A Document Search session counts as
 /// one Jump from where the search started.
-final class ReaderPDFView: PDFView {
+final class ReaderPDFView: PDFView, ReaderDocumentView {
     /// PDFKit's own scroll view; nil until it has one.
     private var scrollView: PlatformScrollView? {
         #if os(iOS)
@@ -136,32 +130,9 @@ final class ReaderPDFView: PDFView {
     /// The Note icons, above the pages. Hidden from hit-testing.
     private lazy var noteIcons = NoteIconsView(reader: self)
 
-    /// What the Reader reports, set as one value. Each callback defaults to doing nothing.
-    struct Callbacks {
-        /// Called on a single tap on the page (iOS only; macOS clicks never fire it).
-        var onSingleTap: () -> Void = {}
-        /// Called once, after the Document is first laid out at fit-to-width and
-        /// scrolled to its opening Place.
-        var onOpen: () -> Void = {}
-        /// Called whenever the viewport scrolls, however it was moved: often, so keep it cheap.
-        var onScroll: () -> Void = {}
-        /// Called with the anchor of the selection when the reader highlights it.
-        var onHighlight: (HighlightAnchor) -> Void = { _ in }
-        /// Called when the reader clicks or taps a Highlight (the newest, where they
-        /// overlap) at a point, given in the view's coordinates with the origin at
-        /// the top-left.
-        var onHighlightTap: (Highlight, CGPoint) -> Void = { _, _ in }
-        /// Called when the reader asks for a page Note at a Place.
-        var onAddNote: (Place) -> Void = { _ in }
-        /// Called when the reader clicks or taps the icon of a page Note, with the
-        /// point as for `onHighlightTap`.
-        var onPageNoteTap: (PageNote, CGPoint) -> Void = { _, _ in }
-        /// Called when the Back place appears, changes or goes, with its printed
-        /// page number; nil when there is none.
-        var onBackChange: (String?) -> Void = { _ in }
-    }
-
-    var callbacks = Callbacks()
+    /// What the Reader reports; `onOpen` is called once the Document is first
+    /// laid out at fit-to-width and scrolled to its opening Place.
+    var callbacks = ReaderCallbacks()
 
     /// The Document's Table of Contents, which places Document Search's matches
     /// in Chapters and Sections. The owner sets it before searching; empty until then.
@@ -172,7 +143,8 @@ final class ReaderPDFView: PDFView {
     private(set) var backPlace: Place? {
         didSet {
             guard backPlace != oldValue else { return }
-            callbacks.onBackChange(backPlace.flatMap { document?.printedPageNumber(at: $0.pageIndex) })
+            callbacks.onBackChange(
+                backPlace?.pdfPosition.flatMap { document?.printedPageNumber(at: $0.pageIndex) }.map(BackTarget.page))
         }
     }
 
@@ -184,6 +156,11 @@ final class ReaderPDFView: PDFView {
 
     /// Shows the find bar; matches are revealed and marked as they are found.
     func presentFind() { find.present() }
+
+    #if os(macOS)
+        func findNext() { find.next() }
+        func findPrevious() { find.previous() }
+    #endif
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -247,17 +224,17 @@ final class ReaderPDFView: PDFView {
     // Not `currentDestination`: on iOS it is the viewport's bottom-left.
     var topOfViewport: Place? {
         guard let document, let page = page(for: viewportTopLeft, nearest: true) else { return nil }
-        return Place(pageIndex: document.index(for: page), point: convert(viewportTopLeft, to: page))
+        return Place.pdf(pageIndex: document.index(for: page), point: convert(viewportTopLeft, to: page))
     }
 
     /// Scrolls `place` to the viewport's top-left corner, as far as the
     /// Document's edges allow.
     func go(to place: Place) {
-        guard let page = document?.page(at: place.pageIndex) else { return }
+        guard let (pageIndex, point) = place.pdfPosition, let page = document?.page(at: pageIndex) else { return }
         #if os(iOS)
-            scroll(place.point, on: page, to: viewportTopLeft)
+            scroll(point, on: page, to: viewportTopLeft)
         #else
-            go(to: PDFDestination(page: page, at: place.point))
+            go(to: PDFDestination(page: page, at: point))
         #endif
     }
 
@@ -295,7 +272,8 @@ final class ReaderPDFView: PDFView {
     /// viewport; does nothing if it is already fully in view. Within a search
     /// session the move is part of one Jump; see `beginSearchSession()`.
     func reveal(_ selection: PDFSelection) {
-        guard let page = selection.pages.first, let document, let top = topOfViewport else { return }
+        guard let page = selection.pages.first, let document, let top = topOfViewport?.pdfPosition
+        else { return }
         let rect = selection.bounds(for: page)
         let viewRect = convert(rect, from: page)
         guard !viewportRect.contains(viewRect) else { return }
@@ -304,7 +282,7 @@ final class ReaderPDFView: PDFView {
         let x = fitsAcross ? top.point.x : rect.minX - 20 / scaleFactor
         let y = rect.maxY + viewportRect.height / 3 / scaleFactor
         if let searchStart { backPlace = searchStart }
-        go(to: Place(pageIndex: document.index(for: page), point: CGPoint(x: x, y: y)))
+        go(to: Place.pdf(pageIndex: document.index(for: page), point: CGPoint(x: x, y: y)))
     }
 
     // MARK: Highlights
@@ -394,8 +372,14 @@ final class ReaderPDFView: PDFView {
     /// Where the Note icon of `note` is, in the view's coordinates: centred on
     /// its spot, at the same size on screen at any zoom.
     func noteIconRect(of note: PageNote) -> CGRect? {
-        guard let page = document?.page(at: note.place.pageIndex) else { return nil }
-        return noteIconRect(around: convert(note.place.point, from: page))
+        guard let (pageIndex, point) = note.place.pdfPosition, let page = document?.page(at: pageIndex) else {
+            return nil
+        }
+        return noteIconRect(around: convert(point, from: page))
+    }
+
+    func popoverPoint(of note: PageNote) -> CGPoint? {
+        noteIconRect(of: note).map { fromTopLeft(CGPoint(x: $0.midX, y: $0.midY)) }
     }
 
     /// The square of a Note icon centred on `point`, in the view's coordinates.
@@ -423,7 +407,7 @@ final class ReaderPDFView: PDFView {
     /// The Place at `point`, in the view's coordinates. Nil off the pages.
     func place(at point: CGPoint) -> Place? {
         guard let document, let page = page(for: point, nearest: false) else { return nil }
-        return Place(pageIndex: document.index(for: page), point: convert(point, to: page))
+        return Place.pdf(pageIndex: document.index(for: page), point: convert(point, to: page))
     }
 
     /// Whether nothing is at `point`, in the view's coordinates, but page: no

@@ -689,7 +689,7 @@ import UniformTypeIdentifiers
 
     struct ImportFailed: Error {}
 
-    let place = Place(pageIndex: 7, point: CGPoint(x: 12.5, y: 700.25))
+    let place = Place.pdf(pageIndex: 7, point: CGPoint(x: 12.5, y: 700.25))
     let lastRead = Date(timeIntervalSince1970: 1_700_000_000.5)
 
     @Test func aNeverOpenedDocumentHasNoReadingProgress() async throws {
@@ -726,7 +726,7 @@ import UniformTypeIdentifiers
     @Test func theLatestSavedPlaceIsTheReadingProgress() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let earlier = Place(pageIndex: 3, point: .zero)
+        let earlier = Place.pdf(pageIndex: 3, point: .zero)
 
         await library.saveProgress(place, of: document, at: lastRead)
         await library.saveProgress(earlier, of: document, at: lastRead.addingTimeInterval(5))
@@ -855,7 +855,7 @@ import UniformTypeIdentifiers
     @Test func anAddedPageNoteIsAtItsPlaceAndListedOnceItHasText() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let place = Place(pageIndex: 4, point: CGPoint(x: 100.5, y: 200.5))
+        let place = Place.pdf(pageIndex: 4, point: CGPoint(x: 100.5, y: 200.5))
 
         let added = try #require(await library.addPageNote(at: place, to: document))
 
@@ -873,7 +873,7 @@ import UniformTypeIdentifiers
     @Test func emptyingAPageNoteOrRemovingItLeavesNoPageNote() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let place = Place(pageIndex: 0, point: .zero)
+        let place = Place.pdf(pageIndex: 0, point: .zero)
         let emptied = try #require(await library.addPageNote(at: place, to: document))
         let removed = try #require(await library.addPageNote(at: place, to: document))
         await library.setText("x", of: emptied, in: document)
@@ -890,7 +890,7 @@ import UniformTypeIdentifiers
         let document = try await importDocument(into: library)
         library.remove(document)
 
-        #expect(await library.addPageNote(at: Place(pageIndex: 0, point: .zero), to: document) == nil)
+        #expect(await library.addPageNote(at: Place.pdf(pageIndex: 0, point: .zero), to: document) == nil)
     }
 
     @Test func aRemovedHighlightIsGoneAfterReopeningTheLibrary() async throws {
@@ -1121,7 +1121,7 @@ import UniformTypeIdentifiers
         let library = try openLibrary()
         let document = try await importDocument(pageCount: 4, into: library)
 
-        await library.saveProgress(Place(pageIndex: pageIndex, point: .zero), of: document, at: lastRead)
+        await library.saveProgress(Place.pdf(pageIndex: pageIndex, point: .zero), of: document, at: lastRead)
 
         #expect(library.documents.first?.percentRead == percent)
     }
@@ -1130,7 +1130,7 @@ import UniformTypeIdentifiers
         let library = try openLibrary()
         let document = try await importDocument(pageCount: 3, into: library)
 
-        await library.saveProgress(Place(pageIndex: 1, point: .zero), of: document, at: lastRead)
+        await library.saveProgress(Place.pdf(pageIndex: 1, point: .zero), of: document, at: lastRead)
 
         #expect(library.documents.first?.percentRead == 66)
     }
@@ -1139,7 +1139,7 @@ import UniformTypeIdentifiers
         let library = try openLibrary()
         let document = try await importDocument(pageCount: 200, into: library)
 
-        await library.saveProgress(Place(pageIndex: 0, point: .zero), of: document, at: lastRead)
+        await library.saveProgress(Place.pdf(pageIndex: 0, point: .zero), of: document, at: lastRead)
 
         #expect(library.documents.first?.percentRead == 0)
     }
@@ -1155,7 +1155,7 @@ import UniformTypeIdentifiers
         let document = try await importDocument(pageCount: 4, into: library)
         #expect(document.accessibilityLabel == document.title)
 
-        await library.saveProgress(Place(pageIndex: 1, point: .zero), of: document, at: lastRead)
+        await library.saveProgress(Place.pdf(pageIndex: 1, point: .zero), of: document, at: lastRead)
 
         #expect(library.documents.first?.accessibilityLabel == "\(document.title), 50 % read")
     }

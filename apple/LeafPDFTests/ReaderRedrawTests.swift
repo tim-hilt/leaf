@@ -31,7 +31,7 @@
 
             reader.pageAppearance = .light
             try await settle()
-            reader.go(to: Place(pageIndex: 1, point: CGPoint(x: 0, y: 700)))
+            reader.go(to: Place.pdf(pageIndex: 1, point: CGPoint(x: 0, y: 700)))
             try await expectShown(white, at: CGPoint(x: 200, y: 400), in: reader)
         }
 
@@ -143,15 +143,15 @@
         @Test func darkPagesNeverShowLightAfterAJump() async throws {
             let reader = try makeReader(appearance: .dark(.default), pageCount: 60)
             try await settle()
-            reader.go(to: Place(pageIndex: 40, point: CGPoint(x: 0, y: 700)))
+            reader.go(to: Place.pdf(pageIndex: 40, point: CGPoint(x: 0, y: 700)))
             try await expectAlwaysShown(paper, at: CGPoint(x: 200, y: 400), in: reader)
         }
 
         @Test func darkPagesNeverShowLightWhenOpeningPartwayIn() async throws {
             // What a Tab switch does: reopen from the saved place, zoom and Back place.
             let state = ReaderViewState(
-                place: Place(pageIndex: 40, point: CGPoint(x: 0, y: 700)), zoom: 1.5,
-                backPlace: Place(pageIndex: 3, point: CGPoint(x: 0, y: 500)))
+                place: Place.pdf(pageIndex: 40, point: CGPoint(x: 0, y: 700)), zoom: 1.5,
+                backPlace: Place.pdf(pageIndex: 3, point: CGPoint(x: 0, y: 500)))
             let reader = try makeReader(appearance: .dark(.default), pageCount: 60, opening: state)
             try await expectAlwaysShown(paper, at: CGPoint(x: 200, y: 400), in: reader)
         }

@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The Table of Contents as a list: titles with printed page numbers at the
-/// trailing edge, Sections nested under their Chapter or Section and folded
+/// The Table of Contents as a list: titles with printed page numbers, where
+/// entries have them, at the trailing edge, Sections nested under their Chapter or Section and folded
 /// with the native disclosure control. Choosing an entry with a target calls
 /// `onChoose` and dismisses the presentation it is in.
 ///
@@ -84,7 +84,9 @@ struct TableOfContentsView: View {
                 HStack {
                     Text(entry.title).fontWeight(entry.id == currentID ? .bold : .regular)
                     Spacer()
-                    Text(entry.pageNumber).foregroundStyle(.secondary).monospacedDigit()
+                    if let pageNumber = entry.pageNumber {
+                        Text(pageNumber).foregroundStyle(.secondary).monospacedDigit()
+                    }
                 }
                 .contentShape(Rectangle())
             }

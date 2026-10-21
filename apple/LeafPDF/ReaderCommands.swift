@@ -4,8 +4,8 @@
     extension FocusedValues {
         /// The Reader of the focused window, if one is showing.
         @Entry var reader: ReaderHandle?
-        /// Printed page number of the focused Reader's Back place; nil when it has none.
-        @Entry var backPageNumber: String?
+        /// The focused Reader's Back place; nil when it has none.
+        @Entry var backTarget: BackTarget?
         /// Opens the focused Reader's Table of Contents; nil when it has none.
         @Entry var showTableOfContents: Binding<Bool>?
         /// Switches the focused Reader's pages to the opposite of what is showing (⇧⌘D).
@@ -16,7 +16,7 @@
     struct ReaderCommands: Commands {
         @FocusedValue(\.reader) private var reader
         @FocusedValue(\.showTableOfContents) private var showTableOfContents
-        @FocusedValue(\.backPageNumber) private var backPageNumber
+        @FocusedValue(\.backTarget) private var backTarget
         @FocusedValue(\.switchPageStyle) private var switchPageStyle
         let settings: AppSettings
 
@@ -48,16 +48,16 @@
                 Menu("Find") {
                     Button("Find…") { reader?.view?.presentFind() }
                         .keyboardShortcut("f", modifiers: .command)
-                    Button("Find Next") { reader?.view?.find.next() }
+                    Button("Find Next") { reader?.view?.findNext() }
                         .keyboardShortcut("g", modifiers: .command)
-                    Button("Find Previous") { reader?.view?.find.previous() }
+                    Button("Find Previous") { reader?.view?.findPrevious() }
                         .keyboardShortcut("g", modifiers: [.shift, .command])
                 }
                 .disabled(reader == nil)
             }
             CommandMenu("Go") {
-                Button(backPageNumber.map { "Back to p. \($0)" } ?? "Back") { reader?.view?.goBack() }
-                    .disabled(backPageNumber == nil)
+                Button(backTarget.map { "Back to \($0.name)" } ?? "Back") { reader?.view?.goBack() }
+                    .disabled(backTarget == nil)
                 Button("Table of Contents") { showTableOfContents?.wrappedValue = true }
                     .keyboardShortcut("t", modifiers: [.option, .command])
                     .disabled(showTableOfContents == nil)

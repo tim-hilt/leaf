@@ -1,8 +1,9 @@
-import PDFKit
 import SwiftUI
 
 /// Opens a Document's File and shows its pages in a single continuously
-/// scrolling vertical column, titled with the Document's Title. Must be pushed onto a
+/// scrolling vertical column, titled with the Document's Title. Whatever the
+/// Document's Format, the Reader only knows its document view through
+/// `ReaderDocumentView` and its positions as a `Place`. Must be pushed onto a
 /// `NavigationStack`, which provides the back chevron and iOS edge swipe. The
 /// window makes a new one for each Tab, so only the active Tab's Document is
 /// loaded. The `TabStrip` under the toolbar isn't part of it: it outlives the Tabs' Readers.
@@ -58,7 +59,7 @@ struct ReaderView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var sizeClass
-    @State private var pdf: StyledDocument?
+    @State private var opened: OpenedDocument?
     @State private var handle = ReaderHandle()
     @State private var saver: ReadingProgressSaver?
     @State private var contents: TableOfContents?
@@ -69,8 +70,8 @@ struct ReaderView: View {
     @State private var isShowingResults = false
     @State private var pageNotes: [PageNote] = []
     @State private var openMarkup: OpenMarkup?
-    /// Printed page number of the Back place; nil when there is none.
-    @State private var backPageNumber: String?
+    /// The Back place; nil when there is none.
+    @State private var backTarget: BackTarget?
     /// Immersive Mode; on macOS, whether the window is in full screen.
     @State private var isImmersive = false
 
@@ -88,15 +89,14 @@ struct ReaderView: View {
         .animation(.default, value: showsResultsSidebar)
         .sheet(isPresented: $isShowingResults) { SearchResultsSheet(results: results) }
         .task {
-            guard pdf == nil else { return }
+            guard opened == nil else { return }
             saver = ReadingProgressSaver(library: library, document: document, handle: handle)
-            let opened = StyledDocument(url: document.file)
-            contents = opened.map(TableOfContents.init)
-            // Styled before PDFKit sees it, so it never starts drawing in Light Pages.
-            opened?.appearance = settings.pageAppearance(systemScheme: colorScheme)
+            let file = OpenedDocument(
+                file: document.file, appearance: settings.pageAppearance(systemScheme: colorScheme))
+            contents = file?.contents
             // Shown at once: the Library may be busy writing (the previous Tab's
             // Reading Progress), and Markup draws in when it arrives.
-            pdf = opened
+            opened = file
             (highlights, pageNotes) = await library.markup(of: document)
         }
         // Markup from another Device shows live. Reading Progress never moves the Reader.
@@ -153,7 +153,7 @@ struct ReaderView: View {
             }
             .background(BackShortcut())
             .focusedSceneValue(\.reader, handle)
-            .focusedSceneValue(\.backPageNumber, backPageNumber)
+            .focusedSceneValue(\.backTarget, backTarget)
             .focusedSceneValue(\.switchPageStyle, switchPageStyle)
             .focusedSceneValue(\.showTableOfContents, availableContents == nil ? nil : $isShowingContents)
             .windowToolbarFullScreenVisibility(.onHover)
@@ -176,21 +176,21 @@ struct ReaderView: View {
 
     private var pages: some View {
         Group {
-            if let pdf {
-                PDFKitView(
-                    document: pdf, appearance: settings.pageAppearance(systemScheme: colorScheme),
+            if let opened {
+                ReaderContent(
+                    document: opened, appearance: settings.pageAppearance(systemScheme: colorScheme),
                     highlights: highlights,
                     pageNotes: pageNotes, pageNoteColor: library.highlightColors[0].color,
                     handle: handle, results: results,
                     state: tabs.viewState(of: document.id) ?? document.place.map { ReaderViewState(place: $0) },
                     contents: contents ?? TableOfContents(),
-                    callbacks: ReaderPDFView.Callbacks(
+                    callbacks: ReaderCallbacks(
                         onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
                         onHighlight: highlight,
                         onHighlightTap: { openMarkup = OpenMarkup(target: .highlight($0.id), point: $1) },
                         onAddNote: addPageNote,
                         onPageNoteTap: { openMarkup = OpenMarkup(target: .pageNote($0.id), point: $1) },
-                        onBackChange: { backPageNumber = $0 }),
+                        onBackChange: { backTarget = $0 }),
                     onShowResults: { isShowingResults = true }
                 )
                 #if os(iOS)
@@ -209,13 +209,13 @@ struct ReaderView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if let backPageNumber {
-                BackCapsule(pageNumber: backPageNumber) { handle.view?.goBack() }
+            if let backTarget {
+                BackCapsule(target: backTarget) { handle.view?.goBack() }
                     .padding(.bottom)
                     .transition(.opacity)
             }
         }
-        .animation(.default, value: backPageNumber)
+        .animation(.default, value: backTarget)
         .popover(
             item: $openMarkup,
             attachmentAnchor: .rect(
@@ -310,11 +310,10 @@ struct ReaderView: View {
     /// shows once the Library has stored it.
     private func addPageNote(at place: Place) {
         Task {
-            guard let added = await library.addPageNote(at: place, to: document), let view = handle.view,
-                let icon = view.noteIconRect(of: added)
+            guard let added = await library.addPageNote(at: place, to: document),
+                let point = handle.view?.popoverPoint(of: added)
             else { return }
             pageNotes.append(added)
-            let point = view.fromTopLeft(CGPoint(x: icon.midX, y: icon.midY))
             openMarkup = OpenMarkup(target: .pageNote(added.id), point: point, startsEditing: true)
         }
     }
@@ -379,17 +378,17 @@ private struct OpenMarkup: Identifiable {
 
 /// The floating "Back to p. 42" button, on a native material.
 private struct BackCapsule: View {
-    let pageNumber: String
+    let target: BackTarget
     let action: () -> Void
 
     var body: some View {
-        Button("Back to p. \(pageNumber)", systemImage: "arrow.uturn.backward", action: action)
+        Button("Back to \(target.name)", systemImage: "arrow.uturn.backward", action: action)
             .font(.subheadline.weight(.medium))
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .background(.regularMaterial, in: Capsule())
             .buttonStyle(.plain)
-            .accessibilityLabel("Back to page \(pageNumber)")
+            .accessibilityLabel("Back to \(target.spokenName)")
     }
 }
 
@@ -404,66 +403,5 @@ private struct BackCapsule: View {
                 .opacity(0)
                 .accessibilityHidden(true)
         }
-    }
-#endif
-
-/// PDFKit's native viewer, laid out as one vertical, continuously scrolling
-/// column. Opens as `state` if there is one, else at page 1 at fit-to-width; see
-/// `ReaderPDFView` for zooming, keeping your place, taps and scrolling.
-private struct PDFKitView {
-    let document: StyledDocument
-    let appearance: PageAppearance
-    let highlights: [Highlight]
-    let pageNotes: [PageNote]
-    let pageNoteColor: RGB
-    let handle: ReaderHandle
-    let results: SearchResults
-    let state: ReaderViewState?
-    let contents: TableOfContents
-    let callbacks: ReaderPDFView.Callbacks
-    /// Called when the reader asks for the list of matches in the find bar (iOS only).
-    let onShowResults: () -> Void
-
-    @MainActor
-    fileprivate func makePDFView() -> PDFView {
-        let view = ReaderPDFView(handle: handle, results: results)
-        view.displayMode = .singlePageContinuous
-        view.displayDirection = .vertical
-        view.autoScales = true
-        if let state { view.open(from: state) }
-        view.document = document
-        view.pageAppearance = appearance
-        view.highlights = highlights
-        view.pageNotes = pageNotes
-        view.pageNoteColor = pageNoteColor
-        view.contents = contents
-        view.callbacks = callbacks
-        #if os(iOS)
-            view.find.onShowResults = onShowResults
-        #endif
-        return view
-    }
-}
-
-extension PDFKitView {
-    @MainActor
-    fileprivate func update(_ view: PDFView) {
-        guard let reader = view as? ReaderPDFView else { return }
-        reader.pageAppearance = appearance
-        reader.highlights = highlights
-        reader.pageNotes = pageNotes
-        reader.pageNoteColor = pageNoteColor
-    }
-}
-
-#if os(iOS)
-    extension PDFKitView: UIViewRepresentable {
-        func makeUIView(context: Context) -> PDFView { makePDFView() }
-        func updateUIView(_ view: PDFView, context: Context) { update(view) }
-    }
-#else
-    extension PDFKitView: NSViewRepresentable {
-        func makeNSView(context: Context) -> PDFView { makePDFView() }
-        func updateNSView(_ view: PDFView, context: Context) { update(view) }
     }
 #endif

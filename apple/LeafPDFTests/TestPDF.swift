@@ -177,6 +177,13 @@ func writeFile(named fileName: String, bytes: Data) throws -> URL {
     return url
 }
 
+extension Place {
+    /// The page of a PDF Place; tests of PDFs only have those.
+    var pageIndex: Int { pdfPosition!.pageIndex }
+    /// The point of a PDF Place on its page.
+    var point: CGPoint { pdfPosition!.point }
+}
+
 extension RGB {
     /// A Highlight color for tests that don't care which.
     static let sampleYellow = RGB(1, 235 / 255, 60 / 255)

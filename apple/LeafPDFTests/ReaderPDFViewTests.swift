@@ -6,7 +6,7 @@ import Testing
 @MainActor @Suite struct ReaderPDFViewTests {
     let portrait = CGSize(width: 400, height: 800)
     let landscape = CGSize(width: 800, height: 400)
-    let place = Place(pageIndex: 5, point: CGPoint(x: 0, y: 400))
+    let place = Place.pdf(pageIndex: 5, point: CGPoint(x: 0, y: 400))
 
     @Test func goesToAPlace() throws {
         let reader = try makeReader(size: portrait)
@@ -49,7 +49,7 @@ import Testing
 
     // MARK: Jump and Back
 
-    let target = Place(pageIndex: 2, point: CGPoint(x: 0, y: 300))
+    let target = Place.pdf(pageIndex: 2, point: CGPoint(x: 0, y: 300))
 
     @Test func jumpGoesToTheTargetAndBackReturnsToTheExactPlace() throws {
         let reader = try makeReader(size: portrait)
@@ -100,7 +100,7 @@ import Testing
         reader.go(to: place)
         reader.jump(to: target)
         let second = try #require(reader.topOfViewport)
-        reader.jump(to: Place(pageIndex: 7, point: CGPoint(x: 0, y: 200)))
+        reader.jump(to: Place.pdf(pageIndex: 7, point: CGPoint(x: 0, y: 200)))
         #expect(reader.backPlace == second)
     }
 
@@ -125,11 +125,11 @@ import Testing
 
     @Test func reportsTheBackPlaceAsItComesAndGoes() throws {
         let reader = try makeReader(size: portrait)
-        var reported: [String?] = []
+        var reported: [BackTarget?] = []
         reader.callbacks.onBackChange = { reported.append($0) }
         reader.jump(to: target)
         reader.goBack()
-        #expect(reported == ["1", nil])
+        #expect(reported == [.page("1"), nil])
     }
 
     @Test func jumpsAndBackReportScrolling() throws {
@@ -147,7 +147,7 @@ import Testing
 
     @Test func revealingAnOffScreenMatchBringsItIntoView() throws {
         let (reader, match) = try makeReaderWithMatch()
-        reader.go(to: Place(pageIndex: 0, point: CGPoint(x: 0, y: 792)))
+        reader.go(to: Place.pdf(pageIndex: 0, point: CGPoint(x: 0, y: 792)))
         reader.reveal(match)
         try expectVisible(match, in: reader)
     }
@@ -164,7 +164,7 @@ import Testing
 
     @Test func aSearchSessionRecordsASingleBackPlaceWhereItStarted() throws {
         let (reader, matches) = try makeReaderWithMatches()
-        reader.go(to: Place(pageIndex: 3, point: CGPoint(x: 0, y: 400)))
+        reader.go(to: Place.pdf(pageIndex: 3, point: CGPoint(x: 0, y: 400)))
         let start = try #require(reader.topOfViewport)
         reader.beginSearchSession()
         reader.reveal(matches[0])
@@ -180,7 +180,7 @@ import Testing
 
     @Test func aSearchMoveAfterBackRecordsWhereTheSearchStartedAgain() throws {
         let (reader, matches) = try makeReaderWithMatches()
-        reader.go(to: Place(pageIndex: 3, point: CGPoint(x: 0, y: 400)))
+        reader.go(to: Place.pdf(pageIndex: 3, point: CGPoint(x: 0, y: 400)))
         let start = try #require(reader.topOfViewport)
         reader.beginSearchSession()
         reader.reveal(matches[0])
@@ -555,7 +555,7 @@ import Testing
 
     /// A page Note with text at `point` (page space) on page `pageIndex` + 1.
     func pageNote(_ id: String, at point: CGPoint, onPage pageIndex: Int = 0) -> PageNote {
-        PageNote(id: id, place: Place(pageIndex: pageIndex, point: point), text: "a thought")
+        PageNote(id: id, place: Place.pdf(pageIndex: pageIndex, point: point), text: "a thought")
     }
 
     @Test func addNoteAtAViewPointReportsThePlaceUnderIt() throws {
@@ -680,7 +680,7 @@ import Testing
 
     @Test func followingALinkInTheDocumentIsAJump() throws {
         let reader = try makeReader(size: portrait, links: links)
-        reader.go(to: Place(pageIndex: place.pageIndex, point: CGPoint(x: 0, y: 700)))
+        reader.go(to: Place.pdf(pageIndex: place.pageIndex, point: CGPoint(x: 0, y: 700)))
         let start = try #require(reader.topOfViewport)
         reader.perform(try #require(action(of: linkRect, in: reader)))
         try expectAtTop(target, of: reader)
@@ -691,7 +691,7 @@ import Testing
 
     @Test func recognizesLinksAtAPointInTheView() throws {
         let reader = try makeReader(size: portrait, links: links)
-        reader.go(to: Place(pageIndex: place.pageIndex, point: CGPoint(x: 0, y: 700)))
+        reader.go(to: Place.pdf(pageIndex: place.pageIndex, point: CGPoint(x: 0, y: 700)))
         #expect(reader.hasLink(at: viewPoint(of: linkRect, in: reader)))
         #expect(reader.hasLink(at: viewPoint(of: webRect, in: reader)))
         #expect(!reader.hasLink(at: viewPoint(of: CGRect(x: 50, y: 100, width: 10, height: 10), in: reader)))
