@@ -91,12 +91,13 @@ struct ReaderView: View {
             guard pdf == nil else { return }
             saver = ReadingProgressSaver(library: library, document: document, handle: handle)
             let opened = StyledDocument(url: document.file)
-            (highlights, pageNotes) = await library.markup(of: document)
             contents = opened.map(TableOfContents.init)
             // Styled before PDFKit sees it, so it never starts drawing in Light Pages.
             opened?.appearance = settings.pageAppearance(systemScheme: colorScheme)
-            opened?.highlights = highlights
+            // Shown at once: the Library may be busy writing (the previous Tab's
+            // Reading Progress), and Markup draws in when it arrives.
             pdf = opened
+            (highlights, pageNotes) = await library.markup(of: document)
         }
         // Markup from another Device shows live. Reading Progress never moves the Reader.
         .onChange(of: library.markupRevision(of: document)) {
