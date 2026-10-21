@@ -339,16 +339,11 @@ impl Library {
                 write_atomically(&self.staging(), &target.path, bytes).map(|()| true)
             })
             .inspect_err(|_| self.mark_dirty(PREFERENCES_KEY))?;
-        if let Some(Merged { before, after }) = merged {
-            let colors = |bytes: Option<&[u8]>| {
-                (
-                    preferences::colors(bytes),
-                    preferences::default_color(bytes),
-                )
-            };
-            if colors(before.as_deref()) != colors(Some(&after)) {
-                self.sync_changes.fetch_add(1, Relaxed);
-            }
+        if let Some(Merged { before, after }) = merged
+            && preferences::highlight_colors(before.as_deref())
+                != preferences::highlight_colors(Some(&after))
+        {
+            self.sync_changes.fetch_add(1, Relaxed);
         }
         Ok(())
     }
@@ -1393,11 +1388,12 @@ mod tests {
             let custom: Vec<_> = device
                 .library
                 .highlight_colors()
+                .colors
                 .into_iter()
                 .filter(|c| c.is_custom)
                 .collect();
             assert_eq!(custom, [red.clone(), blue.clone()]);
-            assert_eq!(device.library.default_highlight_color(), red);
+            assert_eq!(device.library.highlight_colors().default_color, red);
         }
     }
 
@@ -1421,10 +1417,11 @@ mod tests {
                 device
                     .library
                     .highlight_colors()
+                    .colors
                     .iter()
                     .all(|c| !c.is_custom)
             );
-            assert_eq!(device.library.default_highlight_color().id, "Yellow");
+            assert_eq!(device.library.highlight_colors().default_color.id, "Yellow");
         }
     }
 
@@ -1624,7 +1621,7 @@ mod tests {
         assert_eq!(highlights.len(), 1);
         assert_eq!(highlights[0].note.as_deref(), Some("a note"));
         assert_eq!(b.library.highlight_colors(), a.library.highlight_colors());
-        assert_eq!(b.library.highlight_colors().len(), 7);
+        assert_eq!(b.library.highlight_colors().colors.len(), 7);
     }
 
     #[test]
@@ -1643,7 +1640,7 @@ mod tests {
         b.sync();
 
         assert_eq!(b.library.markup(&id).unwrap().highlights.len(), 1);
-        assert_eq!(b.library.highlight_colors().len(), 7);
+        assert_eq!(b.library.highlight_colors().colors.len(), 7);
     }
 
     #[test]
@@ -1865,7 +1862,7 @@ mod tests {
             b.sync();
             assert_eq!(b.ids().len(), 2, "{case}");
             assert_eq!(b.document(&id).progress, Some(progress(4, 100)), "{case}");
-            assert_eq!(b.library.highlight_colors().len(), 7, "{case}");
+            assert_eq!(b.library.highlight_colors().colors.len(), 7, "{case}");
         }
     }
 

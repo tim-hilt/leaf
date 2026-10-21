@@ -115,6 +115,22 @@ impl From<leafpdf_core::preferences::HighlightColor> for HighlightColor {
     }
 }
 
+/// See `leafpdf_core::preferences::HighlightColors`.
+#[derive(uniffi::Record)]
+pub struct HighlightColors {
+    pub colors: Vec<HighlightColor>,
+    pub default_color: HighlightColor,
+}
+
+impl From<leafpdf_core::preferences::HighlightColors> for HighlightColors {
+    fn from(c: leafpdf_core::preferences::HighlightColors) -> Self {
+        Self {
+            colors: c.colors.into_iter().map(Into::into).collect(),
+            default_color: c.default_color.into(),
+        }
+    }
+}
+
 /// See `leafpdf_core::markup::Highlight`. `created` is milliseconds since the
 /// Unix epoch.
 #[derive(uniffi::Record)]
@@ -695,16 +711,8 @@ impl Library {
         self.written(self.core.remove_page_note(&id, &note))
     }
 
-    pub fn highlight_colors(&self) -> Vec<HighlightColor> {
-        self.core
-            .highlight_colors()
-            .into_iter()
-            .map(Into::into)
-            .collect()
-    }
-
-    pub fn default_highlight_color(&self) -> HighlightColor {
-        self.core.default_highlight_color().into()
+    pub fn highlight_colors(&self) -> HighlightColors {
+        self.core.highlight_colors().into()
     }
 
     pub fn set_default_highlight_color(&self, id: String) -> Result<(), LibraryError> {

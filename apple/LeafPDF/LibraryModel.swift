@@ -350,8 +350,9 @@ final class LibraryModel {
         self.syncIntervals = syncIntervals
         self.inbox = inbox
         sort = LibrarySort(from: defaults)
-        highlightColors = core.highlightColors().map(HighlightColor.init)
-        defaultHighlightColor = HighlightColor(core.defaultHighlightColor())
+        let stored = core.highlightColors()
+        highlightColors = stored.colors.map(HighlightColor.init)
+        defaultHighlightColor = HighlightColor(stored.defaultColor)
         refresh()
         readMissingDetails()
         if let account = credentials.load() {
@@ -502,9 +503,9 @@ final class LibraryModel {
     /// already queued, as Sync may have changed them.
     private func reloadHighlightColors() async {
         let core = core
-        let (colors, chosen) = await inStateOrder { (core.highlightColors(), core.defaultHighlightColor()) }
-        let all = colors.map(HighlightColor.init)
-        let defaultColor = HighlightColor(chosen)
+        let stored = await inStateOrder { core.highlightColors() }
+        let all = stored.colors.map(HighlightColor.init)
+        let defaultColor = HighlightColor(stored.defaultColor)
         if highlightColors != all { highlightColors = all }
         if defaultHighlightColor != defaultColor { defaultHighlightColor = defaultColor }
     }

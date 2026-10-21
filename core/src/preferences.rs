@@ -96,29 +96,38 @@ fn custom_colors(doc: &AutoCommit) -> Vec<HighlightColor> {
     colors
 }
 
-/// The Highlight Colors in a stored Automerge document (none if missing): the
-/// built-in ones, then the Custom Colors in the order added. `bytes` that
-/// aren't an Automerge document hold no Custom Colors.
-pub(crate) fn colors(bytes: Option<&[u8]>) -> Vec<HighlightColor> {
-    let custom = custom_colors(&load(bytes));
-    BUILT_IN_COLORS
+/// The Highlight Colors to choose from and the one new Highlights get.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HighlightColors {
+    /// The built-in colors, then the Custom Colors in the order added.
+    pub colors: Vec<HighlightColor>,
+    /// The Default Highlight Color, one of `colors`.
+    pub default_color: HighlightColor,
+}
+
+/// The Highlight Colors in a stored Automerge document (none if missing), from
+/// one load. `bytes` that aren't an Automerge document hold no Custom Colors.
+/// The default is yellow if `bytes` hold none, or reference a color that
+/// doesn't exist (any more).
+pub(crate) fn highlight_colors(bytes: Option<&[u8]>) -> HighlightColors {
+    let doc = load(bytes);
+    let custom = custom_colors(&doc);
+    let referenced = state::scalar(&doc, &ROOT, "default_color").and_then(|r| r.into_string().ok());
+    let default_color = referenced
+        .and_then(|id| match BuiltInColor::named(&id) {
+            Some(built_in) => Some(built_in.into()),
+            None => custom.iter().find(|c| c.id == id).cloned(),
+        })
+        .unwrap_or_else(|| BuiltInColor::YELLOW.into());
+    let colors = BUILT_IN_COLORS
         .into_iter()
         .map(HighlightColor::from)
         .chain(custom)
-        .collect()
-}
-
-/// The Default Highlight Color in a stored Automerge document (none if
-/// missing). Yellow if `bytes` aren't one, hold none, or reference a color that
-/// doesn't exist (any more).
-pub(crate) fn default_color(bytes: Option<&[u8]>) -> HighlightColor {
-    let doc = load(bytes);
-    let referenced = state::scalar(&doc, &ROOT, "default_color").and_then(|r| r.into_string().ok());
-    let color = referenced.and_then(|id| match BuiltInColor::named(&id) {
-        Some(built_in) => Some(built_in.into()),
-        None => custom_colors(&doc).into_iter().find(|c| c.id == id),
-    });
-    color.unwrap_or_else(|| BuiltInColor::YELLOW.into())
+        .collect();
+    HighlightColors {
+        colors,
+        default_color,
+    }
 }
 
 /// Makes the color `id` the Default Highlight Color in `doc`. It doesn't check
@@ -181,6 +190,14 @@ mod tests {
 
     fn edit(existing: Option<&[u8]>, change: impl FnOnce(&mut AutoCommit)) -> Vec<u8> {
         state::update_versioned(existing, &ActorId::random(), SCHEMA_VERSION, change)
+    }
+
+    fn colors(bytes: Option<&[u8]>) -> Vec<HighlightColor> {
+        highlight_colors(bytes).colors
+    }
+
+    fn default_color(bytes: Option<&[u8]>) -> HighlightColor {
+        highlight_colors(bytes).default_color
     }
 
     fn set_default_color(existing: Option<&[u8]>, id: &str) -> Vec<u8> {
