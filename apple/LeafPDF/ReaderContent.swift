@@ -55,7 +55,7 @@ struct ReaderContent: View {
                 pageNoteColor: pageNoteColor, handle: handle, results: results, state: state, contents: contents,
                 callbacks: callbacks, onShowResults: onShowResults)
         case .epub(let book):
-            ReaderEPUBContent(book: book, handle: handle, callbacks: callbacks)
+            ReaderEPUBContent(book: book, state: state, handle: handle, callbacks: callbacks)
         }
     }
 }

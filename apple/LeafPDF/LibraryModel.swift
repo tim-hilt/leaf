@@ -34,9 +34,7 @@ struct LibraryDocument: Identifiable, Hashable {
     /// The name the File had when it was Imported.
     var fileName: String { file.lastPathComponent }
     /// Where the user left off, to reopen the Document there.
-    var place: Place? {
-        progress.map { Place.pdf(pageIndex: Int($0.pageIndex), point: CGPoint(x: $0.x, y: $0.y)) }
-    }
+    var place: Place? { progress.map { Place($0.place) } }
     /// When the Reader last showed the Document; nil if never.
     var lastRead: Date? { progress.map { Date(milliseconds: $0.lastRead) } }
 
@@ -581,11 +579,8 @@ final class LibraryModel {
     /// core writes off the main thread, in order; this returns when it has,
     /// with the Document updated in every window. Does nothing for a Document
     /// that was Removed. A failed write is ignored: the next save replaces it.
-    /// Only PDF Places can be stored until the core takes EPUB anchors.
     func saveProgress(_ place: Place, of document: LibraryDocument, at lastRead: Date = .now) async {
-        guard let (pageIndex, point) = place.pdfPosition else { return }
-        let progress = ReadingProgress(
-            pageIndex: UInt32(pageIndex), x: point.x, y: point.y, lastRead: lastRead.millisecondsSince1970)
+        let progress = ReadingProgress(place: place.stored, lastRead: lastRead.millisecondsSince1970)
         let id = document.id
         update(
             await inStateOrder {

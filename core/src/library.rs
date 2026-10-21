@@ -33,7 +33,7 @@ use crate::epub::{self, Epub};
 use crate::library_doc::{Import, LibraryDoc};
 use crate::markup::{self, Highlight, Markup, PageNote, PageRects, Rgb};
 use crate::preferences::{self, HighlightColor, HighlightColors};
-use crate::progress::{self, ReadingProgress};
+use crate::progress::{self, Place, ReadingProgress};
 use crate::state;
 use crate::storage;
 use crate::storage::{flush_ordered, ignore_not_found, unique_name};
@@ -102,17 +102,32 @@ impl Document {
         }
     }
 
-    /// How far the user has got, in whole percent rounded down, counting the
-    /// page they are on: 100 only on the last page. None if the Document was
-    /// never opened or its page count isn't known. (EPUBs have no Reading
-    /// Progress yet.)
+    /// How far the user has got, in whole percent rounded down. For a PDF it
+    /// counts the page they are on: 100 only on the last page. For an EPUB it
+    /// counts the characters before their place: 100 only at the end. None if
+    /// the Document was never opened, its size isn't known yet, or the Reading
+    /// Progress is of another Format.
     pub fn percent_read(&self) -> Option<u8> {
-        let Size::Pages(pages) = self.details.as_ref()?.size else {
-            return None;
+        let (reached, total) = match (&self.details.as_ref()?.size, self.progress?.place) {
+            (Size::Pages(pages), Place::Pdf { page_index, .. }) => {
+                (u64::from(page_index) + 1, u64::from(*pages))
+            }
+            (
+                Size::Characters(items),
+                Place::Epub {
+                    spine_index,
+                    offset,
+                },
+            ) => {
+                let before = items.iter().take(spine_index as usize);
+                let in_item = items
+                    .get(spine_index as usize)
+                    .map_or(0, |&n| offset.min(n));
+                (before.sum::<u64>() + in_item, items.iter().sum())
+            }
+            _ => return None,
         };
-        let pages = u64::from(pages);
-        let reached = u64::from(self.progress?.page_index) + 1;
-        (pages > 0).then(|| (100 * reached / pages).min(100) as u8)
+        (total > 0).then(|| (100 * u128::from(reached) / u128::from(total)).min(100) as u8)
     }
 }
 
@@ -1251,7 +1266,7 @@ mod tests {
         assert_eq!(document.title(), "Emma");
         let details = document.details.as_ref().unwrap();
         assert_eq!(details.author.as_deref(), Some("Jane Austen"));
-        assert_eq!(details.size, Size::Characters(10));
+        assert_eq!(details.size, Size::Characters(vec![5, 5]));
         // Listed that way too, and the File stays as it was.
         assert_eq!(
             library.documents().unwrap(),
@@ -1593,12 +1608,7 @@ mod tests {
     }
 
     fn progress(page_index: u32, last_read: u64) -> ReadingProgress {
-        ReadingProgress {
-            page_index,
-            x: 12.5,
-            y: 700.25,
-            last_read,
-        }
+        ReadingProgress::pdf(page_index, 12.5, 700.25, last_read)
     }
 
     /// The Reading Progress `library` lists for `id`.
@@ -1873,6 +1883,68 @@ mod tests {
             ..document(0, 4)
         };
         assert_eq!(unknown_page_count.percent_read(), None);
+    }
+
+    #[test]
+    fn epub_reading_progress_is_saved_listed_and_survives_reopening_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("book.epub", &emma().bytes()));
+        assert_eq!(document.progress, None);
+
+        library
+            .save_progress(&document.id, &ReadingProgress::epub(1, 3, 1_000))
+            .unwrap();
+        library
+            .save_progress(&document.id, &ReadingProgress::epub(1, 4, 2_000))
+            .unwrap();
+
+        for library in [&library, &scratch.library()] {
+            let listed = listed_progress(library, &document.id);
+            assert_eq!(listed, Some(ReadingProgress::epub(1, 4, 2_000)));
+        }
+    }
+
+    #[test]
+    fn percent_read_of_an_epub_is_the_characters_reached_of_all_rounded_down() {
+        let document = |spine_index, offset| Document {
+            id: String::new(),
+            path: PathBuf::from("a.epub"),
+            imported: 0,
+            progress: Some(ReadingProgress::epub(spine_index, offset, 1)),
+            details: Some(Details {
+                title: None,
+                author: None,
+                size: Size::Characters(vec![30, 60, 10]),
+            }),
+        };
+        // The characters before the item count too, and only what is read.
+        for (spine_index, offset, percent) in [
+            (0, 0, 0),
+            (0, 29, 29),
+            (1, 0, 30),
+            (1, 30, 60),
+            (2, 5, 95),
+            (2, 10, 100),
+            (2, 99, 100),
+            (9, 0, 100),
+        ] {
+            let read = document(spine_index, offset).percent_read();
+            assert_eq!(read, Some(percent), "item {spine_index}, offset {offset}");
+        }
+        let pdf_progress = Document {
+            progress: Some(progress(0, 1)),
+            ..document(0, 0)
+        };
+        assert_eq!(pdf_progress.percent_read(), None, "another Format's place");
+        let empty = Document {
+            details: Some(Details {
+                size: Size::Characters(vec![0]),
+                ..document(0, 0).details.unwrap()
+            }),
+            ..document(0, 0)
+        };
+        assert_eq!(empty.percent_read(), None, "no text");
     }
 
     #[test]

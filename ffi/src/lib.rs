@@ -12,7 +12,7 @@ use leafpdf_core::library::{ImportError, ImportResult};
 use leafpdf_core::listing::{self, Item, Sort, SortKey};
 use leafpdf_core::markup::{Highlight, Markup, PageNote, PageRects, Rect, Rgb};
 use leafpdf_core::preferences::{HighlightColor, HighlightColors};
-use leafpdf_core::progress::ReadingProgress;
+use leafpdf_core::progress::{Place, ReadingProgress};
 use leafpdf_core::storage::{DirStorage, Storage};
 use leafpdf_core::sync_loop::{self, Status, SyncLoop};
 use leafpdf_core::webdav::{ConnectError, WebDavStorage};
@@ -70,11 +70,15 @@ impl From<ImportError> for LibraryError {
 // The core's types cross the FFI as remote types: declared here, defined (and
 // documented) once in `leafpdf-core`, which stays free of FFI concerns.
 
+#[uniffi::remote(Enum)]
+pub enum Place {
+    Pdf { page_index: u32, x: f64, y: f64 },
+    Epub { spine_index: u32, offset: u64 },
+}
+
 #[uniffi::remote(Record)]
 pub struct ReadingProgress {
-    pub page_index: u32,
-    pub x: f64,
-    pub y: f64,
+    pub place: Place,
     pub last_read: u64,
 }
 
@@ -236,6 +240,12 @@ impl EpubBook {
     /// The paths of the spine items, in reading order.
     pub fn spine(&self) -> Vec<String> {
         self.lock().spine().to_vec()
+    }
+
+    /// The text of the spine item at `index`, which positions count into
+    /// (ADR-0022); none beyond the spine.
+    pub fn text(&self, index: u32) -> Option<String> {
+        self.lock().text(index as usize)
     }
 
     /// The file at `path` (a spine item or what it uses), if the EPUB has it.
@@ -740,9 +750,11 @@ mod tests {
         });
         write("save_progress", &|l, id| {
             let progress = ReadingProgress {
-                page_index: 1,
-                x: 0.0,
-                y: 0.0,
+                place: Place::Pdf {
+                    page_index: 1,
+                    x: 0.0,
+                    y: 0.0,
+                },
                 last_read: 1,
             };
             l.save_progress(id, progress).unwrap();

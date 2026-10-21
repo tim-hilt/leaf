@@ -1,4 +1,5 @@
 import CoreGraphics
+import LeafCore
 import PDFKit
 
 /// A spot in a Document, independent of zoom, text size and window size, so it
@@ -25,6 +26,26 @@ enum Place: Equatable {
             point: CGPoint(
                 x: point.x == kPDFDestinationUnspecifiedValue ? bounds.minX : point.x,
                 y: point.y == kPDFDestinationUnspecifiedValue ? bounds.maxY : point.y))
+    }
+
+    /// The Place the core stores as Reading Progress.
+    init(_ stored: LeafCore.Place) {
+        switch stored {
+        case .pdf(let pageIndex, let x, let y):
+            self = .pdf(pageIndex: Int(pageIndex), point: CGPoint(x: x, y: y))
+        case .epub(let spineIndex, let offset):
+            self = .epub(spineIndex: Int(spineIndex), offset: Int(clamping: offset))
+        }
+    }
+
+    /// This Place as the core stores it.
+    var stored: LeafCore.Place {
+        switch self {
+        case .pdf(let pageIndex, let point):
+            .pdf(pageIndex: UInt32(pageIndex), x: point.x, y: point.y)
+        case .epub(let spineIndex, let offset):
+            .epub(spineIndex: UInt32(spineIndex), offset: UInt64(offset))
+        }
     }
 
     /// The page and point of a PDF Place; nil for other kinds.

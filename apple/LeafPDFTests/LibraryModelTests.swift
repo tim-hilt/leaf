@@ -656,6 +656,22 @@ import UniformTypeIdentifiers
         #expect(try Data(contentsOf: document.file) == Data(contentsOf: source))
     }
 
+    @Test func anEPUBsReadingProgressIsItsPlaceAndPercentReadInCharacters() async throws {
+        let library = try openLibrary()
+        let source = try writeEPUB(named: "book.epub", chapters: ["<p>12345</p>", "<p>1234567890</p>"])
+        guard case .opened(let document) = await library.import(source) else { throw ImportFailed() }
+        let place = Place.epub(spineIndex: 1, offset: 5)
+
+        await library.saveProgress(place, of: document, at: lastRead)
+
+        for library in [library, try openLibrary()] {
+            let updated = try #require(library.documents.first)
+            #expect(updated.place == place)
+            #expect(updated.lastRead == lastRead)
+            #expect(updated.percentRead == 66)  // 10 of 15 characters
+        }
+    }
+
     @Test func anEPUBWithoutATitleShowsItsFileName() async throws {
         let library = try openLibrary()
 

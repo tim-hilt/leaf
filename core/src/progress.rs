@@ -1,49 +1,97 @@
 //! Reading Progress, kept as one plain value (ADR-0020): `encode` and `decode`
-//! store it as one line, `<page_index> <x> <y> <last_read>`.
+//! store it as one line, `<page_index> <x> <y> <last_read>` for a PDF and
+//! `e <spine_index> <offset> <last_read>` for an EPUB (ADR-0022).
 //!
 //! Older versions kept it in a Document's Automerge document (ADR-0008), which
-//! `read` still understands: the root's `progress` map holds `page_index`, `x`,
+//! `read` still understands, for PDFs only: the root's `progress` map holds `page_index`, `x`,
 //! `y` and `last_read`. When devices wrote concurrently, the newest Last Read
 //! wins.
 
 use crate::state;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
+/// A spot in a Document, in the terms of its Format.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Place {
+    /// A point on a page of a PDF.
+    Pdf {
+        /// Zero-based index of the page.
+        page_index: u32,
+        /// The point on that page in PDF page space (points, origin at the
+        /// page's bottom-left).
+        x: f64,
+        y: f64,
+    },
+    /// A character of an EPUB's text.
+    Epub {
+        /// Zero-based index of the spine item.
+        spine_index: u32,
+        /// Offset into that item's text, in UTF-16 code units (ADR-0022).
+        offset: u64,
+    },
+}
+
 /// Where in a Document the user last left off, and when.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReadingProgress {
-    /// Zero-based index of the page.
-    pub page_index: u32,
-    /// The point on that page in PDF page space (points, origin at the
-    /// page's bottom-left).
-    pub x: f64,
-    pub y: f64,
+    pub place: Place,
     /// Last Read: when the Reader showed the Document, in milliseconds since
     /// the Unix epoch.
     pub last_read: u64,
 }
 
+impl ReadingProgress {
+    /// Progress at a point of a PDF page.
+    pub(crate) fn pdf(page_index: u32, x: f64, y: f64, last_read: u64) -> Self {
+        let place = Place::Pdf { page_index, x, y };
+        Self { place, last_read }
+    }
+
+    /// Progress at a character of an EPUB spine item.
+    #[cfg(test)]
+    pub(crate) fn epub(spine_index: u32, offset: u64, last_read: u64) -> Self {
+        let place = Place::Epub {
+            spine_index,
+            offset,
+        };
+        Self { place, last_read }
+    }
+}
+
 /// `progress` as stored.
 pub(crate) fn encode(progress: &ReadingProgress) -> Vec<u8> {
-    let ReadingProgress {
-        page_index,
-        x,
-        y,
-        last_read,
-    } = progress;
-    format!("{page_index} {x} {y} {last_read}").into_bytes()
+    let last_read = progress.last_read;
+    match progress.place {
+        Place::Pdf { page_index, x, y } => format!("{page_index} {x} {y} {last_read}"),
+        Place::Epub {
+            spine_index,
+            offset,
+        } => format!("e {spine_index} {offset} {last_read}"),
+    }
+    .into_bytes()
 }
 
 /// The Reading Progress stored in `bytes`; none if they aren't one.
 pub(crate) fn decode(bytes: &[u8]) -> Option<ReadingProgress> {
     let mut fields = std::str::from_utf8(bytes).ok()?.split(' ');
-    let progress = ReadingProgress {
-        page_index: fields.next()?.parse().ok()?,
-        x: fields.next()?.parse().ok()?,
-        y: fields.next()?.parse().ok()?,
-        last_read: fields.next()?.parse().ok()?,
+    let first = fields.next()?;
+    let place = if first == "e" {
+        Place::Epub {
+            spine_index: fields.next()?.parse().ok()?,
+            offset: fields.next()?.parse().ok()?,
+        }
+    } else {
+        Place::Pdf {
+            page_index: first.parse().ok()?,
+            x: fields.next()?.parse().ok()?,
+            y: fields.next()?.parse().ok()?,
+        }
     };
-    fields.next().is_none().then_some(progress)
+    let last_read = fields.next()?.parse().ok()?;
+    fields
+        .next()
+        .is_none()
+        .then_some(ReadingProgress { place, last_read })
 }
 
 /// The Reading Progress in a stored Automerge document. None if `bytes` aren't
@@ -79,26 +127,30 @@ pub(crate) fn read_all<'a>(states: impl IntoIterator<Item = &'a [u8]>) -> Option
 /// The Reading Progress held by the map `map`, if it is complete.
 fn read_map(doc: &AutoCommit, map: &ObjId) -> Option<ReadingProgress> {
     let field = |name: &str| state::scalar(doc, map, name);
-    Some(ReadingProgress {
-        page_index: u32::try_from(field("page_index")?.as_u64()?).ok()?,
-        x: field("x")?.as_f64()?,
-        y: field("y")?.as_f64()?,
-        last_read: field("last_read")?.as_u64()?,
-    })
+    Some(ReadingProgress::pdf(
+        u32::try_from(field("page_index")?.as_u64()?).ok()?,
+        field("x")?.as_f64()?,
+        field("y")?.as_f64()?,
+        field("last_read")?.as_u64()?,
+    ))
 }
 
-/// Writes `progress` into `doc` as one new `progress` map, replacing every
-/// value (also concurrent ones) the key held, as older versions did.
+/// Writes `progress`, which is of a PDF, into `doc` as one new `progress` map,
+/// replacing every value (also concurrent ones) the key held, as older versions
+/// did.
 #[cfg(test)]
 pub(crate) fn put_progress(doc: &mut AutoCommit, progress: &ReadingProgress) {
     use automerge::{ScalarValue, transaction::Transactable};
+    let Place::Pdf { page_index, x, y } = progress.place else {
+        panic!("older versions kept PDFs only");
+    };
     let map = doc
         .put_object(ROOT, "progress", ObjType::Map)
         .expect("a root map accepts new keys");
     let values = [
-        ("page_index", ScalarValue::Uint(progress.page_index.into())),
-        ("x", ScalarValue::F64(progress.x)),
-        ("y", ScalarValue::F64(progress.y)),
+        ("page_index", ScalarValue::Uint(page_index.into())),
+        ("x", ScalarValue::F64(x)),
+        ("y", ScalarValue::F64(y)),
         ("last_read", ScalarValue::Uint(progress.last_read)),
     ];
     for (key, value) in values {
@@ -120,12 +172,8 @@ mod tests {
     }
 
     fn place(page_index: u32, last_read: u64) -> ReadingProgress {
-        ReadingProgress {
-            page_index,
-            x: f64::from(page_index) + 0.5,
-            y: f64::from(page_index) + 0.25,
-            last_read,
-        }
+        let (x, y) = (f64::from(page_index) + 0.5, f64::from(page_index) + 0.25);
+        ReadingProgress::pdf(page_index, x, y, last_read)
     }
 
     /// Two devices, `low` and `high` named by their actor IDs (Automerge's
@@ -161,14 +209,14 @@ mod tests {
 
     #[test]
     fn progress_reads_back_as_encoded_and_anything_else_reads_as_none() {
-        let exact = ReadingProgress {
-            page_index: 7,
-            x: 0.1 + 0.2,
-            y: -3.75,
-            last_read: u64::MAX,
-        };
-        assert_eq!(decode(&encode(&exact)), Some(exact));
-        for bad in [&b""[..], b"1 2 3", b"1 2 3 4 5", b"a 2 3 4", &[0xff]] {
+        let pdf = ReadingProgress::pdf(7, 0.1 + 0.2, -3.75, u64::MAX);
+        let epub = ReadingProgress::epub(3, u64::MAX, u64::MAX);
+        for exact in [pdf, epub] {
+            assert_eq!(decode(&encode(&exact)), Some(exact));
+        }
+        let bad_ones = [&b""[..], b"1 2 3", b"1 2 3 4 5", b"a 2 3 4", &[0xff]];
+        let bad_epubs = [&b"e 1 2"[..], b"e 1 2 3 4", b"e -1 2 3", b"e 1 2.5 3"];
+        for bad in bad_ones.into_iter().chain(bad_epubs) {
             assert_eq!(decode(bad), None, "{bad:?}");
         }
     }

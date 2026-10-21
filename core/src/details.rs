@@ -4,7 +4,7 @@
 //! Device reads them from the same File.
 //!
 //! Stored as three lines: the size (the page count of a PDF; `c` and the
-//! character count of an EPUB), the title and the author, an empty line for one
+//! character counts of an EPUB's spine items, comma-separated), the title and the author, an empty line for one
 //! the File lacks. Anything else reads as no details, which are then read again.
 
 /// Which kind of File a Document is.
@@ -15,12 +15,13 @@ pub enum Format {
 }
 
 /// How big a Document is, in the unit of its Format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Size {
     /// A PDF's pages.
     Pages(u32),
-    /// An EPUB's characters, see `epub::Epub::characters`.
-    Characters(u64),
+    /// An EPUB's characters: those of each spine item, in order, see
+    /// `epub::Epub::characters`.
+    Characters(Vec<u64>),
 }
 
 /// What a Document's File says about itself.
@@ -47,9 +48,12 @@ impl Details {
 pub(crate) fn encode(details: &Details) -> Vec<u8> {
     let line = |text: &Option<String>| one_line(text.as_deref().unwrap_or_default());
     let (title, author) = (line(&details.title), line(&details.author));
-    let size = match details.size {
+    let size = match &details.size {
         Size::Pages(pages) => pages.to_string(),
-        Size::Characters(characters) => format!("c{characters}"),
+        Size::Characters(items) => {
+            let items: Vec<_> = items.iter().map(u64::to_string).collect();
+            format!("c{}", items.join(","))
+        }
     };
     format!("{size}\n{title}\n{author}").into_bytes()
 }
@@ -60,7 +64,12 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Details> {
     let mut lines = text.split('\n');
     let size = lines.next()?;
     let size = match size.strip_prefix('c') {
-        Some(characters) => Size::Characters(characters.parse().ok()?),
+        Some(items) => Size::Characters(
+            items
+                .split(',')
+                .map(|n| n.parse().ok())
+                .collect::<Option<_>>()?,
+        ),
         None => Size::Pages(size.parse().ok()?),
     };
     let (title, author) = (lines.next()?, lines.next()?);
@@ -102,7 +111,7 @@ mod tests {
             details(None, None, 0),
             details(Some("Walden"), None, 1),
             Details {
-                size: Size::Characters(1_234_567),
+                size: Size::Characters(vec![1_234_567, 0, 8]),
                 ..details(Some("Emma"), Some("Austen"), 0)
             },
         ] {
@@ -134,6 +143,8 @@ mod tests {
             b"3\na\nb\nc",
             b"\xff\n\n",
             b"cx\n\n",
+            b"c\n\n",
+            b"c1,\n\n",
         ] {
             assert_eq!(decode(bytes), None, "{bytes:?}");
         }

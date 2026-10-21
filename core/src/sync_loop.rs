@@ -623,16 +623,8 @@ mod tests {
         b.add_highlight(&id, vec![], "quoted", color, 1)
             .unwrap()
             .unwrap();
-        b.save_progress(
-            &id,
-            &crate::progress::ReadingProgress {
-                page_index: 2,
-                x: 0.0,
-                y: 0.0,
-                last_read: 7,
-            },
-        )
-        .unwrap();
+        b.save_progress(&id, &crate::progress::ReadingProgress::pdf(2, 0.0, 0.0, 7))
+            .unwrap();
         b_loop.local_change();
 
         // A may poll between B sending the Markup and the Reading Progress.

@@ -134,15 +134,23 @@ impl Epub {
         found
     }
 
-    /// The length of the EPUB's text, in characters: that of its spine items,
-    /// added up. An item that isn't well-formed counts up to where it breaks.
-    pub fn characters(&mut self) -> u64 {
-        let items = self.package.spine.clone();
-        items
-            .iter()
-            .filter_map(|item| self.zip.read(item))
-            .map(|xhtml| text_length(&xhtml))
-            .sum()
+    /// The text of the spine item at `index`, see the module docs: up to where
+    /// it breaks if it isn't well-formed. None for an index beyond the spine,
+    /// and for an item the zip can't read.
+    pub fn text(&mut self, index: usize) -> Option<String> {
+        let item = self.package.spine.get(index)?;
+        self.zip.read(item).map(|xhtml| text_of(&xhtml))
+    }
+
+    /// The length of the text of each spine item, in characters, in order; 0 for
+    /// one the zip can't read.
+    pub fn characters(&mut self) -> Vec<u64> {
+        (0..self.package.spine.len())
+            .map(|i| {
+                let text = self.text(i);
+                text.map_or(0, |t| t.encode_utf16().count() as u64)
+            })
+            .collect()
     }
 }
 
@@ -305,27 +313,28 @@ fn encrypts_content(encryption: &[u8]) -> bool {
 }
 
 /// The length of the text of the XHTML document `xhtml`, see the module docs.
-fn text_length(xhtml: &[u8]) -> u64 {
-    let (mut in_body, mut length) = (false, 0);
-    let utf16 = |text: &str| text.encode_utf16().count() as u64;
+fn text_of(xhtml: &[u8]) -> String {
+    let (mut in_body, mut text) = (false, String::new());
     let _ = read_xml(xhtml, |event| {
         match event {
             Event::Start(tag) if tag.local_name().as_ref() == "body" => in_body = true,
             Event::End(tag) if tag.local_name().as_ref() == "body" => in_body = false,
-            Event::Text(t) if in_body => length += utf16(&t.xml10_content()),
-            Event::CData(t) if in_body => length += utf16(&t.xml10_content()),
-            Event::GeneralRef(r) if in_body => {
-                length += match (r.resolve_char_ref(), &**r) {
-                    (Ok(Some(c)), _) => c.len_utf16() as u64,
-                    (_, "amp" | "lt" | "gt" | "quot" | "apos") => 1,
-                    _ => 0,
-                }
-            }
+            Event::Text(t) if in_body => text.push_str(&t.xml10_content()),
+            Event::CData(t) if in_body => text.push_str(&t.xml10_content()),
+            Event::GeneralRef(r) if in_body => match (r.resolve_char_ref(), &**r) {
+                (Ok(Some(c)), _) => text.push(c),
+                (_, "amp") => text.push('&'),
+                (_, "lt") => text.push('<'),
+                (_, "gt") => text.push('>'),
+                (_, "quot") => text.push('"'),
+                (_, "apos") => text.push('\''),
+                _ => {}
+            },
             _ => {}
         }
         ControlFlow::Continue(())
     });
-    length
+    text
 }
 
 /// Calls `visit` with each event of the XML in `bytes` until it breaks. Err if
@@ -735,20 +744,33 @@ mod tests {
     }
 
     #[test]
-    fn characters_count_the_body_text_of_every_spine_item_in_utf16_units() {
+    fn text_is_the_concatenated_body_text_nodes_of_a_spine_item() {
         let book = Book::new("").chapters(&[
             "<h1>Hi</h1><p>a<b>b</b>&amp;&#233;&nbsp;</p>",
             "<p><![CDATA[<x>]]>😀</p>",
         ]);
-        // "Hi" + "ab&é" (nbsp is not an XML entity: dropped) + "<x>" + 😀 (2 units)
-        assert_eq!(open(&book.bytes()).unwrap().characters(), 2 + 4 + 3 + 2);
+        let mut epub = open(&book.bytes()).unwrap();
+        // `&nbsp;` is not an XML entity: dropped.
+        assert_eq!(epub.text(0).as_deref(), Some("Hiab&é"));
+        assert_eq!(epub.text(1).as_deref(), Some("<x>😀"));
+        assert_eq!(epub.text(2), None);
+    }
+
+    #[test]
+    fn characters_count_the_text_of_every_spine_item_in_utf16_units() {
+        let book = Book::new("").chapters(&[
+            "<h1>Hi</h1><p>a<b>b</b>&amp;&#233;&nbsp;</p>",
+            "<p><![CDATA[<x>]]>😀</p>",
+        ]);
+        // "Hiab&é" and "<x>" + 😀 (2 units)
+        assert_eq!(open(&book.bytes()).unwrap().characters(), [6, 5]);
     }
 
     #[test]
     fn characters_leave_out_everything_outside_the_body_and_stop_at_broken_xhtml() {
         let book = Book::new("").chapters(&["<p>abc</p><p>de"]);
         // The head's title isn't text; the item breaks at its unclosed `p`.
-        assert_eq!(open(&book.bytes()).unwrap().characters(), 5);
+        assert_eq!(open(&book.bytes()).unwrap().characters(), [5]);
     }
 
     #[test]
@@ -783,7 +805,7 @@ mod tests {
         ];
         let mut epub = open(&zip(&entries, &["OEBPS/content.opf", "OEBPS/a.xhtml"])).unwrap();
         assert_eq!(epub.title(), Some("Deflated"));
-        assert_eq!(epub.characters(), 5);
+        assert_eq!(epub.characters(), [5]);
     }
 
     #[test]

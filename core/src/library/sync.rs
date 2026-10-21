@@ -1015,12 +1015,7 @@ mod tests {
         sleep(Duration::from_millis(20));
         let newest = b.import("newest.pdf", b"newest");
         for (document, last_read) in [(&read_early, 100), (&read_late, 200)] {
-            let progress = ReadingProgress {
-                page_index: 1,
-                x: 0.0,
-                y: 0.0,
-                last_read,
-            };
+            let progress = ReadingProgress::pdf(1, 0.0, 0.0, last_read);
             b.library.save_progress(&document.id, &progress).unwrap();
         }
         b.sync();
@@ -1197,12 +1192,7 @@ mod tests {
         let mut cloud = Cloud::new();
         let a = cloud.device();
         let document = a.import("a.pdf", b"x");
-        let progress = ReadingProgress {
-            page_index: 3,
-            x: 1.0,
-            y: 2.0,
-            last_read: 5,
-        };
+        let progress = ReadingProgress::pdf(3, 1.0, 2.0, 5);
         a.library.save_progress(&document.id, &progress).unwrap();
         a.sync();
         fs::remove_file(&document.path).unwrap();
@@ -1214,12 +1204,7 @@ mod tests {
     }
 
     fn progress(page_index: u32, last_read: u64) -> ReadingProgress {
-        ReadingProgress {
-            page_index,
-            x: 0.0,
-            y: 0.0,
-            last_read,
-        }
+        ReadingProgress::pdf(page_index, 0.0, 0.0, last_read)
     }
 
     fn highlight_value(id: &str) -> Highlight {
@@ -1271,6 +1256,41 @@ mod tests {
         settle(&a, &b);
 
         assert_eq!(b.document(&id).progress, Some(progress(4, 100)));
+    }
+
+    #[test]
+    fn epub_reading_progress_reaches_the_other_device_and_the_newest_last_read_wins() {
+        let mut cloud = Cloud::new();
+        let (a, b) = (cloud.device(), cloud.device());
+        let book = crate::epub::fixtures::Book::new("").chapters(&["<p>a</p>", "<p>b</p>"]);
+        let id = a.import("book.epub", &book.bytes()).id;
+        a.sync();
+        b.sync();
+
+        a.library
+            .save_progress(&id, &ReadingProgress::epub(1, 0, 100))
+            .unwrap();
+        settle(&a, &b);
+        assert_eq!(
+            b.document(&id).progress,
+            Some(ReadingProgress::epub(1, 0, 100))
+        );
+        assert_eq!(b.document(&id).percent_read(), Some(50));
+
+        b.library
+            .save_progress(&id, &ReadingProgress::epub(0, 1, 50))
+            .unwrap();
+        a.library
+            .save_progress(&id, &ReadingProgress::epub(1, 1, 200))
+            .unwrap();
+        settle(&a, &b);
+        b.sync();
+
+        for device in [&a, &b] {
+            let document = device.document(&id);
+            assert_eq!(document.progress, Some(ReadingProgress::epub(1, 1, 200)));
+            assert_eq!(document.percent_read(), Some(100));
+        }
     }
 
     #[test]

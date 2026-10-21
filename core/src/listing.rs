@@ -288,12 +288,7 @@ mod tests {
             id: "abc".to_owned(),
             path: "/library/abc/scan0042.pdf".into(),
             imported: 7,
-            progress: Some(crate::progress::ReadingProgress {
-                page_index: 0,
-                x: 0.0,
-                y: 0.0,
-                last_read: 9,
-            }),
+            progress: Some(crate::progress::ReadingProgress::pdf(0, 0.0, 0.0, 9)),
             details: Some(crate::details::Details {
                 title: Some("Moby-Dick".to_owned()),
                 author: Some("Melville".to_owned()),
