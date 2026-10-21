@@ -32,6 +32,15 @@ final class ReaderHandle {
 /// keep PDFKit's behaviour and are not. A Document Search session counts as
 /// one Jump from where the search started.
 final class ReaderPDFView: PDFView {
+    /// PDFKit's own scroll view; nil until it has one.
+    private var scrollView: PlatformScrollView? {
+        #if os(iOS)
+            subviews.lazy.compactMap { $0 as? UIScrollView }.first
+        #else
+            documentView?.enclosingScrollView
+        #endif
+    }
+
     /// Where the viewport was before a size change, to be restored once the
     /// new layout is known.
     private struct Viewpoint {
@@ -127,39 +136,66 @@ final class ReaderPDFView: PDFView {
     /// The Note icons, above the pages. Hidden from hit-testing.
     private lazy var noteIcons = NoteIconsView(reader: self)
 
-    /// Called on a single tap on the page (iOS only; macOS clicks never fire it).
-    var onSingleTap: () -> Void = {}
-    /// Called once, after the Document is first laid out at fit-to-width and
-    /// scrolled to its opening Place.
-    var onOpen: () -> Void = {}
-    /// Called whenever the viewport scrolls, however it was moved: often, so keep it cheap.
-    var onScroll: () -> Void = {}
-    /// Called with the anchor of the selection when the reader highlights it.
-    var onHighlight: (HighlightAnchor) -> Void = { _ in }
-    /// Called when the reader clicks or taps a Highlight (the newest, where they
-    /// overlap) at a point, given in the view's coordinates with the origin at
-    /// the top-left.
-    var onHighlightTap: (Highlight, CGPoint) -> Void = { _, _ in }
-    /// Called when the reader asks for a page Note at a Place.
-    var onAddNote: (Place) -> Void = { _ in }
-    /// Called when the reader clicks or taps the icon of a page Note, with the
-    /// point as for `onHighlightTap`.
-    var onPageNoteTap: (PageNote, CGPoint) -> Void = { _, _ in }
-    /// Called when the Back place appears, changes or goes, with its printed
-    /// page number; nil when there is none.
-    var onBackChange: (String?) -> Void = { _ in }
+    /// What the Reader reports. Set it once, with everything it needs.
+    struct Callbacks {
+        /// Called on a single tap on the page (iOS only; macOS clicks never fire it).
+        var onSingleTap: () -> Void = {}
+        /// Called once, after the Document is first laid out at fit-to-width and
+        /// scrolled to its opening Place.
+        var onOpen: () -> Void = {}
+        /// Called whenever the viewport scrolls, however it was moved: often, so keep it cheap.
+        var onScroll: () -> Void = {}
+        /// Called with the anchor of the selection when the reader highlights it.
+        var onHighlight: (HighlightAnchor) -> Void = { _ in }
+        /// Called when the reader clicks or taps a Highlight (the newest, where they
+        /// overlap) at a point, given in the view's coordinates with the origin at
+        /// the top-left.
+        var onHighlightTap: (Highlight, CGPoint) -> Void = { _, _ in }
+        /// Called when the reader asks for a page Note at a Place.
+        var onAddNote: (Place) -> Void = { _ in }
+        /// Called when the reader clicks or taps the icon of a page Note, with the
+        /// point as for `onHighlightTap`.
+        var onPageNoteTap: (PageNote, CGPoint) -> Void = { _, _ in }
+        /// Called when the Back place appears, changes or goes, with its printed
+        /// page number; nil when there is none.
+        var onBackChange: (String?) -> Void = { _ in }
+    }
+
+    var callbacks = Callbacks()
+
+    /// The Document's Table of Contents, which places Document Search's matches
+    /// in Chapters and Sections. The owner sets it before searching; empty until then.
+    var contents = TableOfContents()
 
     /// Where Back returns to: the top of the viewport before the latest Jump.
     /// Nil before any Jump and after Back.
     private(set) var backPlace: Place? {
         didSet {
             guard backPlace != oldValue else { return }
-            onBackChange(backPlace.flatMap { document?.printedPageNumber(at: $0.pageIndex) })
+            callbacks.onBackChange(backPlace.flatMap { document?.printedPageNumber(at: $0.pageIndex) })
         }
     }
 
     /// The matches of the Document Search that is going on, for the results list.
     private(set) var results = SearchResults()
+
+    /// The native find bar over Document Search.
+    private(set) lazy var find = DocumentFind(view: self, results: results)
+
+    /// Shows the find bar; matches are revealed and marked as they are found.
+    func presentFind() { find.present() }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setUpPlatform()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(scaleDidChange), name: .PDFViewScaleChanged, object: self)
+    }
+
+    @objc private func scaleDidChange(_ notification: Notification) { noteIcons.refresh() }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     convenience init(handle: ReaderHandle, results: SearchResults = SearchResults()) {
         self.init(frame: .zero)
@@ -299,7 +335,7 @@ final class ReaderPDFView: PDFView {
     func highlightSelection() {
         guard let anchor = selectionAnchor else { return }
         clearSelection()
-        onHighlight(anchor)
+        callbacks.onHighlight(anchor)
     }
 
     /// The Highlight at `point`, in the view's coordinates: the newest one
@@ -320,9 +356,7 @@ final class ReaderPDFView: PDFView {
         guard highlight.note != nil, let last = highlight.anchor.pages.last, let rect = last.rects.last,
             let page = document?.page(at: last.pageIndex)
         else { return nil }
-        let corner = convert(CGPoint(x: rect.maxX, y: rect.maxY), from: page)
-        let side = NoteIconsView.size
-        return CGRect(x: corner.x - side / 2, y: corner.y - side / 2, width: side, height: side)
+        return noteIconRect(around: convert(CGPoint(x: rect.maxX, y: rect.maxY), from: page))
     }
 
     /// The Highlight whose Note icon is at `point`, in the view's coordinates:
@@ -337,9 +371,9 @@ final class ReaderPDFView: PDFView {
     @discardableResult
     func reportMarkupTap(at point: CGPoint) -> Bool {
         if let note = pageNote(at: point) {
-            onPageNoteTap(note, fromTopLeft(point))
+            callbacks.onPageNoteTap(note, fromTopLeft(point))
         } else if let highlight = noteIcon(at: point) ?? highlight(at: point) {
-            onHighlightTap(highlight, fromTopLeft(point))
+            callbacks.onHighlightTap(highlight, fromTopLeft(point))
         } else {
             return false
         }
@@ -361,9 +395,13 @@ final class ReaderPDFView: PDFView {
     /// its spot, at the same size on screen at any zoom.
     func noteIconRect(of note: PageNote) -> CGRect? {
         guard let page = document?.page(at: note.place.pageIndex) else { return nil }
-        let spot = convert(note.place.point, from: page)
+        return noteIconRect(around: convert(note.place.point, from: page))
+    }
+
+    /// The square of a Note icon centred on `point`, in the view's coordinates.
+    private func noteIconRect(around point: CGPoint) -> CGRect {
         let side = NoteIconsView.size
-        return CGRect(x: spot.x - side / 2, y: spot.y - side / 2, width: side, height: side)
+        return CGRect(x: point.x - side / 2, y: point.y - side / 2, width: side, height: side)
     }
 
     /// The page Note whose icon is at `point`, in the view's coordinates: the
@@ -400,7 +438,7 @@ final class ReaderPDFView: PDFView {
     /// Reports the Place at `point`, in the view's coordinates, to `onAddNote`.
     /// Does nothing off the pages.
     func addNote(at point: CGPoint) {
-        if let place = place(at: point) { onAddNote(place) }
+        if let place = place(at: point) { callbacks.onAddNote(place) }
     }
 
     // MARK: Links
@@ -448,7 +486,7 @@ final class ReaderPDFView: PDFView {
                 backPlace = state.backPlace
             }
             observeScrolling()
-            onOpen()
+            callbacks.onOpen()
         } else if let viewpoint {
             self.viewpoint = nil
             scaleFactor = range.rescaled(viewpoint.scale, from: viewpoint.range)
@@ -501,7 +539,7 @@ final class ReaderPDFView: PDFView {
 
         /// Whether the pages are still moving after the finger left them.
         fileprivate var isScrolling: Bool {
-            subviews.lazy.compactMap { $0 as? UIScrollView }.first?.isDecelerating ?? false
+            scrollView?.isDecelerating ?? false
         }
 
         /// The edit menu offering "Add Note", and the spot it was asked at.
@@ -510,12 +548,12 @@ final class ReaderPDFView: PDFView {
 
         private func observeScrolling() {
             letScrollIndicatorScrub()
-            scrollObservation = subviews.lazy.compactMap { $0 as? UIScrollView }.first?
+            scrollObservation = scrollView?
                 .observe(\.contentOffset) { [weak self] _, _ in
                     MainActor.assumeIsolated {
                         self?.styleBackdrops()
                         self?.noteIcons.refresh()
-                        self?.onScroll()
+                        self?.callbacks.onScroll()
                     }
                 }
         }
@@ -525,8 +563,7 @@ final class ReaderPDFView: PDFView {
         /// selection, would take that press first, so they wait for the indicator's,
         /// which fails at once off the indicator.
         private func letScrollIndicatorScrub() {
-            guard let scrollView = subviews.lazy.compactMap({ $0 as? UIScrollView }).first, let documentView
-            else { return }
+            guard let scrollView, let documentView else { return }
             // The scroll view's only long presses are its indicators'.
             let indicatorPresses = (scrollView.gestureRecognizers ?? []).filter { $0 is UILongPressGestureRecognizer }
             let presses = ((gestureRecognizers ?? []) + (documentView.gestureRecognizers ?? [])).filter {
@@ -549,8 +586,7 @@ final class ReaderPDFView: PDFView {
         /// Document's edges allow. PDFKit's `go(to:)` can't do this: on iOS it
         /// lands up to a page off, so this moves PDFKit's scroll view directly.
         private func scroll(_ point: CGPoint, on page: PDFPage, to viewPoint: CGPoint) {
-            guard let scrollView = subviews.lazy.compactMap({ $0 as? UIScrollView }).first
-            else { return }
+            guard let scrollView else { return }
             let current = convert(point, from: page)
             let inset = scrollView.adjustedContentInset
             let minimum = CGPoint(x: -inset.left, y: -inset.top)
@@ -634,12 +670,6 @@ final class ReaderPDFView: PDFView {
             return tiles
         }
 
-        /// The native find bar over Document Search.
-        private(set) lazy var find = DocumentFind(view: self, results: results)
-
-        /// Shows the find bar; matches are revealed and marked as they are found.
-        func presentFind() { find.present() }
-
         // The find bar is presented from the first responder.
         override var canBecomeFirstResponder: Bool { true }
 
@@ -658,8 +688,7 @@ final class ReaderPDFView: PDFView {
             UIMenuSystem.context.setNeedsRebuild()
         }
 
-        override init(frame: CGRect) {
-            super.init(frame: frame)
+        private func setUpPlatform() {
             // Pages span the full width: PDFKit's side margins frame Dark Pages in the light background.
             pageBreakMargins.left = 0
             pageBreakMargins.right = 0
@@ -684,14 +713,7 @@ final class ReaderPDFView: PDFView {
             addInteraction(addNoteMenu)
             NotificationCenter.default.addObserver(
                 self, selector: #selector(selectionDidChange), name: .PDFViewSelectionChanged, object: self)
-            NotificationCenter.default.addObserver(
-                self, selector: #selector(scaleDidChange), name: .PDFViewScaleChanged, object: self)
         }
-
-        @objc private func scaleDidChange(_ notification: Notification) { noteIcons.refresh() }
-
-        @available(*, unavailable)
-        required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
         // UIKit may resize through either property.
         override var bounds: CGRect {
@@ -714,7 +736,7 @@ final class ReaderPDFView: PDFView {
         /// over the pages (Immersive Mode), changing only the safe area; adjusting
         /// for it itself, UIKit's scroll view would move the pages along with the bars.
         private func insetBySafeArea() {
-            guard let scrollView = subviews.lazy.compactMap({ $0 as? UIScrollView }).first else { return }
+            guard let scrollView else { return }
             scrollView.contentInsetAdjustmentBehavior = .never
             let insets = UIEdgeInsets(top: safeAreaInsets.top, left: 0, bottom: safeAreaInsets.bottom, right: 0)
             guard scrollView.contentInset != insets else { return }
@@ -745,7 +767,7 @@ final class ReaderPDFView: PDFView {
                 return
             }
             if reportMarkupTap(at: point) { return }
-            onSingleTap()
+            callbacks.onSingleTap()
         }
 
         /// Whether `other` must wait for a long press at `point` to fail. At an
@@ -770,12 +792,6 @@ final class ReaderPDFView: PDFView {
             zoom(to: range.doubleTapTarget(from: scaleFactor), keeping: tap.location(in: self))
         }
     #else
-        /// The native find bar over the Document's text.
-        private(set) lazy var find = DocumentFind(view: self, results: results)
-
-        /// Shows the find bar; the current match is the view's selection.
-        func presentFind() { find.present() }
-
         /// PDFView isn't flipped: its top edge is at `bounds.maxY`.
         private var viewportTopLeft: CGPoint { CGPoint(x: 0, y: bounds.maxY) }
 
@@ -783,7 +799,7 @@ final class ReaderPDFView: PDFView {
         private var viewportRect: CGRect { bounds }
 
         private func observeScrolling() {
-            guard let clip = documentView?.enclosingScrollView?.contentView else { return }
+            guard let clip = scrollView?.contentView else { return }
             clip.postsBoundsChangedNotifications = true
             NotificationCenter.default.addObserver(
                 self, selector: #selector(didScroll), name: NSView.boundsDidChangeNotification, object: clip)
@@ -791,7 +807,7 @@ final class ReaderPDFView: PDFView {
 
         @objc private func didScroll(_ notification: Notification) {
             noteIcons.refresh()
-            onScroll()
+            callbacks.onScroll()
         }
 
         /// Adds "Highlight" to the context menu of a selection, and "Add Note" to
@@ -850,8 +866,7 @@ final class ReaderPDFView: PDFView {
         // Recognizers hold their delegate weakly.
         private var clickFilter: ClickFilter?
 
-        override init(frame: NSRect) {
-            super.init(frame: frame)
+        private func setUpPlatform() {
             let filter = ClickFilter(view: self)
             clickFilter = filter
             let doubleClick = NSClickGestureRecognizer()
@@ -862,14 +877,7 @@ final class ReaderPDFView: PDFView {
             let click = NSClickGestureRecognizer(target: self, action: #selector(didClick))
             click.delegate = filter
             addGestureRecognizer(click)
-            NotificationCenter.default.addObserver(
-                self, selector: #selector(scaleDidChange), name: .PDFViewScaleChanged, object: self)
         }
-
-        @objc private func scaleDidChange(_ notification: Notification) { noteIcons.refresh() }
-
-        @available(*, unavailable)
-        required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
         @objc private func didClick(_ click: NSClickGestureRecognizer) {
             _ = reportMarkupTap(at: click.location(in: self))

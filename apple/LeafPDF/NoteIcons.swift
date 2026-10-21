@@ -2,8 +2,10 @@ import PDFKit
 
 #if os(iOS)
     typealias PlatformView = UIView
+    typealias PlatformScrollView = UIScrollView
 #else
     typealias PlatformView = NSView
+    typealias PlatformScrollView = NSScrollView
 #endif
 
 /// Draws the Note icons of a `ReaderPDFView`'s Highlights and page Notes above its pages, never

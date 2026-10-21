@@ -126,7 +126,7 @@ import Testing
     @Test func reportsTheBackPlaceAsItComesAndGoes() throws {
         let reader = try makeReader(size: portrait)
         var reported: [String?] = []
-        reader.onBackChange = { reported.append($0) }
+        reader.callbacks.onBackChange = { reported.append($0) }
         reader.jump(to: target)
         reader.goBack()
         #expect(reported == ["1", nil])
@@ -135,7 +135,7 @@ import Testing
     @Test func jumpsAndBackReportScrolling() throws {
         let reader = try makeReader(size: portrait)
         var scrolls = 0
-        reader.onScroll = { scrolls += 1 }
+        reader.callbacks.onScroll = { scrolls += 1 }
         reader.jump(to: target)
         #expect(scrolls > 0)
         scrolls = 0
@@ -351,7 +351,7 @@ import Testing
     @Test func highlightingTheSelectionReportsItsAnchorAndClearsTheSelection() throws {
         let reader = try readerWithText()
         var reported: [HighlightAnchor] = []
-        reader.onHighlight = { reported.append($0) }
+        reader.callbacks.onHighlight = { reported.append($0) }
         try select(reader, from: 6, to: 9)
         let anchor = try #require(reader.selectionAnchor)
 
@@ -364,7 +364,7 @@ import Testing
     @Test func highlightingWithoutASelectionDoesNothing() throws {
         let reader = try readerWithText()
         var reported = 0
-        reader.onHighlight = { _ in reported += 1 }
+        reader.callbacks.onHighlight = { _ in reported += 1 }
 
         reader.highlightSelection()
 
@@ -375,7 +375,7 @@ import Testing
         @Test func aSingleTapWithASelectionOnlyClearsIt() throws {
             let reader = try readerWithText()
             var taps = 0
-            reader.onSingleTap = { taps += 1 }
+            reader.callbacks.onSingleTap = { taps += 1 }
             try select(reader, from: 6, to: 9)
 
             reader.singleTap(at: CGPoint(x: 5, y: 5))
@@ -387,7 +387,7 @@ import Testing
         @Test func aSingleTapWithoutASelectionIsReported() throws {
             let reader = try readerWithText()
             var taps = 0
-            reader.onSingleTap = { taps += 1 }
+            reader.callbacks.onSingleTap = { taps += 1 }
 
             reader.singleTap(at: CGPoint(x: 5, y: 5))
 
@@ -544,7 +544,7 @@ import Testing
         reader.highlights = [highlight]
         let icon = try #require(reader.noteIconRect(of: highlight))
         var reported: [String] = []
-        reader.onHighlightTap = { highlight, _ in reported.append(highlight.id) }
+        reader.callbacks.onHighlightTap = { highlight, _ in reported.append(highlight.id) }
 
         #expect(reader.reportMarkupTap(at: CGPoint(x: icon.midX, y: icon.midY)))
 
@@ -561,7 +561,7 @@ import Testing
     @Test func addNoteAtAViewPointReportsThePlaceUnderIt() throws {
         let reader = try readerWithText()
         var reported: [Place] = []
-        reader.onAddNote = { reported.append($0) }
+        reader.callbacks.onAddNote = { reported.append($0) }
         let spot = CGPoint(x: 300, y: 400)
 
         reader.addNote(at: centre(ofRect: CGRect(origin: spot, size: .zero), onPage: 1, in: reader))
@@ -575,7 +575,7 @@ import Testing
     @Test func addNoteOffThePagesReportsNothing() throws {
         let reader = try readerWithText()
         var reported = 0
-        reader.onAddNote = { _ in reported += 1 }
+        reader.callbacks.onAddNote = { _ in reported += 1 }
 
         reader.addNote(at: CGPoint(x: -50, y: -50))
 
@@ -613,7 +613,7 @@ import Testing
         reader.pageNotes = [note]
         let icon = try #require(reader.noteIconRect(of: note))
         var reported: [String] = []
-        reader.onPageNoteTap = { note, _ in reported.append(note.id) }
+        reader.callbacks.onPageNoteTap = { note, _ in reported.append(note.id) }
 
         #expect(reader.reportMarkupTap(at: CGPoint(x: icon.midX, y: icon.midY)))
 

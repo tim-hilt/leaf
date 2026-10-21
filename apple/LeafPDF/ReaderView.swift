@@ -183,12 +183,15 @@ struct ReaderView: View {
                     pageNotes: pageNotes, pageNoteColor: library.highlightColors[0].color,
                     handle: handle, results: results,
                     state: tabs.viewState(of: document.id) ?? document.place.map { ReaderViewState(place: $0) },
-                    onHighlight: highlight,
-                    onHighlightTap: { openMarkup = OpenMarkup(target: .highlight($0.id), point: $1) },
-                    onAddNote: addPageNote,
-                    onPageNoteTap: { openMarkup = OpenMarkup(target: .pageNote($0.id), point: $1) },
-                    onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
-                    onBackChange: { backPageNumber = $0 }, onShowResults: { isShowingResults = true }
+                    contents: contents ?? TableOfContents(),
+                    callbacks: ReaderPDFView.Callbacks(
+                        onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
+                        onHighlight: highlight,
+                        onHighlightTap: { openMarkup = OpenMarkup(target: .highlight($0.id), point: $1) },
+                        onAddNote: addPageNote,
+                        onPageNoteTap: { openMarkup = OpenMarkup(target: .pageNote($0.id), point: $1) },
+                        onBackChange: { backPageNumber = $0 }),
+                    onShowResults: { isShowingResults = true }
                 )
                 #if os(iOS)
                     // Under the bars and the home indicator, so Immersive Mode changes
@@ -416,14 +419,8 @@ private struct PDFKitView {
     let handle: ReaderHandle
     let results: SearchResults
     let state: ReaderViewState?
-    let onHighlight: (HighlightAnchor) -> Void
-    let onHighlightTap: (Highlight, CGPoint) -> Void
-    let onAddNote: (Place) -> Void
-    let onPageNoteTap: (PageNote, CGPoint) -> Void
-    let onSingleTap: () -> Void
-    let onOpen: () -> Void
-    let onScroll: () -> Void
-    let onBackChange: (String?) -> Void
+    let contents: TableOfContents
+    let callbacks: ReaderPDFView.Callbacks
     /// Called when the reader asks for the list of matches in the find bar (iOS only).
     let onShowResults: () -> Void
 
@@ -439,14 +436,8 @@ private struct PDFKitView {
         view.highlights = highlights
         view.pageNotes = pageNotes
         view.pageNoteColor = pageNoteColor
-        view.onHighlight = onHighlight
-        view.onHighlightTap = onHighlightTap
-        view.onAddNote = onAddNote
-        view.onPageNoteTap = onPageNoteTap
-        view.onSingleTap = onSingleTap
-        view.onOpen = onOpen
-        view.onScroll = onScroll
-        view.onBackChange = onBackChange
+        view.contents = contents
+        view.callbacks = callbacks
         #if os(iOS)
             view.find.onShowResults = onShowResults
         #endif

@@ -30,6 +30,9 @@ struct TableOfContents {
 
     var isEmpty: Bool { chapters.isEmpty }
 
+    /// An empty Table of Contents.
+    init() { chapters = [] }
+
     init(_ document: PDFDocument) {
         var nextID = 0
         func entries(under outline: PDFOutline) -> [Entry] {

@@ -255,6 +255,8 @@ import Testing
 }
 
 extension DocumentSearch {
+    convenience init(_ document: PDFDocument) { self.init(document, contents: TableOfContents(document)) }
+
     /// Everything `query` finds, once the search has finished.
     func run(_ query: Query) async -> [Match] {
         var found: [Match] = []

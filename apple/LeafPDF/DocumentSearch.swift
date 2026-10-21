@@ -57,9 +57,11 @@ final class DocumentSearch {
     private let contents: TableOfContents
     private var running: Running?
 
-    init(_ document: PDFDocument) {
+    /// `contents` is the Document's Table of Contents, which places matches in
+    /// Chapters and Sections.
+    init(_ document: PDFDocument, contents: TableOfContents) {
         self.document = document
-        contents = TableOfContents(document)
+        self.contents = contents
     }
 
     /// Searches for `query`, replacing any search still running. Calls

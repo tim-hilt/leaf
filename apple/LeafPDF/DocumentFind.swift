@@ -69,7 +69,7 @@
         private var isRefreshScheduled = false
 
         init(document: PDFDocument, view: ReaderPDFView, results: SearchResults, interaction: UIFindInteraction) {
-            search = DocumentSearch(document)
+            search = DocumentSearch(document, contents: view.contents)
             self.view = view
             self.results = results
             self.interaction = interaction
@@ -191,7 +191,7 @@
             self.view = view
             self.results = results
             text = DocumentText(view.document)
-            search = DocumentSearch(view.document ?? PDFDocument())
+            search = DocumentSearch(view.document ?? PDFDocument(), contents: view.contents)
             super.init()
             finder.client = self
             finder.isIncrementalSearchingEnabled = true
