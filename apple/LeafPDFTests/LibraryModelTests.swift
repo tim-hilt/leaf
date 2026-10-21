@@ -504,24 +504,6 @@ import UniformTypeIdentifiers
         #expect(cover.width >= 299)
     }
 
-    @Test func aCoverShownOnDarkPagesHasPaperInThePageColorWhileTheSavedCoverStaysOriginal() async throws {
-        let library = try openLibrary()
-        guard case .opened(let document) = await library.import(try writePDF(named: "a.pdf")) else {
-            Issue.record("expected .opened")
-            return
-        }
-        let cover = try #require(await library.cover(for: document))
-        let corner = (x: cover.width - 5, y: cover.height - 5)  // paper: the test PDF has no ink there
-
-        let dark = cover.shown(as: .dark(.default))
-
-        #expect(dark.pixel(x: corner.x, y: corner.y).isClose(to: PageColors.default.paper, tolerance: 0.03))
-        #expect(cover.shown(as: .light).pixel(x: corner.x, y: corner.y).isClose(to: RGB(1, 1, 1), tolerance: 0.03))
-        let saved = try #require(await library.savedCover(for: document))
-        #expect(saved.pixel(x: corner.x, y: corner.y).isClose(to: RGB(1, 1, 1), tolerance: 0.03))
-        #expect(dark.width == cover.width && dark.height == cover.height)
-    }
-
     @Test func aCoverIsRenderedAgainAfterItsSavedCopyIsDeleted() async throws {
         let library = try openLibrary()
         guard case .opened(let document) = await library.import(try writePDF(named: "a.pdf")) else {

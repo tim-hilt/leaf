@@ -147,14 +147,6 @@ private final class StyledPage: PDFPage {
 }
 
 extension CGImage {
-    /// This image of a page as it looks in `appearance`: unchanged on Light
-    /// Pages, reversed in Page Colors on Dark Pages. Used to show a saved page
-    /// image, like a Cover, the way the Reader draws the page. Safe to call from any thread.
-    func shown(as appearance: PageAppearance) -> CGImage {
-        guard case .dark(let colors) = appearance else { return self }
-        return reversed(in: colors) ?? self
-    }
-
     /// No color management: the matrix below mixes the colors as they are, not in linear light.
     private static let core = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
 

@@ -97,21 +97,14 @@ extension ShapeStyle where Self == Color {
 /// that request is dropped if the cell scrolls away first. A Cover wider than
 /// the cell's page shape is scaled to fit and centred vertically; the
 /// space around it is transparent. The progress indicator stays on the
-/// cell's bottom edge. The Cover is shown the way page 1 looks in the Reader
-/// (Light or Dark Pages) and follows the Page Style, Page Colors and Theme;
-/// the saved Cover stays original.
+/// cell's bottom edge. The Cover always shows its original colors.
 struct DocumentCell: View {
     @Environment(LibraryModel.self) private var library
     @Environment(ScrollActivity.self) private var scroll
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
     let document: LibraryDocument
-    /// As saved.
     @State private var cover: CGImage?
-    /// `cover` in the current appearance, restyled off the main thread.
-    @State private var shown: CGImage?
-
-    private var appearance: PageAppearance { settings.pageAppearance(systemScheme: colorScheme) }
 
     var body: some View {
         GalleryCell(
@@ -119,8 +112,8 @@ struct DocumentCell: View {
             pageIsDark: settings.arePagesDark(systemScheme: colorScheme)
         ) {
             ZStack {
-                if let shown {
-                    Image(decorative: shown, scale: 1)
+                if let cover {
+                    Image(decorative: cover, scale: 1)
                         .resizable()
                         .scaledToFit()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -129,12 +122,7 @@ struct DocumentCell: View {
                     Color.placeholderGrey.transition(.opacity)
                 }
             }
-            .animation(.default, value: shown == nil)
-        }
-        .task(id: StyleKey(hasCover: cover != nil, appearance: appearance)) {
-            guard let cover else { return }
-            let appearance = appearance
-            shown = await Task.detached { cover.shown(as: appearance) }.value
+            .animation(.default, value: cover == nil)
         }
         .task(id: LoadKey(document: document.id, galleryIsStill: scroll.isStill)) {
             if cover == nil { cover = await library.savedCover(for: document) }
@@ -149,12 +137,6 @@ struct DocumentCell: View {
 private struct LoadKey: Equatable {
     let document: String
     let galleryIsStill: Bool
-}
-
-/// Restarts restyling when the Cover arrives or the appearance changes.
-private struct StyleKey: Equatable {
-    let hasCover: Bool
-    let appearance: PageAppearance
 }
 
 /// The first cell: a white "+" on the placeholder grey.

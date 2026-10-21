@@ -45,7 +45,7 @@ First piece of synced state; establishes the local Automerge model (ADR-0008) be
 - Page Style: Light Pages (default), Dark Pages or Match Theme, as three circles
 - Dark Pages reverse brightness but keep hue, in adjustable Page Colors; the File never changes
 - Settings (⌘, on macOS, Gallery gear on iOS) and a Reader cog popover; macOS View menu and ⇧⌘D
-- Covers follow Page Style
+- Covers always show their original colors
 - All per device, not synced
 
 Comes before markup so overlays are designed for Light and Dark Pages from the start.
