@@ -4,13 +4,26 @@ import Testing
 @testable import LeafPDF
 
 @MainActor @Suite struct DroppedFilesTests {
-    @Test func acceptsPDFsOnly() throws {
+    @Test func acceptsPDFsAndEPUBsOnly() throws {
         let pdf = NSItemProvider(contentsOf: try writePDF(named: "a.pdf"))!
+        let epub = NSItemProvider(contentsOf: try writeEPUB(named: "a.epub"))!
         let text = NSItemProvider(object: "hello" as NSString)
 
         #expect(DroppedFiles.accepts([pdf]))
+        #expect(DroppedFiles.accepts([epub]))
         #expect(DroppedFiles.accepts([text, pdf]))
         #expect(!DroppedFiles.accepts([text]))
+    }
+
+    @Test func receivesACopyOfADroppedEPUBUnderItsName() async throws {
+        let dropped = DroppedFiles()
+        let item = NSItemProvider(contentsOf: try writeEPUB(named: "book.epub"))!
+        item.suggestedName = "book"
+
+        let urls = await dropped.receive([item])
+
+        #expect(urls.map(\.lastPathComponent) == ["book.epub"])
+        dropped.removeCopies()
     }
 
     @Test func receivesCopiesOfThePDFsInDropOrderAndLeavesTheOriginals() async throws {

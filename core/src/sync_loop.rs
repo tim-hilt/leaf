@@ -639,12 +639,12 @@ mod tests {
         eventually("the reports on A", || {
             !a_events.markup_changed.lock().unwrap().is_empty()
                 && a.documents().unwrap()[0].progress.is_some()
+                && a_events.library_changed.load(Relaxed) >= 1
         });
         assert_eq!(
             *a_events.markup_changed.lock().unwrap(),
             std::slice::from_ref(&id)
         );
-        assert!(a_events.library_changed.load(Relaxed) >= 1);
         assert_eq!(a.documents().unwrap()[0].progress.unwrap().last_read, 7);
     }
 
@@ -749,7 +749,9 @@ mod tests {
         eventually("the other Device's Import", || {
             ids(&a) == std::slice::from_ref(&id)
         });
-        assert!(events.library_changed.load(Relaxed) >= 1);
+        eventually("the Library change report", || {
+            events.library_changed.load(Relaxed) >= 1
+        });
     }
 
     #[test]

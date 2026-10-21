@@ -28,7 +28,8 @@
 //! and, next to a state, `cursor_name`.
 
 use crate::chunks::Cursor;
-use crate::details::{self, Details};
+use crate::details::{self, Details, Format, Size};
+use crate::epub::{self, Epub};
 use crate::library_doc::{Import, LibraryDoc};
 use crate::markup::{self, Highlight, Markup, PageNote, PageRects, Rgb};
 use crate::preferences::{self, HighlightColor, HighlightColors};
@@ -77,12 +78,18 @@ pub struct Document {
     /// Where the user left off; none if the Document was never opened, or its
     /// state is missing or unreadable.
     pub progress: Option<ReadingProgress>,
-    /// What the client read from the File; none until it `set_details`, or
-    /// if they are unreadable.
+    /// What was read from the File: by the core at Import for an EPUB, by the
+    /// client for a PDF (`set_details`). None until then, or if they are
+    /// unreadable.
     pub details: Option<Details>,
 }
 
 impl Document {
+    /// An EPUB once its details are read, else a PDF.
+    pub fn format(&self) -> Format {
+        self.details.as_ref().map_or(Format::Pdf, Details::format)
+    }
+
     /// The Title: the title stored in the File, or else its name without
     /// extension.
     pub fn title(&self) -> String {
@@ -97,13 +104,49 @@ impl Document {
 
     /// How far the user has got, in whole percent rounded down, counting the
     /// page they are on: 100 only on the last page. None if the Document was
-    /// never opened or its page count isn't known.
+    /// never opened or its page count isn't known. (EPUBs have no Reading
+    /// Progress yet.)
     pub fn percent_read(&self) -> Option<u8> {
-        let pages = u64::from(self.details.as_ref()?.page_count);
+        let Size::Pages(pages) = self.details.as_ref()?.size else {
+            return None;
+        };
+        let pages = u64::from(pages);
         let reached = u64::from(self.progress?.page_index) + 1;
         (pages > 0).then(|| (100 * reached / pages).min(100) as u8)
     }
 }
+
+/// Why an Import failed.
+#[derive(Debug)]
+pub enum ImportError {
+    /// Reading or copying the File failed. Nothing was imported.
+    Io(io::Error),
+    /// The File is an EPUB LeafPDF can't read. Nothing was imported.
+    Epub(epub::Error),
+}
+
+impl From<io::Error> for ImportError {
+    fn from(e: io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<epub::Error> for ImportError {
+    fn from(e: epub::Error) -> Self {
+        Self::Epub(e)
+    }
+}
+
+impl std::fmt::Display for ImportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => e.fmt(f),
+            Self::Epub(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ImportError {}
 
 /// What an Import did.
 #[derive(Debug, Clone, PartialEq)]
@@ -302,13 +345,18 @@ impl Library {
     /// File that is already there copies nothing and returns its Document as
     /// `AlreadyImported`.
     ///
+    /// A File that is a zip, or named `.epub`, is an EPUB: if it isn't a valid
+    /// reflowable one without DRM, nothing is imported. The core reads the
+    /// details of an EPUB itself. Any other File is a PDF, which the client
+    /// checks.
+    ///
     /// `progress(copied, total)` is called with the bytes processed so far out
     /// of the File's size: first with 0, last with the total.
     pub fn import(
         &self,
         source: &Path,
         progress: impl FnMut(u64, u64),
-    ) -> io::Result<ImportResult> {
+    ) -> Result<ImportResult, ImportError> {
         let name = source
             .file_name()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "source has no file name"))?
@@ -318,8 +366,7 @@ impl Library {
         let staged = self.staging().join(unique_name());
         fs::create_dir(&staged)?;
 
-        let result = copy_hashed(source, &staged.join(&name), progress)
-            .and_then(|id| Ok((id.clone(), self.admit(&staged, &id, &name)?)));
+        let result = self.import_staged(source, &staged, &name, progress);
         // Nothing left to remove after a successful rename.
         let _ = fs::remove_dir_all(&staged);
 
@@ -333,6 +380,25 @@ impl Library {
         } else {
             ImportResult::AlreadyImported(document)
         })
+    }
+
+    /// Copies `source` into the `staged` folder as `name`, checks it and moves
+    /// it into the Library. Returns the Document's ID, and whether it is new.
+    fn import_staged(
+        &self,
+        source: &Path,
+        staged: &Path,
+        name: &str,
+        progress: impl FnMut(u64, u64),
+    ) -> Result<(String, bool), ImportError> {
+        let id = copy_hashed(source, &staged.join(name), progress)?;
+        let epub_details = read_epub_details(&staged.join(name), name)?;
+        let is_new = self.admit(staged, &id, name)?;
+        // Also for a File the Library had without details, e.g. from a Sync.
+        if let Some(details) = epub_details {
+            self.set_details(&id, &details)?;
+        }
+        Ok((id, is_new))
     }
 
     /// Moves the staged Import of the File `id` named `name` into the Library
@@ -425,6 +491,21 @@ impl Library {
             Some(entry) => self.document_of(&entry),
             None => Ok(None),
         }
+    }
+
+    /// The bytes of the Cover image of EPUB `id`; none for a PDF, a Document
+    /// that isn't in the Library, or an EPUB without images. An `id` that isn't
+    /// a Document ID is `InvalidInput`.
+    pub fn epub_cover(&self, id: &str) -> io::Result<Option<Vec<u8>>> {
+        let Some(document) = self.document(id)? else {
+            return Ok(None);
+        };
+        if document.format() != Format::Epub {
+            return Ok(None);
+        }
+        Ok(Epub::open(&document.path)
+            .ok()
+            .and_then(|mut epub| epub.cover()))
     }
 
     /// Keeps `details`, read from the File of Document `id`, on this Device,
@@ -900,6 +981,25 @@ fn cursor_name(import: &str) -> String {
     format!(".cursor-{import}")
 }
 
+/// The details of the EPUB `file` named `name`; none if it isn't meant to be
+/// one: a File that is a zip, or has the extension `.epub`, unless it is a PDF.
+fn read_epub_details(file: &Path, name: &str) -> Result<Option<Details>, epub::Error> {
+    let mut head = [0; 5];
+    let read = File::open(file).and_then(|mut f| f.read(&mut head));
+    let head = &head[..read.unwrap_or(0)];
+    let is_epub = !head.starts_with(b"%PDF-")
+        && (head.starts_with(b"PK\x03\x04") || name.to_lowercase().ends_with(".epub"));
+    if !is_epub {
+        return Ok(None);
+    }
+    let mut epub = Epub::open(file)?;
+    Ok(Some(Details {
+        title: epub.title().map(str::to_owned),
+        author: epub.author().map(str::to_owned),
+        size: Size::Characters(epub.characters()),
+    }))
+}
+
 /// Whether `name` is a plain file name, not a path.
 fn is_file_name(name: &str) -> bool {
     Path::new(name).file_name().is_some_and(|n| n == name)
@@ -1055,7 +1155,7 @@ mod tests {
         }
     }
 
-    fn import(library: &Library, source: &Path) -> io::Result<ImportResult> {
+    fn import(library: &Library, source: &Path) -> Result<ImportResult, ImportError> {
         library.import(source, |_, _| {})
     }
 
@@ -1125,6 +1225,162 @@ mod tests {
     fn an_empty_library_has_no_documents() {
         let scratch = Scratch::new();
         assert_eq!(scratch.library().documents().unwrap(), vec![]);
+    }
+
+    use crate::epub::fixtures::Book;
+
+    fn emma() -> Book {
+        Book::new("<dc:title>Emma</dc:title><dc:creator>Jane Austen</dc:creator>")
+            .chapters(&["<p>Hello</p>", "<p>world</p>"])
+    }
+
+    #[test]
+    fn an_imported_epub_is_a_document_with_format_title_author_and_size() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let bytes = emma().bytes();
+
+        let document = import_new(&library, &scratch.file("book.epub", &bytes));
+
+        assert_eq!(document.format(), Format::Epub);
+        assert_eq!(document.title(), "Emma");
+        let details = document.details.as_ref().unwrap();
+        assert_eq!(details.author.as_deref(), Some("Jane Austen"));
+        assert_eq!(details.size, Size::Characters(10));
+        // Listed that way too, and the File stays as it was.
+        assert_eq!(
+            library.documents().unwrap(),
+            std::slice::from_ref(&document)
+        );
+        assert_eq!(fs::read(&document.path).unwrap(), bytes);
+        assert_eq!(document.path.file_name().unwrap(), "book.epub");
+    }
+
+    #[test]
+    fn an_epub_is_recognised_by_its_content_not_its_name() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("book", &emma().bytes()));
+        assert_eq!(document.format(), Format::Epub);
+    }
+
+    #[test]
+    fn an_epub_without_a_title_is_titled_by_its_file_name() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let book = Book::new("").bytes();
+        let document = import_new(&library, &scratch.file("Walden.epub", &book));
+        assert_eq!(document.title(), "Walden");
+        assert_eq!(document.details.unwrap().author, None);
+    }
+
+    #[test]
+    fn a_pdf_stays_a_pdf_whatever_its_name() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("paper.epub", b"%PDF-1.7 ..."));
+        assert_eq!(document.format(), Format::Pdf);
+        assert_eq!(library.epub_cover(&document.id).unwrap(), None);
+    }
+
+    #[test]
+    fn an_epubs_cover_is_its_declared_one_else_the_first_image_else_none() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let cover = |book: Book, name: &str| {
+            let document = import_new(&library, &scratch.file(name, &book.bytes()));
+            library.epub_cover(&document.id).unwrap()
+        };
+
+        let declared = Book::new("")
+            .manifest(
+                r#"<item id="i" href="c.png" media-type="image/png" properties="cover-image"/>"#,
+            )
+            .chapters(&[r#"<img src="first.png"/>"#])
+            .file("OEBPS/c.png", b"declared")
+            .file("OEBPS/text/first.png", b"first");
+        assert_eq!(cover(declared, "a.epub"), Some(b"declared".to_vec()));
+
+        let undeclared = Book::new("x")
+            .chapters(&[r#"<img src="first.png"/>"#])
+            .file("OEBPS/text/first.png", b"first");
+        assert_eq!(cover(undeclared, "b.epub"), Some(b"first".to_vec()));
+
+        assert_eq!(cover(Book::new("y"), "c.epub"), None);
+    }
+
+    #[test]
+    fn the_cover_of_a_missing_document_is_none_and_of_a_bad_id_an_error() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        assert_eq!(library.epub_cover(ABC_SHA256).unwrap(), None);
+        assert!(library.epub_cover("../x").is_err());
+    }
+
+    #[test]
+    fn an_epub_already_imported_is_recognised_by_content() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let bytes = emma().bytes();
+        let first = import_new(&library, &scratch.file("a.epub", &bytes));
+
+        let again = import(&library, &scratch.file("copy of a.epub", &bytes)).unwrap();
+
+        assert_eq!(again, ImportResult::AlreadyImported(first));
+        assert_eq!(library.documents().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn epubs_that_cant_be_read_are_rejected_each_for_its_reason() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let drm = r#"<encryption xmlns:enc="http://www.w3.org/2001/04/xmlenc#"><enc:EncryptedData>
+<enc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/></enc:EncryptedData></encryption>"#;
+        let fixed = Book::new(r#"<meta property="rendition:layout">pre-paginated</meta>"#);
+        let drm = emma().file("META-INF/encryption.xml", drm.as_bytes());
+        let no_mimetype = crate::epub::fixtures::zip(&[("a.txt", b"a")], &[]);
+        let cases: [(&str, Vec<u8>, epub::Error); 5] = [
+            ("drm.epub", drm.bytes(), epub::Error::DrmProtected),
+            ("fixed.epub", fixed.bytes(), epub::Error::FixedLayout),
+            ("garbage.epub", b"not a zip".to_vec(), epub::Error::Invalid),
+            ("empty.epub", Vec::new(), epub::Error::Invalid),
+            ("zip.zip", no_mimetype, epub::Error::Invalid),
+        ];
+
+        for (name, bytes, reason) in cases {
+            let rejected = import(&library, &scratch.file(name, &bytes));
+            assert!(
+                matches!(&rejected, Err(ImportError::Epub(why)) if *why == reason),
+                "{name}: {rejected:?}"
+            );
+        }
+
+        assert_eq!(library.documents().unwrap(), []);
+        let folders = fs::read_dir(scratch.0.join("library")).unwrap();
+        let stored = folders.filter(|e| {
+            !e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with('.')
+        });
+        assert_eq!(stored.count(), 0);
+        let staged = fs::read_dir(scratch.0.join("library").join(STAGING)).unwrap();
+        assert_eq!(staged.count(), 0);
+    }
+
+    #[test]
+    fn an_epub_sorts_and_removes_like_a_pdf() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let pdf = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let epub = import_new(&library, &scratch.file("b.epub", &emma().bytes()));
+        assert_eq!(library.documents().unwrap(), [epub.clone(), pdf]);
+
+        library.remove(&epub.id).unwrap();
+
+        assert_eq!(library.documents().unwrap().len(), 1);
+        assert!(!epub.path.exists());
     }
 
     #[test]
@@ -1435,7 +1691,7 @@ mod tests {
         Details {
             title: title.map(str::to_owned),
             author: author.map(str::to_owned),
-            page_count,
+            size: Size::Pages(page_count),
         }
     }
 

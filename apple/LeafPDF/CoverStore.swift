@@ -10,16 +10,24 @@ import UniformTypeIdentifiers
     import AppKit
 #endif
 
-/// The saved Cover of every Document: its first page as an image, one file per
+/// Where a Document's Cover comes from.
+enum CoverSource: Sendable {
+    /// The first page of the PDF at this URL.
+    case pdf(URL)
+    /// The EPUB's cover `image`, if it has one; else a plain Cover with its Title and Author.
+    case epub(title: String, author: String?, image: @Sendable () -> Data?)
+}
+
+/// The saved Cover of every Document: an image, one file per
 /// Document ID in `folder`. Meant for the system Caches folder, so Covers are
-/// never synced and the system may clear them; `cover(id:file:)` then renders
+/// never synced and the system may clear them; `cover(id:source:)` then makes
 /// them again. Covers never go stale because Files never change (ADR-0007).
 ///
 /// All methods read or write files and may render, so call them off the main
 /// thread.
 struct CoverStore: Sendable {
     let folder: URL
-    /// Every Cover has this width: 300 pt at the screen scale. Smaller cells scale it down.
+    /// A Cover is this wide: 300 pt at the screen scale. Smaller cells scale it down. (An EPUB's image is no wider.)
     private let pixelWidth: CGFloat
 
     @MainActor init(folder: URL) {
@@ -31,13 +39,23 @@ struct CoverStore: Sendable {
         #endif
     }
 
-    /// The Cover of Document `id`: the saved one, or else page 1 of the PDF at
-    /// `file`, rendered and saved. Nil if it can't be rendered.
-    func cover(id: String, file: URL) -> CGImage? {
+    /// The Cover of Document `id`: the saved one, or else one made from `source`
+    /// and saved. Nil if it can't be made.
+    func cover(id: String, source: CoverSource) -> CGImage? {
         if let saved = saved(id) { return saved }
-        guard let pdf = PDFDocument(url: file), let cover = render(pdf) else { return nil }
+        guard let cover = render(source) else { return nil }
         save(cover, id: id)
         return cover
+    }
+
+    private func render(_ source: CoverSource) -> CGImage? {
+        switch source {
+        case .pdf(let file):
+            return PDFDocument(url: file).flatMap(render)
+        case .epub(let title, let author, let image):
+            return image().flatMap { EPUBCover.image(from: $0, pixelWidth: pixelWidth) }
+                ?? EPUBCover.plain(title: title, author: author, pixelWidth: pixelWidth)
+        }
     }
 
     /// Page 1 of `pdf` as a Cover, not saved. Nil if the PDF has no pages.

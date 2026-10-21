@@ -297,7 +297,7 @@ mod tests {
             details: Some(crate::details::Details {
                 title: Some("Moby-Dick".to_owned()),
                 author: Some("Melville".to_owned()),
-                page_count: 1,
+                size: crate::details::Size::Pages(1),
             }),
         };
         let expected = Item {

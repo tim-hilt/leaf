@@ -7,19 +7,22 @@ import PDFKit
 /// Imported, so views showing a stale copy update when the Title arrives;
 /// compare `id`s to tell whether two values are the same Document.
 ///
-/// Title, Author and page count are read from the PDF at Import or by the
-/// Library's background pass.
+/// Title, Author and page count are read from a PDF at Import or by the
+/// Library's background pass; the core reads an EPUB's at Import.
+/// Documents don't change their Format.
 struct LibraryDocument: Identifiable, Hashable {
     fileprivate let stored: LeafCore.Document
 
     var id: String { stored.id }
+    /// An EPUB once the core has read it, else a PDF.
+    var format: Format { stored.format }
     /// The stored File. Built without asking the file system whether it is a directory.
     var file: URL { URL(fileURLWithPath: stored.path, isDirectory: false) }
-    /// The PDF's title, or else the file name without extension.
+    /// The title stored in the File, or else its name without extension.
     var title: String { stored.title }
     /// Nil if the PDF has none, or until it is read.
     var author: String? { stored.author }
-    /// Nil until read from the PDF.
+    /// Nil for an EPUB, and for a PDF until read.
     var pageCount: Int? { stored.pageCount.map(Int.init) }
     /// How far the user has got, in whole percent rounded down, counting the
     /// page they are on: 100 only on the last page. Nil if the Document was
@@ -40,11 +43,20 @@ struct LibraryDocument: Identifiable, Hashable {
     /// A Document with no details or progress, Imported at the Unix epoch.
     init(id: String, file: URL) {
         stored = LeafCore.Document(
-            id: id, path: file.path, imported: 0, progress: nil, title: file.deletingPathExtension().lastPathComponent,
-            author: nil, pageCount: nil, percentRead: nil)
+            id: id, path: file.path, format: .pdf, imported: 0, progress: nil,
+            title: file.deletingPathExtension().lastPathComponent, author: nil, pageCount: nil, percentRead: nil)
     }
 
     fileprivate init(_ stored: LeafCore.Document) { self.stored = stored }
+
+    /// Where the Cover of this Document comes from.
+    fileprivate func coverSource(core: LeafCore.Library) -> CoverSource {
+        switch format {
+        case .pdf: .pdf(file)
+        case .epub:
+            .epub(title: title, author: author) { [id] in (try? core.epubCover(id: id)) ?? nil }
+        }
+    }
 
     /// What the Gallery's `Listing` needs of this Document. Last Read only if `withLastRead`.
     fileprivate func listingItem(withLastRead: Bool) -> Item {
@@ -56,12 +68,18 @@ struct LibraryDocument: Identifiable, Hashable {
 
 /// Why a File isn't Imported at all; nothing was copied.
 enum ImportRejection: Error {
-    /// Not a PDF.
+    /// Neither a PDF nor an EPUB.
     case notPDF
     /// Looks like a PDF, but PDFKit can't open it.
     case unreadable
     /// Needs a password to open. PDFs that only restrict permissions aren't locked.
     case locked
+    /// Looks like an EPUB, but the core can't read it.
+    case invalidEPUB
+    /// An EPUB with encrypted content.
+    case drmProtectedEPUB
+    /// An EPUB with a fixed layout.
+    case fixedLayoutEPUB
 }
 
 /// How an Import ended.
@@ -109,7 +127,7 @@ enum ImportResult {
 
 /// An Import in progress: what the progress modal shows.
 struct RunningImport: Equatable {
-    /// The file name until PDFKit has read the File, then its Title.
+    /// The file name until PDFKit has read a PDF, then its Title.
     fileprivate(set) var title: String
     /// Share of the File copied, 0...1.
     fileprivate(set) var fraction: Double = 0
@@ -414,16 +432,18 @@ final class LibraryModel {
         covers.remove(id)
     }
 
-    /// The Cover of `document`: the saved one, or page 1 rendered off the main
-    /// thread and saved. Nil if it can't be rendered; the Gallery then keeps
+    /// The Cover of `document`: the saved one, or else made off the main
+    /// thread (a PDF's page 1, an EPUB's image) and saved. Nil if it can't be rendered; the Gallery then keeps
     /// the placeholder. Cancelling the caller drops a request whose rendering
     /// hasn't started yet, so cells that scrolled away don't hold up the others.
     func cover(for document: LibraryDocument) async -> CGImage? {
         guard !Task.isCancelled else { return nil }
         let covers = covers
         let id = document.id
-        let file = document.file
-        let loading = Task.detached(priority: .utility) { Task.isCancelled ? nil : covers.cover(id: id, file: file) }
+        let source = document.coverSource(core: core)
+        let loading = Task.detached(priority: .utility) {
+            Task.isCancelled ? nil : covers.cover(id: id, source: source)
+        }
         let cover = await withTaskCancellationHandler {
             await loading.value
         } onCancel: {
@@ -434,8 +454,9 @@ final class LibraryModel {
 
     /// Copies the File at `url` into the Library without blocking the main
     /// thread, publishing `runningImport` meanwhile. Files that aren't
-    /// readable, unlocked PDFs are rejected before anything is copied. The
-    /// Document's details and Cover are saved before this returns.
+    /// readable, unlocked PDFs or valid EPUBs without DRM are rejected, and
+    /// nothing stays in the Library. The Document's details and Cover are
+    /// saved before this returns.
     func `import`(_ url: URL) async -> ImportOutcome {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -468,6 +489,10 @@ final class LibraryModel {
                     case .alreadyImported(let stored): (stored, false)
                     }
                 if let details { try? core.setDetails(stored.id, details) }
+                // An EPUB's Cover is made from the File in the Library.
+                if stored.format == .epub {
+                    _ = covers.cover(id: stored.id, source: LibraryDocument(stored).coverSource(core: core))
+                }
                 return (stored, isNew)
             }.value
             if let cover = read?.cover { covers.save(cover, id: stored.id) }
@@ -486,6 +511,12 @@ final class LibraryModel {
             return isNew ? .opened(document) : .duplicate(document)
         } catch LibraryError.Failed(let message) {
             return .failed(message)
+        } catch LibraryError.InvalidEpub {
+            return .rejected(.invalidEPUB)
+        } catch LibraryError.DrmProtectedEpub {
+            return .rejected(.drmProtectedEPUB)
+        } catch LibraryError.FixedLayoutEpub {
+            return .rejected(.fixedLayoutEPUB)
         } catch {
             return .failed(error.localizedDescription)
         }
@@ -699,7 +730,8 @@ final class LibraryModel {
         return await running.value
     }
 
-    /// What Import reads from the PDF it opened to check the File.
+    /// What Import reads from a PDF it opened to check the File.
+    /// An EPUB is checked by the core, which reads its details and Cover itself.
     private struct ReadPDF: Sendable {
         /// What the progress modal shows.
         let title: String
@@ -709,8 +741,9 @@ final class LibraryModel {
 
     /// What the File at `url` yields if it can be Imported, or why not. A File
     /// that can't be read at all isn't rejected (nil): copying it fails with
-    /// the system's own reason. Reads the File and renders its Cover, so keep
-    /// it off the main thread.
+    /// the system's own reason. Nor is one that may be an EPUB, a zip or named
+    /// `.epub`: the core decides. Reads the File and renders its Cover, so
+    /// keep it off the main thread.
     private nonisolated static func check(_ url: URL, covers: CoverStore) -> Result<ReadPDF?, ImportRejection> {
         if let pdf = PDFDocument(url: url) {
             guard !pdf.isLocked else { return .failure(.locked) }
@@ -719,7 +752,9 @@ final class LibraryModel {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return .success(nil) }
         defer { try? handle.close() }
         let head = (try? handle.read(upToCount: 5)) ?? Data()
-        return .failure(head == Data("%PDF-".utf8) ? .unreadable : .notPDF)
+        if head == Data("%PDF-".utf8) { return .failure(.unreadable) }
+        let mayBeEPUB = head.starts(with: Data("PK\u{3}\u{4}".utf8)) || url.pathExtension.lowercased() == "epub"
+        return mayBeEPUB ? .success(nil) : .failure(.notPDF)
     }
 
     /// One item per Document; Last Read only when sorted by it.
@@ -780,9 +815,10 @@ final class LibraryModel {
     /// one at a time at background priority, publishing them in small batches.
     /// A PDF that can't be read is skipped and tried again at the next launch.
     private func readMissingDetails() {
-        let missing = documents.filter { $0.pageCount == nil && !readingDetails.contains($0.id) }.map {
-            ($0.id, $0.file)
-        }
+        let missing = documents.filter { $0.format == .pdf && $0.pageCount == nil && !readingDetails.contains($0.id) }
+            .map {
+                ($0.id, $0.file)
+            }
         guard !missing.isEmpty else { return }
         readingDetails.formUnion(missing.map(\.0))
         Task(priority: .utility) { [weak self] in

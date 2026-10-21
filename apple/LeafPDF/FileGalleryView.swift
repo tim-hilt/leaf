@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 /// none, "No Results" follows the "+" cell. A click or tap opens a Document in the
 /// Reader, in a Tab (see `Tabs`). A "Reader" toolbar button, a square showing
 /// the number of Tabs, returns to them while any are open. The "+" cell and File > Import… (also from the Reader)
-/// Import PDFs, as do Files dropped onto the Gallery or handed over by other apps
+/// Import PDFs and EPUBs, as do Files dropped onto the Gallery or handed over by other apps
 /// (share sheet, Open With, Dock icon). Every Document of the Files opens in a
 /// Tab, the first one active; a single File already in the Library is reported
 /// for "+" and drops. A cell's context menu
@@ -271,7 +271,7 @@ struct FileGalleryView: View {
         rejection = nil
     }
 
-    /// Imports the PDFs among the dropped `providers`. False if there are none.
+    /// Imports the PDFs and EPUBs among the dropped `providers`. False if there are none.
     private func drop(_ providers: [NSItemProvider]) -> Bool {
         guard DroppedFiles.accepts(providers) else { return false }
         Task {
@@ -358,14 +358,23 @@ private struct ImportAlert {
         let name = url.lastPathComponent
         switch reason {
         case .notPDF:
-            title = "Not a PDF"
-            message = "“\(name)” isn't a PDF."
+            title = "Not a PDF or EPUB"
+            message = "“\(name)” isn't a PDF or an EPUB."
         case .unreadable:
             title = "Couldn't read PDF"
             message = "“\(name)” can't be opened. The file may be damaged."
         case .locked:
             title = "Password-protected"
             message = "Password-protected PDFs aren't supported yet."
+        case .invalidEPUB:
+            title = "Couldn't read EPUB"
+            message = "“\(name)” isn't a valid EPUB."
+        case .drmProtectedEPUB:
+            title = "DRM-protected"
+            message = "This EPUB is DRM-protected."
+        case .fixedLayoutEPUB:
+            title = "Fixed-layout EPUB"
+            message = "“\(name)” has a fixed layout, which isn't supported."
         }
     }
 
@@ -379,9 +388,12 @@ extension ImportProblem.Failure {
     /// Why the File wasn't Imported, for a list.
     fileprivate var reason: String {
         switch self {
-        case .rejected(.notPDF): "Not a PDF."
+        case .rejected(.notPDF): "Not a PDF or EPUB."
         case .rejected(.unreadable): "Can't be opened. The file may be damaged."
         case .rejected(.locked): "Password-protected PDFs aren't supported yet."
+        case .rejected(.invalidEPUB): "Isn't a valid EPUB."
+        case .rejected(.drmProtectedEPUB): "This EPUB is DRM-protected."
+        case .rejected(.fixedLayoutEPUB): "Fixed-layout EPUBs aren't supported."
         case .failed(let message): message
         }
     }

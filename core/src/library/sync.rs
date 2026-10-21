@@ -693,17 +693,29 @@ impl Library {
             .and_then(|hash| self.install(&staged, entry, &hash));
         // Nothing left to remove after a successful rename.
         let _ = fs::remove_dir_all(&staged);
-        result
+        if result? {
+            // Details are never synced: an EPUB's are read here, as at Import. A
+            // File that isn't a readable EPUB has none, and reads as a PDF.
+            let file = self.root.join(&entry.id).join(&entry.name);
+            let stored = match read_epub_details(&file, &entry.name) {
+                Ok(Some(details)) => self.set_details(&entry.id, &details),
+                _ => Ok(()),
+            };
+            // After the details, so a caller that sees the change finds them.
+            self.sync_changes.fetch_add(1, Relaxed);
+            stored?;
+        }
+        Ok(())
     }
 
     /// Moves the downloaded File in `staged` into the Document folder of
     /// `entry`, if its bytes are those of the Document, the Library document
-    /// still lists it and its File isn't there already.
-    fn install(&self, staged: &Path, entry: &Entry, hash: &str) -> io::Result<()> {
+    /// still lists it and its File isn't there already. Whether it did.
+    fn install(&self, staged: &Path, entry: &Entry, hash: &str) -> io::Result<bool> {
         let doc = self.catalog();
         let folder = self.root.join(&entry.id);
         if hash != entry.id || doc.live(&entry.id).next().is_none() {
-            return Ok(());
+            return Ok(false);
         }
         if !folder.exists() {
             fs::rename(staged, folder)?;
@@ -711,10 +723,9 @@ impl Library {
             // The folder may hold a state already.
             fs::rename(staged.join(&entry.name), folder.join(&entry.name))?;
         } else {
-            return Ok(());
+            return Ok(false);
         }
-        self.sync_changes.fetch_add(1, Relaxed);
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -895,7 +906,7 @@ mod tests {
         let details = crate::details::Details {
             title: Some("Paper".to_owned()),
             author: None,
-            page_count: 1,
+            size: crate::details::Size::Pages(1),
         };
         a.library.set_details(&imported.id, &details).unwrap();
 
@@ -904,6 +915,22 @@ mod tests {
 
         assert_eq!(b.document(&imported.id).details, None);
         assert_eq!(a.document(&imported.id).details, Some(details));
+    }
+
+    #[test]
+    fn an_epub_reaches_another_device_as_an_epub_with_its_details() {
+        let mut cloud = Cloud::new();
+        let (a, b) = (cloud.device(), cloud.device());
+        let book = crate::epub::fixtures::Book::new("<dc:title>Emma</dc:title>").bytes();
+        let imported = a.import("Emma.epub", &book);
+
+        a.sync();
+        b.sync();
+
+        let downloaded = b.document(&imported.id);
+        assert_eq!(downloaded.format(), crate::details::Format::Epub);
+        assert_eq!(downloaded.title(), "Emma");
+        assert_eq!(fs::read(&downloaded.path).unwrap(), book);
     }
 
     #[test]

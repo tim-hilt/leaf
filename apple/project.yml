@@ -22,7 +22,7 @@ targets:
     dependencies:
       - package: LeafCore
     # The formats LeafPDF opens from outside (share sheet, Open With, Dock).
-    # Alternate: never the default handler. Add EPUB or MOBI here.
+    # Alternate: never the default handler. Add MOBI here.
     info:
       path: Config/Info.plist
       properties:
@@ -31,6 +31,10 @@ targets:
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
             LSItemContentTypes: [com.adobe.pdf]
+          - CFBundleTypeName: EPUB Document
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [org.idpf.epub-container]
         # One window per Device, all Tabs in it (docs/adr/0018); iPadOS gets one scene.
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

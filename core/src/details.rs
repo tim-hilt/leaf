@@ -1,10 +1,27 @@
-//! A Document's details: what the client read from its File, since the core
-//! never opens PDFs (ADR-0003). Kept on this Device only, never synced: every
+//! A Document's details: what is read from its File. The client reads a PDF's
+//! and hands them over (the core never opens PDFs, ADR-0003); the core reads an
+//! EPUB's itself (ADR-0021). Kept on this Device only, never synced: every
 //! Device reads them from the same File.
 //!
-//! Stored as three lines: the page count, the title and the author, an empty
-//! line for one the File lacks. Anything else reads as no details, which the
-//! client then reads again.
+//! Stored as three lines: the size (the page count of a PDF; `c` and the
+//! character count of an EPUB), the title and the author, an empty line for one
+//! the File lacks. Anything else reads as no details, which are then read again.
+
+/// Which kind of File a Document is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Pdf,
+    Epub,
+}
+
+/// How big a Document is, in the unit of its Format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Size {
+    /// A PDF's pages.
+    Pages(u32),
+    /// An EPUB's characters, see `epub::Epub::characters`.
+    Characters(u64),
+}
 
 /// What a Document's File says about itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +30,16 @@ pub struct Details {
     pub title: Option<String>,
     /// The author stored in the File; none if it has none.
     pub author: Option<String>,
-    pub page_count: u32,
+    pub size: Size,
+}
+
+impl Details {
+    pub fn format(&self) -> Format {
+        match self.size {
+            Size::Pages(_) => Format::Pdf,
+            Size::Characters(_) => Format::Epub,
+        }
+    }
 }
 
 /// `details` as stored. A blank title or author is stored as none, and line
@@ -21,20 +47,28 @@ pub struct Details {
 pub(crate) fn encode(details: &Details) -> Vec<u8> {
     let line = |text: &Option<String>| one_line(text.as_deref().unwrap_or_default());
     let (title, author) = (line(&details.title), line(&details.author));
-    format!("{}\n{title}\n{author}", details.page_count).into_bytes()
+    let size = match details.size {
+        Size::Pages(pages) => pages.to_string(),
+        Size::Characters(characters) => format!("c{characters}"),
+    };
+    format!("{size}\n{title}\n{author}").into_bytes()
 }
 
 /// The details stored in `bytes`; none if they aren't stored details.
 pub(crate) fn decode(bytes: &[u8]) -> Option<Details> {
     let text = std::str::from_utf8(bytes).ok()?;
     let mut lines = text.split('\n');
-    let page_count = lines.next()?.parse().ok()?;
+    let size = lines.next()?;
+    let size = match size.strip_prefix('c') {
+        Some(characters) => Size::Characters(characters.parse().ok()?),
+        None => Size::Pages(size.parse().ok()?),
+    };
     let (title, author) = (lines.next()?, lines.next()?);
     let some = |line: &str| (!line.is_empty()).then(|| line.to_owned());
     lines.next().is_none().then(|| Details {
         title: some(title),
         author: some(author),
-        page_count,
+        size,
     })
 }
 
@@ -57,7 +91,7 @@ mod tests {
         Details {
             title: title.map(str::to_owned),
             author: author.map(str::to_owned),
-            page_count,
+            size: Size::Pages(page_count),
         }
     }
 
@@ -67,6 +101,10 @@ mod tests {
             details(Some("Moby-Dick"), Some("Melville"), 635),
             details(None, None, 0),
             details(Some("Walden"), None, 1),
+            Details {
+                size: Size::Characters(1_234_567),
+                ..details(Some("Emma"), Some("Austen"), 0)
+            },
         ] {
             assert_eq!(decode(&encode(&stored)), Some(stored));
         }
@@ -89,7 +127,14 @@ mod tests {
 
     #[test]
     fn anything_but_stored_details_reads_as_none() {
-        for bytes in [&b""[..], b"x\n\n", b"3\ntitle", b"3\na\nb\nc", b"\xff\n\n"] {
+        for bytes in [
+            &b""[..],
+            b"x\n\n",
+            b"3\ntitle",
+            b"3\na\nb\nc",
+            b"\xff\n\n",
+            b"cx\n\n",
+        ] {
             assert_eq!(decode(bytes), None, "{bytes:?}");
         }
     }

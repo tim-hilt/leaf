@@ -313,14 +313,17 @@ import UniformTypeIdentifiers
         #expect(FileManager.default.fileExists(atPath: source.path))
     }
 
-    @Test func declaresPDFAsTheOnlyDocumentTypeWithAlternateRank() throws {
-        let types = Bundle(for: LibraryModel.self).infoDictionary?["CFBundleDocumentTypes"] as? [[String: Any]]
+    @Test func declaresPDFAndEPUBAsTheOnlyDocumentTypesWithAlternateRank() throws {
+        let types = try #require(
+            Bundle(for: LibraryModel.self).infoDictionary?["CFBundleDocumentTypes"] as? [[String: Any]])
 
-        #expect(types?.count == 1)
-        #expect(types?.first?["LSItemContentTypes"] as? [String] == ImportableTypes.all.map(\.identifier))
-        #expect(ImportableTypes.all == [.pdf])
-        #expect(types?.first?["CFBundleTypeRole"] as? String == "Viewer")
-        #expect(types?.first?["LSHandlerRank"] as? String == "Alternate")
+        #expect(ImportableTypes.all == [.pdf, .epub])
+        #expect(
+            types.compactMap { ($0["LSItemContentTypes"] as? [String])?.first } == ImportableTypes.all.map(\.identifier)
+        )
+        #expect(types.allSatisfy { ($0["LSItemContentTypes"] as? [String])?.count == 1 })
+        #expect(types.allSatisfy { $0["CFBundleTypeRole"] as? String == "Viewer" })
+        #expect(types.allSatisfy { $0["LSHandlerRank"] as? String == "Alternate" })
     }
 
     @Test func importingAMissingFileFailsWithTheSystemsReason() async throws {
@@ -632,6 +635,163 @@ import UniformTypeIdentifiers
         library.sort = LibrarySort(key: .title, isReversed: true)
 
         #expect(try openLibrary().sort == LibrarySort(key: .title, isReversed: true))
+    }
+
+    // MARK: EPUBs
+
+    @Test func anEPUBImportsLikeAPDFWithItsTitleAndAuthorAndTheFileUnchanged() async throws {
+        let library = try openLibrary()
+        let source = try writeEPUB(named: "book.epub", title: "Emma", author: "Jane Austen")
+
+        guard case .opened(let document) = await library.import(source) else {
+            Issue.record("expected .opened")
+            return
+        }
+
+        #expect(document.format == .epub)
+        #expect(document.title == "Emma")
+        #expect(document.author == "Jane Austen")
+        #expect(document.pageCount == nil)
+        #expect(library.documents == [document])
+        #expect(try Data(contentsOf: document.file) == Data(contentsOf: source))
+    }
+
+    @Test func anEPUBWithoutATitleShowsItsFileName() async throws {
+        let library = try openLibrary()
+
+        _ = await library.import(try writeEPUB(named: "Walden.epub"))
+
+        #expect(library.documents.first?.title == "Walden")
+    }
+
+    @Test func aPDFIsStillAPDF() async throws {
+        let library = try openLibrary()
+
+        _ = await library.import(try writePDF(named: "a.pdf"))
+
+        #expect(library.documents.first?.format == .pdf)
+    }
+
+    @Test func anEPUBsCoverIsItsDeclaredImageInOriginalColors() async throws {
+        let library = try openLibrary()
+        let source = try writeEPUB(
+            named: "book.epub",
+            manifest: #"<item id="cv" href="cover.png" media-type="image/png" properties="cover-image"/>"#,
+            files: ["OEBPS/cover.png": solidPNG(red: 255, green: 0, blue: 0)])
+        guard case .opened(let document) = await library.import(source) else {
+            Issue.record("expected .opened")
+            return
+        }
+        #expect(savedCovers().count == 1)
+
+        let cover = try #require(await library.savedCover(for: document))
+
+        #expect(cover.height > cover.width)
+        let pixel = cover.centerPixel
+        #expect(pixel[0] > 245 && pixel[1] < 10 && pixel[2] < 10, "\(pixel)")
+    }
+
+    @Test func anEPUBWithoutImagesGetsAPlainCoverMadeAgainWhenItsSavedCopyIsDeleted() async throws {
+        let library = try openLibrary()
+        let source = try writeEPUB(named: "book.epub", title: "A Long Title Here", author: "Jane Austen")
+        guard case .opened(let document) = await library.import(source) else {
+            Issue.record("expected .opened")
+            return
+        }
+        #expect(savedCovers().count == 1)
+        try FileManager.default.removeItem(at: coversFolder)
+
+        let cover = try #require(await library.cover(for: document))
+
+        // A4 portrait, 300 pt wide, like a PDF's.
+        #expect(abs(Double(cover.height) / Double(cover.width) - 1.414) < 0.01)
+        #expect(cover.hasInk)
+        #expect(savedCovers().count == 1)
+    }
+
+    @Test func anEPUBRejectedForDRMOrAFixedLayoutOrAsInvalidLeavesNothingBehind() async throws {
+        let library = try openLibrary()
+        let encryption = """
+            <encryption xmlns:enc="http://www.w3.org/2001/04/xmlenc#"><enc:EncryptedData>\
+            <enc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/>\
+            </enc:EncryptedData></encryption>
+            """
+        let drm = try writeEPUB(named: "drm.epub", files: ["META-INF/encryption.xml": Data(encryption.utf8)])
+        let fixed = try writeEPUB(
+            named: "fixed.epub", metadata: #"<meta property="rendition:layout">pre-paginated</meta>"#)
+        let invalid = try writeFile(named: "invalid.epub", bytes: Data("not a zip".utf8))
+        let otherZip = try writeFile(named: "other", bytes: zip([("a.txt", Data("a".utf8))]))
+
+        let outcomes =
+            [await library.import(drm), await library.import(fixed)]
+            + [await library.import(invalid), await library.import(otherZip)]
+
+        let reasons = outcomes.map { outcome -> ImportRejection? in
+            if case .rejected(let reason) = outcome { reason } else { nil }
+        }
+        #expect(reasons == [.drmProtectedEPUB, .fixedLayoutEPUB, .invalidEPUB, .invalidEPUB])
+        #expect(library.documents.isEmpty)
+        #expect(savedCovers().isEmpty)
+    }
+
+    @Test func anEPUBAlreadyInTheLibraryIsADuplicate() async throws {
+        let library = try openLibrary()
+        let source = try writeEPUB(named: "a.epub", title: "Emma")
+        guard case .opened(let first) = await library.import(source) else {
+            Issue.record("expected .opened")
+            return
+        }
+        let renamed = source.deletingLastPathComponent().appending(path: "renamed.epub")
+        try FileManager.default.copyItem(at: source, to: renamed)
+
+        let outcome = await library.import(renamed)
+
+        guard case .duplicate(let existing) = outcome else {
+            Issue.record("expected .duplicate, got \(outcome)")
+            return
+        }
+        #expect(existing == first)
+    }
+
+    @Test func oneBadEPUBAmongSeveralFilesIsAProblemAndTheOthersOpen() async throws {
+        let library = try openLibrary()
+        let urls = [
+            try writeEPUB(named: "good.epub", title: "Good"),
+            try writeFile(named: "bad.epub", bytes: Data("nope".utf8)),
+            try writePDF(named: "a.pdf"),
+        ]
+
+        let result = await library.importFiles(urls, from: .picker)
+
+        guard case .open(let documents, let problems) = result else {
+            Issue.record("expected .open, got \(result)")
+            return
+        }
+        #expect(documents.map(\.format) == [.epub, .pdf])
+        #expect(problems.map(\.file.lastPathComponent) == ["bad.epub"])
+    }
+
+    @Test func searchFindsAnEPUBByItsAuthorAndItSortsLikeAPDF() async throws {
+        let library = try openLibrary()
+        _ = await library.import(try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
+        _ = await library.import(try writeEPUB(named: "b.epub", title: "Emma", author: "Jane Austen"))
+
+        #expect(library.visibleDocuments(matching: "austen").map(\.title) == ["Emma"])
+        library.sort.key = .title
+        #expect(library.visibleDocuments(matching: "").map(\.title) == ["Emma", "Moby-Dick"])
+    }
+
+    @Test func removingAnEPUBDeletesItsCover() async throws {
+        let library = try openLibrary()
+        guard case .opened(let document) = await library.import(try writeEPUB(named: "a.epub")) else {
+            Issue.record("expected .opened")
+            return
+        }
+
+        library.remove(document)
+
+        #expect(library.documents.isEmpty)
+        #expect(savedCovers().isEmpty)
     }
 
     // MARK: Library Search

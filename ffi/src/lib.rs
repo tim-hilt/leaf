@@ -5,8 +5,10 @@
 //! its Sync loop, so every write is sent without the client asking. Keep
 //! domain logic in `leafpdf-core` so it stays testable without bindings.
 
+use leafpdf_core::details::{Format, Size};
+use leafpdf_core::epub;
 use leafpdf_core::library::Document as CoreDocument;
-use leafpdf_core::library::ImportResult;
+use leafpdf_core::library::{ImportError, ImportResult};
 use leafpdf_core::listing::{self, Item, Sort, SortKey};
 use leafpdf_core::markup::{Highlight, Markup, PageNote, PageRects, Rect, Rgb};
 use leafpdf_core::preferences::{HighlightColor, HighlightColors};
@@ -26,23 +28,42 @@ pub fn core_version() -> String {
     leafpdf_core::VERSION.to_owned()
 }
 
-/// The one error crossing the FFI: the system's message for what failed.
+/// The error crossing the FFI: the system's message for what failed, or, for
+/// an Import, why the EPUB isn't one LeafPDF reads.
 #[derive(Debug, uniffi::Error)]
 #[uniffi(flat_error)]
 pub enum LibraryError {
     Failed(String),
+    InvalidEpub,
+    DrmProtectedEpub,
+    FixedLayoutEpub,
 }
 
 impl std::fmt::Display for LibraryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Self::Failed(message) = self;
-        f.write_str(message)
+        match self {
+            Self::Failed(message) => f.write_str(message),
+            Self::InvalidEpub => epub::Error::Invalid.fmt(f),
+            Self::DrmProtectedEpub => epub::Error::DrmProtected.fmt(f),
+            Self::FixedLayoutEpub => epub::Error::FixedLayout.fmt(f),
+        }
     }
 }
 
 impl From<std::io::Error> for LibraryError {
     fn from(e: std::io::Error) -> Self {
         Self::Failed(e.to_string())
+    }
+}
+
+impl From<ImportError> for LibraryError {
+    fn from(e: ImportError) -> Self {
+        match e {
+            ImportError::Io(e) => e.into(),
+            ImportError::Epub(epub::Error::Invalid) => Self::InvalidEpub,
+            ImportError::Epub(epub::Error::DrmProtected) => Self::DrmProtectedEpub,
+            ImportError::Epub(epub::Error::FixedLayout) => Self::FixedLayoutEpub,
+        }
     }
 }
 
@@ -127,6 +148,12 @@ pub struct Item {
 }
 
 #[uniffi::remote(Enum)]
+pub enum Format {
+    Pdf,
+    Epub,
+}
+
+#[uniffi::remote(Enum)]
 pub enum SortKey {
     DateImported,
     Title,
@@ -157,11 +184,13 @@ pub enum ConnectError {
 }
 
 /// A Document in the Library, see `leafpdf_core::library::Document`. Author
-/// and page count are none until `Library::set_details` gives them.
+/// and page count are none until `Library::set_details` gives them; an
+/// EPUB's come with it, and its page count is always none.
 #[derive(uniffi::Record)]
 pub struct Document {
     pub id: String,
     pub path: String,
+    pub format: Format,
     /// Date Imported, in milliseconds since the Unix epoch.
     pub imported: u64,
     pub progress: Option<ReadingProgress>,
@@ -176,12 +205,16 @@ impl From<CoreDocument> for Document {
         Self {
             title: d.title(),
             percent_read: d.percent_read(),
+            format: d.format(),
             id: d.id,
             path: d.path.to_string_lossy().into_owned(),
             imported: d.imported,
             progress: d.progress,
             author: d.details.as_ref().and_then(|x| x.author.clone()),
-            page_count: d.details.map(|x| x.page_count),
+            page_count: d.details.and_then(|x| match x.size {
+                Size::Pages(pages) => Some(pages),
+                Size::Characters(_) => None,
+            }),
         }
     }
 }
@@ -317,7 +350,10 @@ impl Library {
 
     /// The outcome of a write to the Library; tells the Sync loop, if any, to
     /// send it soon. Every write goes through here, so clients never have to.
-    fn written<T>(&self, outcome: std::io::Result<T>) -> Result<T, LibraryError> {
+    fn written<T, E>(&self, outcome: Result<T, E>) -> Result<T, LibraryError>
+    where
+        LibraryError: From<E>,
+    {
         if let Some(sync) = &*self.sync() {
             sync.local_change();
         }
@@ -441,6 +477,11 @@ impl Library {
         self.written(self.core.remove(&id))
     }
 
+    /// The bytes of the Cover image of EPUB `id`, if it has one.
+    pub fn epub_cover(&self, id: String) -> Result<Option<Vec<u8>>, LibraryError> {
+        Ok(self.core.epub_cover(&id)?)
+    }
+
     pub fn save_progress(&self, id: String, progress: ReadingProgress) -> Result<(), LibraryError> {
         self.progress_written(self.core.save_progress(&id, &progress))
     }
@@ -546,7 +587,7 @@ impl Library {
         let details = leafpdf_core::details::Details {
             title,
             author,
-            page_count,
+            size: Size::Pages(page_count),
         };
         Ok(self.core.set_details(&id, &details)?)
     }

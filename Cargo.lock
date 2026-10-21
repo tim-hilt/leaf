@@ -478,6 +478,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "libc",
+ "miniz_oxide",
  "quick-xml",
  "sha2",
  "unicode-normalization",

@@ -1,9 +1,10 @@
 //! Platform-independent heart of LeafPDF.
 //!
 //! Owns everything that must behave identically on every platform: the
-//! library of imported PDFs, markup, reading progress and cloud sync.
+//! library of imported PDFs and EPUBs, markup, reading progress and cloud sync.
 //! It never renders or parses PDFs; clients do that with the platform's
-//! native PDF engine (see `docs/adr/0003-native-pdf-rendering.md`).
+//! native PDF engine (see `docs/adr/0003-native-pdf-rendering.md`). It reads
+//! EPUBs, but doesn't draw them (`docs/adr/0021-core-parses-epubs.md`).
 //!
 //! The crate is plain Rust with no FFI concerns, so Rust clients (Linux)
 //! can depend on it directly. Foreign-language clients go through
@@ -14,6 +15,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub(crate) mod chunks;
 pub mod details;
+pub mod epub;
 pub mod library;
 pub(crate) mod library_doc;
 pub mod listing;
