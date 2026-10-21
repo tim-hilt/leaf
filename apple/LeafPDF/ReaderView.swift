@@ -5,7 +5,7 @@ import SwiftUI
 /// scrolling vertical column, titled with the Document's Title. Must be pushed onto a
 /// `NavigationStack`, which provides the back chevron and iOS edge swipe. The
 /// window makes a new one for each Tab, so only the active Tab's Document is
-/// loaded; under the toolbar, the `TabStrip` shows once a second Tab is open.
+/// loaded. The `TabStrip` under the toolbar isn't part of it: it outlives the Tabs' Readers.
 ///
 /// Immersive Mode hides everything but the pages, the Tab strip too. On iOS a
 /// single tap toggles it; on macOS it is the native full screen, with the toolbar
@@ -84,10 +84,7 @@ struct ReaderView: View {
             }
             pages
         }
-        // An inset, not a stack sibling: toggling it must not move the pages.
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if tabs.openIDs.count > 1 && !isImmersive { TabStrip() }
-        }
+        .onChange(of: isImmersive, initial: true) { tabs.isImmersive = isImmersive }
         .animation(.default, value: showsResultsSidebar)
         .sheet(isPresented: $isShowingResults) { SearchResultsSheet(results: results) }
         .task {

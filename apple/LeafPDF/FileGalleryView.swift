@@ -120,7 +120,12 @@ struct FileGalleryView: View {
             .navigationTitle("LeafPDF")
             .navigationDestination(isPresented: showsReader) {
                 // A new Reader per Tab, so that nothing of the previous one carries over.
-                if let document = activeDocument { ReaderView(document: document).id(document.id) }
+                if let document = activeDocument {
+                    ReaderView(document: document).id(document.id)
+                        // Outside the per-Tab Reader, so switching Tabs doesn't rebuild the strip.
+                        // An inset, not a stack sibling: toggling it must not move the pages.
+                        .safeAreaInset(edge: .top, spacing: 0) { ReaderTabStrip() }
+                }
             }
             .toolbar {
                 if tabs.activeID != nil {

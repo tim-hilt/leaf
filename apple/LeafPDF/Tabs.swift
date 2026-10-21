@@ -22,6 +22,10 @@ final class Tabs {
         didSet { defaults.set(isShowingReader, forKey: Self.showsReaderName) }
     }
 
+    /// Whether the Reader is in Immersive Mode, which hides the Tab strip. Set by
+    /// the Reader, which owns it; kept here because the strip outlives each Tab's Reader.
+    var isImmersive = false
+
     /// Opens `documents` in this order: one that has a Tab keeps it, the rest
     /// are appended. The first becomes active and the Reader shows.
     func open(_ documents: [LibraryDocument]) {
