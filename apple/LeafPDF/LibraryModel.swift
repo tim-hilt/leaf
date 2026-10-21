@@ -572,6 +572,11 @@ final class LibraryModel {
         documents.removeAll { $0.id == document.id }
     }
 
+    /// EPUB `document`, opened for reading. Nil for a PDF, and for an EPUB the core can't read.
+    func epub(of document: LibraryDocument) -> EpubBook? {
+        (try? core.openEpub(id: document.id)) ?? nil
+    }
+
     /// Saves `place` as Reading Progress of `document`, read `lastRead`. The
     /// core writes off the main thread, in order; this returns when it has,
     /// with the Document updated in every window. Does nothing for a Document

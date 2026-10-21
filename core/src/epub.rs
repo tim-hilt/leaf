@@ -85,6 +85,21 @@ impl Epub {
         self.package.author.as_deref()
     }
 
+    /// The paths in the zip of the spine items, in reading order. Each is a
+    /// `resource` holding the XHTML to display.
+    pub fn spine(&self) -> &[String] {
+        &self.package.spine
+    }
+
+    /// The manifest item at zip path `path`: a spine item or what it uses (an
+    /// image, style sheet or font). None for any other file of the zip, and for
+    /// an item the zip lacks or can't read.
+    pub fn resource(&mut self, path: &str) -> Option<Resource> {
+        let media_type = self.package.media_types.get(path)?.clone();
+        let bytes = self.zip.read(path)?;
+        Some(Resource { bytes, media_type })
+    }
+
     /// The bytes of the Cover image: the declared cover, else the first image
     /// of the first spine item. None if there is no image.
     pub fn cover(&mut self) -> Option<Vec<u8>> {
@@ -131,6 +146,14 @@ impl Epub {
     }
 }
 
+/// A file of an EPUB, as the manifest declares it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Resource {
+    pub bytes: Vec<u8>,
+    /// The MIME type, such as `application/xhtml+xml` or `image/png`.
+    pub media_type: String,
+}
+
 /// What the package file says.
 struct Package {
     title: Option<String>,
@@ -139,6 +162,8 @@ struct Package {
     cover: Option<String>,
     /// The paths in the zip of the spine items, in reading order.
     spine: Vec<String>,
+    /// The media type of every manifest item, by its path in the zip.
+    media_types: HashMap<String, String>,
 }
 
 /// An `item` of the package's manifest.
@@ -234,6 +259,10 @@ impl Package {
                 .iter()
                 .filter_map(|id| manifest.get(id))
                 .map(|item| item.path.clone())
+                .collect(),
+            media_types: manifest
+                .into_values()
+                .map(|item| (item.path, item.media_type))
                 .collect(),
         })
     }
@@ -720,6 +749,24 @@ mod tests {
         let book = Book::new("").chapters(&["<p>abc</p><p>de"]);
         // The head's title isn't text; the item breaks at its unclosed `p`.
         assert_eq!(open(&book.bytes()).unwrap().characters(), 5);
+    }
+
+    #[test]
+    fn resources_are_the_manifests_items_with_their_media_types() {
+        let book = Book::new("")
+            .manifest(r#"<item id="i" href="img/c%20d.png" media-type="image/png"/>"#)
+            .manifest(r#"<item id="g" href="gone.png" media-type="image/png"/>"#)
+            .file("OEBPS/img/c d.png", b"PNG")
+            .file("OEBPS/unlisted.txt", b"secret");
+        let mut epub = open(&book.bytes()).unwrap();
+
+        let image = epub.resource("OEBPS/img/c d.png").unwrap();
+        assert_eq!(image.media_type, "image/png");
+        assert_eq!(image.bytes, b"PNG");
+        // Neither files outside the manifest nor items missing from the zip.
+        assert!(epub.resource("OEBPS/unlisted.txt").is_none());
+        assert!(epub.resource("META-INF/container.xml").is_none());
+        assert!(epub.resource("OEBPS/gone.png").is_none());
     }
 
     const OPF: &str = r#"<package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="x"><dc:title>Deflated</dc:title></metadata>

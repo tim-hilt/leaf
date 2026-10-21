@@ -493,19 +493,24 @@ impl Library {
         }
     }
 
-    /// The bytes of the Cover image of EPUB `id`; none for a PDF, a Document
-    /// that isn't in the Library, or an EPUB without images. An `id` that isn't
-    /// a Document ID is `InvalidInput`.
-    pub fn epub_cover(&self, id: &str) -> io::Result<Option<Vec<u8>>> {
+    /// EPUB `id`, opened for reading; none for a PDF, a Document that isn't in
+    /// the Library, or an EPUB that can't be opened anymore. An `id` that
+    /// isn't a Document ID is `InvalidInput`.
+    pub fn open_epub(&self, id: &str) -> io::Result<Option<Epub>> {
         let Some(document) = self.document(id)? else {
             return Ok(None);
         };
         if document.format() != Format::Epub {
             return Ok(None);
         }
-        Ok(Epub::open(&document.path)
-            .ok()
-            .and_then(|mut epub| epub.cover()))
+        Ok(Epub::open(&document.path).ok())
+    }
+
+    /// The bytes of the Cover image of EPUB `id`; none for a PDF, a Document
+    /// that isn't in the Library, or an EPUB without images. An `id` that isn't
+    /// a Document ID is `InvalidInput`.
+    pub fn epub_cover(&self, id: &str) -> io::Result<Option<Vec<u8>>> {
+        Ok(self.open_epub(id)?.and_then(|mut epub| epub.cover()))
     }
 
     /// Keeps `details`, read from the File of Document `id`, on this Device,
@@ -1367,6 +1372,40 @@ mod tests {
         assert_eq!(stored.count(), 0);
         let staged = fs::read_dir(scratch.0.join("library").join(STAGING)).unwrap();
         assert_eq!(staged.count(), 0);
+    }
+
+    #[test]
+    fn an_epub_opens_to_its_spine_in_reading_order_with_each_items_content() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let book = emma()
+            .manifest(r#"<item id="css" href="style.css" media-type="text/css"/>"#)
+            .file("OEBPS/style.css", b"p{}");
+        let document = import_new(&library, &scratch.file("emma.epub", &book.bytes()));
+
+        let mut epub = library.open_epub(&document.id).unwrap().unwrap();
+
+        assert_eq!(
+            epub.spine(),
+            ["OEBPS/text/chapter0.xhtml", "OEBPS/text/chapter1.xhtml"]
+        );
+        let second = epub.resource("OEBPS/text/chapter1.xhtml").unwrap();
+        assert_eq!(second.media_type, "application/xhtml+xml");
+        assert!(String::from_utf8(second.bytes).unwrap().contains("world"));
+        let css = epub.resource("OEBPS/style.css").unwrap();
+        assert_eq!(css.media_type, "text/css");
+        assert_eq!(css.bytes, b"p{}");
+    }
+
+    #[test]
+    fn only_an_epub_in_the_library_opens() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let pdf = import_new(&library, &scratch.file("a.pdf", b"abc"));
+
+        assert!(library.open_epub(&pdf.id).unwrap().is_none());
+        assert!(library.open_epub(ABC_SHA256).unwrap().is_none());
+        assert!(library.open_epub("../x").is_err());
     }
 
     #[test]

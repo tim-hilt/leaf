@@ -4,13 +4,15 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// Writes a reflowable EPUB with one chapter to a fresh temporary directory and
-/// returns its URL; the file keeps the given name. `metadata` goes inside the
-/// package's `<metadata>`, `manifest` into its `<manifest>`; `files` are more
-/// entries of the zip, by path.
+/// returns its URL; the file keeps the given name. `chapters` are the bodies of
+/// its spine items, in order; `body` is the only one by default. `metadata` goes
+/// inside the package's `<metadata>`, `manifest` into its `<manifest>`; `files`
+/// are more entries of the zip, by path.
 func writeEPUB(
     named fileName: String, title: String? = nil, author: String? = nil, body: String = "<p>Hello</p>",
-    metadata: String = "", manifest: String = "", files: [String: Data] = [:]
+    chapters: [String]? = nil, metadata: String = "", manifest: String = "", files: [String: Data] = [:]
 ) throws -> URL {
+    let chapters = chapters ?? [body]
     var details = metadata
     if let title { details += "<dc:title>\(title)</dc:title>" }
     if let author { details += "<dc:creator>\(author)</dc:creator>" }
@@ -22,19 +24,21 @@ func writeEPUB(
     let package = """
         <?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0">\
         <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\(details)</metadata>\
-        <manifest><item id="c" href="chapter.xhtml" media-type="application/xhtml+xml"/>\(manifest)</manifest>\
-        <spine><itemref idref="c"/></spine></package>
-        """
-    let chapter = """
-        <?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>x</title></head>\
-        <body>\(body)</body></html>
+        <manifest>\(chapters.indices.map { #"<item id="c\#($0)" href="chapter\#($0).xhtml" media-type="application/xhtml+xml"/>"# }.joined())\(manifest)</manifest>\
+        <spine>\(chapters.indices.map { #"<itemref idref="c\#($0)"/>"# }.joined())</spine></package>
         """
     var entries: [(String, Data)] = [
         ("mimetype", Data("application/epub+zip".utf8)),
         ("META-INF/container.xml", Data(container.utf8)),
         ("OEBPS/content.opf", Data(package.utf8)),
-        ("OEBPS/chapter.xhtml", Data(chapter.utf8)),
     ]
+    for (index, body) in chapters.enumerated() {
+        let chapter = """
+            <?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>x</title></head>\
+            <body>\(body)</body></html>
+            """
+        entries.append(("OEBPS/chapter\(index).xhtml", Data(chapter.utf8)))
+    }
     entries += files.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
     return try writeFile(named: fileName, bytes: zip(entries))
 }

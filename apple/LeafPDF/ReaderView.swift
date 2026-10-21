@@ -92,7 +92,7 @@ struct ReaderView: View {
             guard opened == nil else { return }
             saver = ReadingProgressSaver(library: library, document: document, handle: handle)
             let file = OpenedDocument(
-                file: document.file, appearance: settings.pageAppearance(systemScheme: colorScheme))
+                document, in: library, appearance: settings.pageAppearance(systemScheme: colorScheme))
             contents = file?.contents
             // Shown at once: the Library may be busy writing (the previous Tab's
             // Reading Progress), and Markup draws in when it arrives.

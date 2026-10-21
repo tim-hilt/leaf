@@ -219,6 +219,41 @@ impl From<CoreDocument> for Document {
     }
 }
 
+/// A file of an EPUB, see `leafpdf_core::epub::Resource`.
+#[derive(uniffi::Record)]
+pub struct EpubResource {
+    pub bytes: Vec<u8>,
+    pub media_type: String,
+}
+
+/// An EPUB opened for reading, see `leafpdf_core::epub::Epub`. Clients keep it
+/// open while the Reader shows the book, instead of opening it per file.
+#[derive(uniffi::Object)]
+pub struct EpubBook(Mutex<epub::Epub>);
+
+#[uniffi::export]
+impl EpubBook {
+    /// The paths of the spine items, in reading order.
+    pub fn spine(&self) -> Vec<String> {
+        self.lock().spine().to_vec()
+    }
+
+    /// The file at `path` (a spine item or what it uses), if the EPUB has it.
+    pub fn resource(&self, path: String) -> Option<EpubResource> {
+        let resource = self.lock().resource(&path)?;
+        Some(EpubResource {
+            bytes: resource.bytes,
+            media_type: resource.media_type,
+        })
+    }
+}
+
+impl EpubBook {
+    fn lock(&self) -> std::sync::MutexGuard<'_, epub::Epub> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 /// Documents in the order of a `Sort`, ready for Library Search, built from
 /// one `Item` per Document, see `leafpdf_core::listing::Listing`.
 #[derive(uniffi::Object)]
@@ -475,6 +510,14 @@ impl Library {
 
     pub fn remove(&self, id: String) -> Result<(), LibraryError> {
         self.written(self.core.remove(&id))
+    }
+
+    /// EPUB `id`, opened for reading; none for a PDF, or an EPUB that can't be read.
+    pub fn open_epub(&self, id: String) -> Result<Option<Arc<EpubBook>>, LibraryError> {
+        Ok(self
+            .core
+            .open_epub(&id)?
+            .map(|epub| Arc::new(EpubBook(Mutex::new(epub)))))
     }
 
     /// The bytes of the Cover image of EPUB `id`, if it has one.
