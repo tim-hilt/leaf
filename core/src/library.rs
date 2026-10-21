@@ -373,20 +373,28 @@ impl Library {
     pub fn documents(&self) -> io::Result<Vec<Document>> {
         let mut entries = self.entries();
         entries.sort_by(|a, b| b.imported.cmp(&a.imported).then_with(|| a.id.cmp(&b.id)));
-        // Reading each Document's state dominates, so it is spread over the
-        // cores: a Library of 1,000 Documents lists in half the time.
+        // Reading each Document's state dominates, so a large Library is
+        // spread over the cores: 1,000 Documents list in half the time. A
+        // small one lists on this thread.
         let threads = std::thread::available_parallelism().map_or(1, usize::from);
         let per_thread = chunk_size(entries.len(), threads);
-        let per_chunk = std::thread::scope(|scope| {
-            let workers: Vec<_> = entries
-                .chunks(per_thread)
-                .map(|chunk| scope.spawn(|| chunk.iter().map(|e| self.document_of(e)).collect()))
-                .collect();
-            workers
-                .into_iter()
-                .map(|worker| worker.join().expect("listing a Document doesn't panic"))
-                .collect::<io::Result<Vec<Vec<_>>>>()
-        })?;
+        let list = |chunk: &[Entry]| -> io::Result<Vec<_>> {
+            chunk.iter().map(|e| self.document_of(e)).collect()
+        };
+        let per_chunk = if entries.len() <= per_thread {
+            vec![list(&entries)?]
+        } else {
+            std::thread::scope(|scope| {
+                let workers: Vec<_> = entries
+                    .chunks(per_thread)
+                    .map(|chunk| scope.spawn(move || list(chunk)))
+                    .collect();
+                workers
+                    .into_iter()
+                    .map(|worker| worker.join().expect("listing a Document doesn't panic"))
+                    .collect::<io::Result<Vec<_>>>()
+            })?
+        };
         // Documents without a File (`None`) are skipped.
         Ok(per_chunk.into_iter().flatten().flatten().collect())
     }
@@ -425,20 +433,20 @@ impl Library {
     /// `id` that isn't a Document ID is `InvalidInput`.
     pub fn set_details(&self, id: &str, details: &Details) -> io::Result<()> {
         let path = self.folder(id)?.join(DETAILS);
-        if self.entry(id).is_none() {
+        let Some(entry) = self.entry(id) else {
             return Ok(());
-        }
-        let _writing = self.writing();
-        // The folder may be gone: the Document was Removed.
+        };
         let bytes = details::encode(details);
+        // Under `writing`, so the cache ends as the last write left the file.
+        let _writing = self.writing();
         let written = write_atomically(&self.staging(), &path, &bytes);
-        if written.is_ok()
-            && let Some(entry) = self.entry(id)
-        {
-            // As stored, i.e. normalized.
+        if written.is_ok() {
+            // As stored, i.e. normalized. Kept for the Imports the write was
+            // for: should a re-Import have overtaken it, the file is read again.
             let known = (entry.imports, details::decode(&bytes));
             self.known_details().insert(id.to_owned(), known);
         }
+        // The folder may be gone: the Document was Removed.
         ignore_not_found(written)
     }
 
@@ -874,14 +882,14 @@ fn state_name(import: &str) -> String {
     format!(".state-{import}.automerge")
 }
 
-/// The name of the file holding the Reading Progress saved for Import
-/// `import`: that of its Document, if it is the Document's first Import.
 /// Documents per thread when listing `len` of them on up to `threads`: a
 /// thread isn't worth starting for fewer than `MIN_PER_THREAD`.
 fn chunk_size(len: usize, threads: usize) -> usize {
     len.div_ceil(threads).max(MIN_PER_THREAD)
 }
 
+/// The name of the file holding the Reading Progress saved for Import
+/// `import`: that of its Document, if it is the Document's first Import.
 fn progress_name(import: &str) -> String {
     format!(".progress-{import}")
 }

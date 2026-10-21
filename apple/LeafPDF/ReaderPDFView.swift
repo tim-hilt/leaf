@@ -136,7 +136,7 @@ final class ReaderPDFView: PDFView {
     /// The Note icons, above the pages. Hidden from hit-testing.
     private lazy var noteIcons = NoteIconsView(reader: self)
 
-    /// What the Reader reports. Set it once, with everything it needs.
+    /// What the Reader reports, set as one value. Each callback defaults to doing nothing.
     struct Callbacks {
         /// Called on a single tap on the page (iOS only; macOS clicks never fire it).
         var onSingleTap: () -> Void = {}

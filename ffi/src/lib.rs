@@ -171,8 +171,8 @@ pub struct Document {
     pub percent_read: Option<u8>,
 }
 
-impl From<leafpdf_core::library::Document> for Document {
-    fn from(d: leafpdf_core::library::Document) -> Self {
+impl From<CoreDocument> for Document {
+    fn from(d: CoreDocument) -> Self {
         Self {
             title: d.title(),
             percent_read: d.percent_read(),
