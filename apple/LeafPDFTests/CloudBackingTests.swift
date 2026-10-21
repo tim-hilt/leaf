@@ -345,7 +345,7 @@ extension LibraryModelTests {
         let added = try #require(await a.addHighlight(anchor, to: onA))
 
         #expect(try await eventually { b.markupRevision(of: onB) > before })
-        #expect(await b.highlights(of: onB) == [added])
+        #expect(await b.markup(of: onB).highlights == [added])
         #expect(onB.id == id)
     }
 
@@ -360,8 +360,8 @@ extension LibraryModelTests {
 
         #expect(
             try await eventuallyAsync {
-                let note = await b.highlights(of: onB).first?.note
-                let pageNotes = await b.pageNotes(of: onB)
+                let note = await b.markup(of: onB).highlights.first?.note
+                let pageNotes = await b.markup(of: onB).pageNotes
                 return note == "worth a note" && pageNotes.count == 1
             })
     }

@@ -139,122 +139,6 @@ extension Date {
     init(milliseconds: UInt64) { self.init(timeIntervalSince1970: Double(milliseconds) / 1000) }
 }
 
-/// Where Sync stands, while Connected; the core's `Status`.
-extension Status {
-    /// What Settings says.
-    func line(now: Date = .now) -> String {
-        switch self {
-        case .syncing: return "Syncing…"
-        case .offline: return "Offline"
-        case .wrongPassword: return "Wrong password"
-        case .updateNeeded: return "Update LeafPDF to keep syncing"
-        case .synced(let at):
-            let date = Date(milliseconds: at)
-            return now.timeIntervalSince(date) < 60
-                ? "Synced just now" : "Synced \(date.formatted(.relative(presentation: .named)))"
-        }
-    }
-}
-
-/// What the Gallery's toolbar shows of Sync.
-enum SyncIndicator: Equatable {
-    case syncing
-    case synced(Date)
-    /// Trying again can help unless Sync is blocked; then Settings has to.
-    case failed(canRetry: Bool)
-
-    init(_ state: Status) {
-        switch state {
-        case .syncing: self = .syncing
-        case .synced(let at): self = .synced(Date(milliseconds: at))
-        case .offline: self = .failed(canRetry: true)
-        case .wrongPassword, .updateNeeded: self = .failed(canRetry: false)
-        }
-    }
-
-    /// What its popover says.
-    var message: String {
-        switch self {
-        case .syncing: "Syncing\u{2026}"
-        case .failed: "Error while syncing"
-        case .synced(let date):
-            "Last synced at \(date.formatted(date: .omitted, time: .shortened)) \(date.formatted(date: .abbreviated, time: .omitted))"
-        }
-    }
-}
-
-/// Files uploading or downloading: what the Gallery's transfer bar shows.
-struct FileTransfer: Equatable {
-    /// Documents whose File has been transferred.
-    let done: Int
-    /// Documents whose File this Sync transfers.
-    let total: Int
-
-    /// Nil once everything is transferred: there is no bar to show.
-    init?(done: Int, total: Int) {
-        guard done < total else { return nil }
-        self.done = done
-        self.total = total
-    }
-
-    var text: String { "Syncing \(done) of \(total) Documents" }
-}
-
-/// The Cloud Provider this Device is Connected to.
-struct CloudConnection: Equatable {
-    /// The Server URL, or the directory of a test.
-    let server: String
-}
-
-extension ConnectError {
-    /// What Settings says next to the form.
-    var message: String {
-        switch self {
-        case .WrongCredentials: "Wrong username or password"
-        case .Unreachable: "Server not reachable"
-        case .NotHttps: "URL must start with https://"
-        case .NotWebDav: "Not a WebDAV server"
-        }
-    }
-}
-
-/// Forwards what the core's Sync loop reports, on its thread, to the main actor.
-private final class SyncRelay: SyncObserver {
-    private let onStatus: @Sendable @MainActor (Status) -> Void
-    private let onTransfer: @Sendable @MainActor (FileTransfer?) -> Void
-    private let onLibraryChanged: @Sendable @MainActor () -> Void
-    private let onMarkupChanged: @Sendable @MainActor (String) -> Void
-
-    init(
-        status: @escaping @Sendable @MainActor (Status) -> Void,
-        transfer: @escaping @Sendable @MainActor (FileTransfer?) -> Void,
-        libraryChanged: @escaping @Sendable @MainActor () -> Void,
-        markupChanged: @escaping @Sendable @MainActor (String) -> Void
-    ) {
-        onStatus = status
-        onTransfer = transfer
-        onLibraryChanged = libraryChanged
-        onMarkupChanged = markupChanged
-    }
-
-    func statusChanged(status: Status) {
-        Task { @MainActor [onStatus] in onStatus(status) }
-    }
-
-    func transferProgress(done: UInt64, total: UInt64) {
-        let transfer = FileTransfer(done: Int(done), total: Int(total))
-        Task { @MainActor [onTransfer] in onTransfer(transfer) }
-    }
-
-    func libraryChanged() {
-        Task { @MainActor [onLibraryChanged] in onLibraryChanged() }
-    }
-
-    func markupChanged(id: String) {
-        Task { @MainActor [onMarkupChanged] in onMarkupChanged(id) }
-    }
-}
-
 /// The Library as the clients see it: the core's Library folder plus its
 /// Documents. One per app, shared by all windows.
 @MainActor @Observable
@@ -487,14 +371,13 @@ final class LibraryModel {
     }
 
     /// How often Sync changed the Markup of `document`; it changes whenever
-    /// `highlights(of:)` and `pageNotes(of:)` have news.
+    /// `markup(of:)` has news.
     func markupRevision(of document: LibraryDocument) -> Int { markupRevisions[document.id, default: 0] }
 
     /// Reads the Highlight Colors again, after every write to the Preferences
     /// already queued, as Sync may have changed them.
     private func reloadHighlightColors() async {
-        let core = core
-        let stored = await inStateOrder { core.highlightColors() }
+        let stored = await inStateOrder { $0.highlightColors() }
         let all = stored.colors.map(HighlightColor.init)
         let defaultColor = HighlightColor(stored.defaultColor)
         if highlightColors != all { highlightColors = all }
@@ -666,27 +549,21 @@ final class LibraryModel {
         let progress = ReadingProgress(
             pageIndex: UInt32(place.pageIndex), x: place.point.x, y: place.point.y,
             lastRead: lastRead.millisecondsSince1970)
-        let core = core
         let id = document.id
         update(
             await inStateOrder {
-                try? core.saveProgress(id: id, progress: progress)
-                return try? core.document(id: id)
+                try? $0.saveProgress(id: id, progress: progress)
+                return try? $0.document(id: id)
             })
     }
 
     /// The Highlights and page Notes of `document`, each oldest first, read at
     /// once. Empty if there are none or the Document was Removed.
     func markup(of document: LibraryDocument) async -> (highlights: [Highlight], pageNotes: [PageNote]) {
-        let core = core
         let id = document.id
-        let markup = await inStateOrder { try? core.markup(id: id) }
+        let markup = await inStateOrder { try? $0.markup(id: id) }
         return (markup?.highlights.map(Highlight.init) ?? [], markup?.pageNotes.map(PageNote.init) ?? [])
     }
-
-    /// The Highlights of `document`, oldest first. Empty if there are none or
-    /// the Document was Removed.
-    func highlights(of document: LibraryDocument) async -> [Highlight] { await markup(of: document).highlights }
 
     /// Adds a Highlight over `anchor` in the Default Highlight Color to `document`,
     /// `created` now. The core writes off the main thread, in order, and this
@@ -695,7 +572,6 @@ final class LibraryModel {
     func addHighlight(
         _ anchor: HighlightAnchor, to document: LibraryDocument, at created: Date = .now
     ) async -> Highlight? {
-        let core = core
         let id = document.id
         let pages = anchor.pages.map { page in
             PageRects(
@@ -705,7 +581,7 @@ final class LibraryModel {
         let rgb = Rgb(defaultHighlightColor.color)
         let milliseconds = created.millisecondsSince1970
         let stored = await inStateOrder {
-            try? core.addHighlight(
+            try? $0.addHighlight(
                 id: id, anchor: pages, quotedText: anchor.quotedText, color: rgb, created: milliseconds)
         }
         return stored.map(Highlight.init)
@@ -715,47 +591,39 @@ final class LibraryModel {
     /// main thread, in order, and this returns when it has. Does nothing for a
     /// Document that was Removed.
     func setHighlightColor(_ color: RGB, of highlight: Highlight, in document: LibraryDocument) async {
-        let core = core
         let id = document.id
         let highlightID = highlight.id
         let rgb = Rgb(color)
-        await inStateOrder { try? core.setHighlightColor(id: id, highlight: highlightID, color: rgb) }
+        await inStateOrder { try? $0.setHighlightColor(id: id, highlight: highlightID, color: rgb) }
     }
 
     /// Sets the Note of `highlight` of `document` to `note`; empty removes it. The
     /// core writes off the main thread, in order, and this returns when it has.
     /// Does nothing for a Document that was Removed.
     func setNote(_ note: String, of highlight: Highlight, in document: LibraryDocument) async {
-        let core = core
         let id = document.id
         let highlightID = highlight.id
-        await inStateOrder { try? core.setHighlightNote(id: id, highlight: highlightID, note: note) }
+        await inStateOrder { try? $0.setHighlightNote(id: id, highlight: highlightID, note: note) }
     }
 
     /// Removes `highlight` from `document`. The core writes off the main
     /// thread, in order, and this returns when it has. Does nothing for a
     /// Document that was Removed.
     func removeHighlight(_ highlight: Highlight, from document: LibraryDocument) async {
-        let core = core
         let id = document.id
         let highlightID = highlight.id
-        await inStateOrder { try? core.removeHighlight(id: id, highlight: highlightID) }
+        await inStateOrder { try? $0.removeHighlight(id: id, highlight: highlightID) }
     }
-
-    /// The page Notes of `document`, oldest first. Empty if there are none or
-    /// the Document was Removed.
-    func pageNotes(of document: LibraryDocument) async -> [PageNote] { await markup(of: document).pageNotes }
 
     /// Adds a page Note without text at `place` to `document`, `created` now. The
     /// core writes off the main thread, in order, and this returns the stored
-    /// page Note when it has. It isn't listed by `pageNotes(of:)` until it has
+    /// page Note when it has. It isn't listed by `markup(of:)` until it has
     /// text (`setText`). Nil for a Document that was Removed, or if the write failed.
     func addPageNote(at place: Place, to document: LibraryDocument, at created: Date = .now) async -> PageNote? {
-        let core = core
         let id = document.id
         let milliseconds = created.millisecondsSince1970
         let stored = await inStateOrder {
-            try? core.addPageNote(
+            try? $0.addPageNote(
                 id: id, pageIndex: UInt32(place.pageIndex), x: place.point.x, y: place.point.y, created: milliseconds)
         }
         return stored.map(PageNote.init)
@@ -765,20 +633,18 @@ final class LibraryModel {
     /// Note. The core writes off the main thread, in order, and this returns when
     /// it has. Does nothing for a Document that was Removed.
     func setText(_ text: String, of note: PageNote, in document: LibraryDocument) async {
-        let core = core
         let id = document.id
         let noteID = note.id
-        await inStateOrder { try? core.setPageNoteText(id: id, note: noteID, text: text) }
+        await inStateOrder { try? $0.setPageNoteText(id: id, note: noteID, text: text) }
     }
 
     /// Removes the page Note `note` from `document`. The core writes off the main
     /// thread, in order, and this returns when it has. Does nothing for a
     /// Document that was Removed.
     func removePageNote(_ note: PageNote, from document: LibraryDocument) async {
-        let core = core
         let id = document.id
         let noteID = note.id
-        await inStateOrder { try? core.removePageNote(id: id, note: noteID) }
+        await inStateOrder { try? $0.removePageNote(id: id, note: noteID) }
     }
 
     /// Makes `color`, one of `highlightColors`, the Default Highlight Color. It
@@ -786,9 +652,8 @@ final class LibraryModel {
     /// returns when it has.
     func setDefaultHighlightColor(_ color: HighlightColor) async {
         defaultHighlightColor = color
-        let core = core
         let id = color.id
-        await inStateOrder { try? core.setDefaultHighlightColor(id: id) }
+        await inStateOrder { try? $0.setDefaultHighlightColor(id: id) }
     }
 
     /// Adds `color` as a Custom Color after the others, `added` now. It shows at
@@ -796,10 +661,9 @@ final class LibraryModel {
     /// stored it. Nil if that failed.
     @discardableResult
     func addCustomColor(_ color: RGB, at added: Date = .now) async -> HighlightColor? {
-        let core = core
         let rgb = Rgb(color)
         let milliseconds = added.millisecondsSince1970
-        guard let stored = await inStateOrder({ try? core.addCustomColor(rgb: rgb, added: milliseconds) })
+        guard let stored = await inStateOrder({ try? $0.addCustomColor(rgb: rgb, added: milliseconds) })
         else { return nil }
         let custom = HighlightColor(stored)
         highlightColors.append(custom)
@@ -814,19 +678,19 @@ final class LibraryModel {
         guard color.isCustom else { return }
         highlightColors.removeAll { $0 == color }
         if defaultHighlightColor == color { defaultHighlightColor = highlightColors[0] }
-        let core = core
         let id = color.id
-        await inStateOrder { try? core.removeCustomColor(id: id) }
+        await inStateOrder { try? $0.removeCustomColor(id: id) }
     }
 
-    /// Runs `access` off the main thread, after every earlier access to the
-    /// core's state (a Document's or the Preferences) has finished, so reads
+    /// Runs `access` on the core off the main thread, after every earlier access
+    /// to its state (a Document's or the Preferences) has finished, so reads
     /// and writes never overlap.
-    private func inStateOrder<T: Sendable>(_ access: @escaping @Sendable () -> T) async -> T {
+    private func inStateOrder<T: Sendable>(_ access: @escaping @Sendable (LeafCore.Library) -> T) async -> T {
         let previous = lastStateAccess
+        let core = core
         let running = Task.detached {
             await previous?.value
-            return access()
+            return access(core)
         }
         lastStateAccess = Task { _ = await running.value }
         return await running.value
@@ -927,10 +791,9 @@ final class LibraryModel {
                 guard let self else { return }
                 readingDetails.remove(id)
                 guard let details else { continue }
-                let core = core
                 let stored = await inStateOrder {
-                    try? core.setDetails(id, details)
-                    return try? core.document(id: id)
+                    try? $0.setDetails(id, details)
+                    return try? $0.document(id: id)
                 }
                 read += stored.map { [$0] } ?? []
                 if read.count >= 16 || published.duration(to: .now) > .milliseconds(500) {

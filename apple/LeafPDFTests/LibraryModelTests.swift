@@ -761,7 +761,7 @@ import UniformTypeIdentifiers
         let library = try openLibrary()
         let document = try await importDocument(into: library)
 
-        #expect(await library.highlights(of: document) == [])
+        #expect(await library.markup(of: document).highlights == [])
     }
 
     @Test func anAddedHighlightIsReturnedAndInTheDocumentsHighlights() async throws {
@@ -772,7 +772,7 @@ import UniformTypeIdentifiers
 
         #expect(added.anchor == anchor)
         #expect(added.color == library.defaultHighlightColor.color)
-        #expect(await library.highlights(of: document) == [added])
+        #expect(await library.markup(of: document).highlights == [added])
     }
 
     @Test func highlightsSurviveReopeningTheLibrary() async throws {
@@ -782,7 +782,7 @@ import UniformTypeIdentifiers
 
         let reopened = try openLibrary()
 
-        #expect(await reopened.highlights(of: document) == [added])
+        #expect(await reopened.markup(of: document).highlights == [added])
     }
 
     @Test func highlightsKeepTheOrderTheyWereAddedIn() async throws {
@@ -792,7 +792,7 @@ import UniformTypeIdentifiers
         let second = try #require(await library.addHighlight(anchor, to: document, at: Date(timeIntervalSince1970: 2)))
 
         #expect(first.id != second.id)
-        #expect(await library.highlights(of: document) == [first, second])
+        #expect(await library.markup(of: document).highlights == [first, second])
     }
 
     @Test func highlightingARemovedDocumentDoesNothing() async throws {
@@ -801,7 +801,7 @@ import UniformTypeIdentifiers
         library.remove(document)
 
         #expect(await library.addHighlight(anchor, to: document) == nil)
-        #expect(await library.highlights(of: document) == [])
+        #expect(await library.markup(of: document).highlights == [])
     }
 
     @Test func removingADocumentTakesItsHighlightsAlong() async throws {
@@ -813,7 +813,7 @@ import UniformTypeIdentifiers
         library.remove(document)
         _ = await library.import(source)
 
-        #expect(await library.highlights(of: document) == [])
+        #expect(await library.markup(of: document).highlights == [])
     }
 
     @Test func aRecoloredHighlightKeepsItsColorAfterReopeningTheLibrary() async throws {
@@ -826,8 +826,8 @@ import UniformTypeIdentifiers
 
         var recolored = added
         recolored.color = green
-        #expect(await library.highlights(of: document) == [recolored])
-        #expect(await (try openLibrary()).highlights(of: document) == [recolored])
+        #expect(await library.markup(of: document).highlights == [recolored])
+        #expect(await (try openLibrary()).markup(of: document).highlights == [recolored])
     }
 
     @Test func aHighlightsNoteSurvivesReopeningTheLibraryAndEmptyingItRemovesIt() async throws {
@@ -839,17 +839,17 @@ import UniformTypeIdentifiers
 
         var noted = added
         noted.note = "my thought"
-        #expect(await (try openLibrary()).highlights(of: document) == [noted])
+        #expect(await (try openLibrary()).markup(of: document).highlights == [noted])
 
         await library.setNote("", of: added, in: document)
-        #expect(await (try openLibrary()).highlights(of: document) == [added])
+        #expect(await (try openLibrary()).markup(of: document).highlights == [added])
     }
 
     @Test func aNeverNotedDocumentHasNoPageNotes() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
 
-        #expect(await library.pageNotes(of: document) == [])
+        #expect(await library.markup(of: document).pageNotes == [])
     }
 
     @Test func anAddedPageNoteIsAtItsPlaceAndListedOnceItHasText() async throws {
@@ -861,13 +861,13 @@ import UniformTypeIdentifiers
 
         #expect(added.place == place)
         #expect(added.text == "")
-        #expect(await library.pageNotes(of: document) == [])
+        #expect(await library.markup(of: document).pageNotes == [])
 
         await library.setText("my thought", of: added, in: document)
         var typed = added
         typed.text = "my thought"
-        #expect(await library.pageNotes(of: document) == [typed])
-        #expect(await (try openLibrary()).pageNotes(of: document) == [typed])
+        #expect(await library.markup(of: document).pageNotes == [typed])
+        #expect(await (try openLibrary()).markup(of: document).pageNotes == [typed])
     }
 
     @Test func emptyingAPageNoteOrRemovingItLeavesNoPageNote() async throws {
@@ -882,7 +882,7 @@ import UniformTypeIdentifiers
         await library.setText("", of: emptied, in: document)
         await library.removePageNote(removed, from: document)
 
-        #expect(await (try openLibrary()).pageNotes(of: document) == [])
+        #expect(await (try openLibrary()).markup(of: document).pageNotes == [])
     }
 
     @Test func addingAPageNoteToARemovedDocumentDoesNothing() async throws {
@@ -901,8 +901,8 @@ import UniformTypeIdentifiers
 
         await library.removeHighlight(first, from: document)
 
-        #expect(await library.highlights(of: document) == [second])
-        #expect(await (try openLibrary()).highlights(of: document) == [second])
+        #expect(await library.markup(of: document).highlights == [second])
+        #expect(await (try openLibrary()).markup(of: document).highlights == [second])
     }
 
     @Test func recoloringAndRemovingInARemovedDocumentDoNothing() async throws {
@@ -914,7 +914,7 @@ import UniformTypeIdentifiers
         await library.setHighlightColor(library.highlightColors[1].color, of: added, in: document)
         await library.removeHighlight(added, from: document)
 
-        #expect(await library.highlights(of: document) == [])
+        #expect(await library.markup(of: document).highlights == [])
     }
 
     @Test func theHighlightColorsAreTheBuiltInOnesYellowFirst() throws {
@@ -986,7 +986,7 @@ import UniformTypeIdentifiers
 
         await library.removeCustomColor(teal)
 
-        #expect(await library.highlights(of: document).map(\.color) == [teal.color])
+        #expect(await library.markup(of: document).highlights.map(\.color) == [teal.color])
     }
 
     @Test func aColorThatIsNoLongerInThePaletteShowsAsAnExtraCircleAtTheEnd() throws {
@@ -1008,7 +1008,7 @@ import UniformTypeIdentifiers
         let added = try #require(await library.addHighlight(anchor, to: document))
 
         #expect(added.color == green.color)
-        #expect(await library.highlights(of: document).map(\.color) == [green.color])
+        #expect(await library.markup(of: document).highlights.map(\.color) == [green.color])
     }
 
     @Test func highlightsDoNotDisturbReadingProgress() async throws {
