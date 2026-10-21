@@ -61,6 +61,8 @@ const PREFERENCES_KEY: &str = "preferences";
 const LEGACY_STATE: &str = ".state.automerge";
 /// A Document's details, in its folder.
 const DETAILS: &str = ".details";
+/// The fewest Documents `documents` lists on a thread of their own.
+const MIN_PER_THREAD: usize = 32;
 
 /// A Document in the Library.
 #[derive(Debug, Clone, PartialEq)]
@@ -137,11 +139,18 @@ pub struct Library {
     /// The Reading Progress of each Document read so far, by ID, see
     /// `progress_of`. Changed under `writing`, along with the file.
     progress: Mutex<HashMap<String, KnownProgress>>,
+    /// The details of each Document read so far, by ID, see `details_of`.
+    /// Changed under `writing` by `set_details`, the only writer of the file.
+    details: Mutex<HashMap<String, KnownDetails>>,
 }
 
 /// A Document's Reading Progress, and the Imports it was read for: when they
 /// change, e.g. at a Re-Import, it is read again.
 type KnownProgress = (Vec<String>, Option<ReadingProgress>);
+
+/// A Document's details, and the Imports they were read for: a Re-Import
+/// starts without details.
+type KnownDetails = (Vec<String>, Option<Details>);
 
 /// The cursors of the documents `sync` exchanges.
 #[derive(Debug, Default)]
@@ -201,6 +210,7 @@ impl Library {
             sync_changes: AtomicU64::new(0),
             markup_changes: Mutex::new(Vec::new()),
             progress: Mutex::default(),
+            details: Mutex::default(),
         };
         library.reconcile()?;
         Ok(library)
@@ -366,7 +376,7 @@ impl Library {
         // Reading each Document's state dominates, so it is spread over the
         // cores: a Library of 1,000 Documents lists in half the time.
         let threads = std::thread::available_parallelism().map_or(1, usize::from);
-        let per_thread = entries.len().div_ceil(threads).max(1);
+        let per_thread = chunk_size(entries.len(), threads);
         let per_chunk = std::thread::scope(|scope| {
             let workers: Vec<_> = entries
                 .chunks(per_thread)
@@ -419,11 +429,42 @@ impl Library {
             return Ok(());
         }
         let _writing = self.writing();
-        ignore_not_found(write_atomically(
-            &self.staging(),
-            &path,
-            &details::encode(details),
-        ))
+        // The folder may be gone: the Document was Removed.
+        let bytes = details::encode(details);
+        let written = write_atomically(&self.staging(), &path, &bytes);
+        if written.is_ok()
+            && let Some(entry) = self.entry(id)
+        {
+            // As stored, i.e. normalized.
+            let known = (entry.imports, details::decode(&bytes));
+            self.known_details().insert(id.to_owned(), known);
+        }
+        ignore_not_found(written)
+    }
+
+    /// The details of the Document of `entry`. Read once, then kept in memory.
+    fn details_of(&self, entry: &Entry) -> Option<Details> {
+        if let Some((imports, known)) = self.known_details().get(&entry.id)
+            && *imports == entry.imports
+        {
+            return known.clone();
+        }
+        let read = fs::read(self.root.join(&entry.id).join(DETAILS))
+            .ok()
+            .and_then(|bytes| details::decode(&bytes));
+        let mut known = self.known_details();
+        match known.get(&entry.id) {
+            // Set meanwhile.
+            Some((imports, set)) if *imports == entry.imports => set.clone(),
+            _ => {
+                known.insert(entry.id.clone(), (entry.imports.clone(), read.clone()));
+                read
+            }
+        }
+    }
+
+    fn known_details(&self) -> MutexGuard<'_, HashMap<String, KnownDetails>> {
+        self.details.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The Document of `entry`, if its File is stored.
@@ -436,9 +477,7 @@ impl Library {
             path,
             imported: entry.imported,
             progress: self.progress_of(entry),
-            details: fs::read(self.root.join(&entry.id).join(DETAILS))
-                .ok()
-                .and_then(|bytes| details::decode(&bytes)),
+            details: self.details_of(entry),
         }))
     }
 
@@ -837,6 +876,12 @@ fn state_name(import: &str) -> String {
 
 /// The name of the file holding the Reading Progress saved for Import
 /// `import`: that of its Document, if it is the Document's first Import.
+/// Documents per thread when listing `len` of them on up to `threads`: a
+/// thread isn't worth starting for fewer than `MIN_PER_THREAD`.
+fn chunk_size(len: usize, threads: usize) -> usize {
+    len.div_ceil(threads).max(MIN_PER_THREAD)
+}
+
 fn progress_name(import: &str) -> String {
     format!(".progress-{import}")
 }
@@ -1429,6 +1474,40 @@ mod tests {
 
         assert!(!scratch.0.join("library").join(&document.id).exists());
         assert_eq!(import_new(&library, &source).details, None);
+    }
+
+    #[test]
+    fn details_read_back_as_stored_and_a_reimport_has_no_stale_ones() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let source = scratch.file("a.pdf", b"abc");
+        let document = import_new(&library, &source);
+        let first = details(Some("Moby-Dick"), None, 1);
+        let second = details(Some("Dracula"), Some("Stoker"), 2);
+        library.set_details(&document.id, &first).unwrap();
+        assert_eq!(library.documents().unwrap()[0].details, Some(first));
+        library.set_details(&document.id, &second).unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                library.documents().unwrap()[0].details,
+                Some(second.clone())
+            );
+        }
+
+        library.remove(&document.id).unwrap();
+        assert!(library.documents().unwrap().is_empty());
+        let again = import_new(&library, &source);
+        assert_eq!(again.details, None);
+        assert_eq!(library.documents().unwrap()[0].details, None);
+    }
+
+    #[test]
+    fn small_libraries_list_on_one_thread_and_large_ones_in_big_chunks() {
+        assert_eq!(chunk_size(0, 8), MIN_PER_THREAD);
+        assert_eq!(chunk_size(31, 8), MIN_PER_THREAD);
+        assert_eq!(chunk_size(100, 8), MIN_PER_THREAD);
+        assert_eq!(chunk_size(1000, 8), 125);
+        assert_eq!(chunk_size(1000, 1), 1000);
     }
 
     #[test]
