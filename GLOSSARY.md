@@ -1,12 +1,16 @@
 # LeafPDF
 
-A native PDF reader that syncs reading state across a user's devices.
+A native PDF and EPUB reader that syncs reading state across a user's devices.
 
 ## Language
 
 **Document**:
-A PDF the user has brought into LeafPDF to read.
-_Avoid_: PDF, book
+A PDF or EPUB the user has brought into LeafPDF to read.
+_Avoid_: PDF, EPUB, book
+
+**Format**:
+Which kind of File a Document is: PDF or EPUB.
+_Avoid_: Filetype, kind
 
 **File**:
 The stored bytes of a Document, as kept on disk and in cloud storage.
@@ -37,7 +41,7 @@ The view showing the Library.
 _Avoid_: File gallery, home
 
 **Cover**:
-The image of a Document's first page, shown for it in the Gallery.
+The image shown for a Document in the Gallery: a PDF's first page, or an EPUB's cover image.
 _Avoid_: Thumbnail, preview, first page
 
 **Library Search**:
@@ -101,11 +105,11 @@ How a Document's pages are shown: Light Pages, Dark Pages, or Match Theme, which
 _Avoid_: Page theme, page color, page mode
 
 **Light Pages**:
-Showing a Document's pages in their original colors.
+Showing a Document in its original colors.
 _Avoid_: Normal, original mode
 
 **Dark Pages**:
-Showing a Document's pages with their brightness reversed, in Page Colors.
+Showing a Document dark, in Page Colors.
 _Avoid_: Invert, night mode
 
 **Page Colors**:
@@ -121,7 +125,7 @@ A passage of a Document's text marked in a Highlight Color. It may run across pa
 _Avoid_: Marker, annotation
 
 **Note**:
-Text the user writes, belonging either to a Highlight or to a spot on a page.
+Text the user writes, belonging either to a Highlight or to a spot in the Document.
 _Avoid_: Popup note, comment, sticky note
 
 **Highlight Colors**:

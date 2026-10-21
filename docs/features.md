@@ -76,13 +76,13 @@ Cloud Backing is off until the user Connects a Cloud Provider in Settings; only 
 
 ## 9. File Import (external)
 
-Files can also be Imported from outside: the share sheet on iOS and iPadOS, "Open With" and the Dock icon on macOS, and dropping onto the Gallery. LeafPDF only declares that it opens PDFs (on macOS as an Alternate handler, never the default). There are no extension targets; the in-app import pipeline is reused. A Share Extension would need an App Group for the Library folder, would have two processes writing the Library state, and would lack the progress modal, alerts and Reader.
+Files can also be Imported from outside: the share sheet on iOS and iPadOS, "Open With" and the Dock icon on macOS, and dropping onto the Gallery. LeafPDF only declares that it opens PDFs and EPUBs (on macOS as an Alternate handler, never the default). There are no extension targets; the in-app import pipeline is reused. A Share Extension would need an App Group for the Library folder, would have two processes writing the Library state, and would lack the progress modal, alerts and Reader.
 
 - Each file opens in a new Tab next to the open ones. A single file already in the Library opens its Tab with Open With or Share; "+" and a drop show "Already in your Library" with "Open".
 - Several files are Imported one after another and each opens in a Tab, the first one active. Duplicates open (or switch to) their Tab; rejections are listed in one alert. "+" accepts several files too.
 - The one window takes the file and closes sheets. A file that arrives during an Import waits its turn.
 - Drops get the system highlight and are accepted on the Gallery only, not in the Reader.
-- PDFs only for now; EPUB and MOBI may follow.
+- PDFs and EPUBs (section 12); MOBI may follow.
 
 ## 10. More Cloud Providers
 
@@ -105,4 +105,17 @@ One window on iPhone, iPad and Mac (ADR-0018). The Reader keeps several Document
 - A Removed Document closes its Tab silently.
 - VoiceOver announces each Tab's Title and selection, with a Close action.
 - Not included: reordering, "Close Other Tabs", a Tab overview, several windows.
+
+## 12. EPUB
+
+EPUBs behave like PDFs in every section above, except as listed. The core reads the EPUB (ADR-0021); the Reader draws it in the system web view.
+
+- Reflowable EPUBs only. Fixed-layout, DRM-protected and invalid EPUBs are rejected at Import, in the same alert as other rejections.
+- One continuous vertical scroll through all Chapters. Zooming changes the text size, which reflows; one text size per Device, not synced.
+- The book's own fonts and layout are kept, with a fixed side margin. Page Style and Page Colors are shared with PDFs; Dark Pages show the text and background in Page Colors, images unchanged.
+- Cover: the EPUB's cover image, else the first image of the first Chapter, else a plain Cover with Title and Author.
+- No page numbers: the Table of Contents lists Chapters and Sections without them, and Back reads "Back to <Chapter>". Reading Progress is a percentage of the text.
+- Page Notes attach to a spot in the text, their icon in the margin at that line.
+- Markup and Reading Progress are anchored in the text (ADR-0022).
+- Not included: fixed layout, the EPUB's printed page list, font or spacing settings.
 
