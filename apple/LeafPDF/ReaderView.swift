@@ -202,7 +202,11 @@ struct ReaderView: View {
                     .ignoresSafeArea(.container, edges: .top)
                 #endif
             } else {
-                Color.clear
+                // While loading, never the system background showing through.
+                Color(settings.pageAppearance(systemScheme: colorScheme).paper)
+                    #if os(iOS)
+                        .ignoresSafeArea(.container, edges: .top)
+                    #endif
             }
         }
         .overlay(alignment: .bottom) {

@@ -35,6 +35,14 @@ struct PageColors: Equatable, Sendable {
 enum PageAppearance: Equatable, Sendable {
     case light
     case dark(PageColors)
+
+    /// The color of a page with nothing on it: white, or the paper.
+    var paper: RGB {
+        switch self {
+        case .light: RGB(1, 1, 1)
+        case .dark(let colors): colors.paper
+        }
+    }
 }
 
 /// A `PDFDocument` whose pages can be drawn as Dark Pages, with Highlights
