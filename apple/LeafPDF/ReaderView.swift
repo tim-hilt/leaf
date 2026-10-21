@@ -190,15 +190,17 @@ struct ReaderView: View {
                     onBackChange: { backPageNumber = $0 }, onShowResults: { isShowingResults = true }
                 )
                 #if os(iOS)
-                    // Under the bars, so Immersive Mode changes only the safe area, not
-                    // the frame, and the pages stay put.
-                    .ignoresSafeArea(.container, edges: .top)
+                    // Under the bars and the home indicator, so Immersive Mode changes
+                    // only the safe area, not the frame, and the pages stay put. Without
+                    // the bottom, the window's background would strip over the bottom
+                    // safe area, whatever the Theme.
+                    .ignoresSafeArea(.container, edges: [.top, .bottom])
                 #endif
             } else {
                 // While loading, never the system background showing through.
                 Color(settings.pageAppearance(systemScheme: colorScheme).paper)
                     #if os(iOS)
-                        .ignoresSafeArea(.container, edges: .top)
+                        .ignoresSafeArea(.container, edges: [.top, .bottom])
                     #endif
             }
         }
