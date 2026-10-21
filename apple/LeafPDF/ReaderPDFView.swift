@@ -82,18 +82,12 @@ final class ReaderPDFView: PDFView {
         didSet { styleGaps() }
     }
 
-    /// The system's color between pages, before Dark Pages replace it.
-    private lazy var systemGapColor = backgroundColor
-
-    /// Between Dark Pages, a darker paper, whatever the system theme: the system's
-    /// own gap would be light in a light theme.
+    /// Between pages, half the pages' paper, whatever the system theme: the
+    /// system's own gap follows the theme instead, so Light Pages would be
+    /// framed dark in a dark one and Dark Pages light in a light one.
     private func styleGaps() {
-        let system = systemGapColor
-        guard case .dark(let colors) = pageAppearance else {
-            backgroundColor = system
-            return
-        }
-        let (r, g, b) = (colors.paper.r / 2, colors.paper.g / 2, colors.paper.b / 2)
+        let paper = pageAppearance.paper
+        let (r, g, b) = (paper.r / 2, paper.g / 2, paper.b / 2)
         #if os(iOS)
             backgroundColor = UIColor(red: r, green: g, blue: b, alpha: 1)
         #else

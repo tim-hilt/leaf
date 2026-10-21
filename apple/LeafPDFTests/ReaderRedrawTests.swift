@@ -67,6 +67,45 @@
             #expect(shown.r < 0.2 && shown.g < 0.2 && shown.b < 0.2, "\(shown) at \(gap)")
         }
 
+        @Test func lightPagesShowALightGapAlsoInADarkSystem() async throws {
+            // The gap is half the pages' paper, whatever the system theme: it
+            // would be dark between Light Pages in a dark one otherwise.
+            let reader = try makeReader(interfaceStyle: .dark)
+            try await settle()
+            let document = try #require(reader.document)
+            let first = reader.convert(document.page(at: 0)!.bounds(for: .cropBox), from: document.page(at: 0)!)
+            let second = reader.convert(document.page(at: 1)!.bounds(for: .cropBox), from: document.page(at: 1)!)
+            let gap = CGPoint(x: reader.bounds.midX, y: (first.maxY + second.minY) / 2)
+            #expect(second.minY > first.maxY)
+            try await expectShown(RGB(0.5, 0.5, 0.5), at: gap, in: reader)
+        }
+
+        @Test func darkPagesAreSeparatedByDarkAlsoInADarkSystem() async throws {
+            let reader = try makeReader(appearance: .dark(.default), interfaceStyle: .dark)
+            try await settle()
+            let document = try #require(reader.document)
+            let first = reader.convert(document.page(at: 0)!.bounds(for: .cropBox), from: document.page(at: 0)!)
+            let second = reader.convert(document.page(at: 1)!.bounds(for: .cropBox), from: document.page(at: 1)!)
+            let gap = CGPoint(x: reader.bounds.midX, y: (first.maxY + second.minY) / 2)
+            #expect(second.minY > first.maxY)
+            let shown = pixel(at: gap, in: reader)
+            #expect(shown.r < 0.2 && shown.g < 0.2 && shown.b < 0.2, "\(shown) at \(gap)")
+        }
+
+        @Test func switchingPageStylesSwitchesTheGap() async throws {
+            let reader = try makeReader(appearance: .dark(.default), interfaceStyle: .dark)
+            try await settle()
+            let document = try #require(reader.document)
+            let first = reader.convert(document.page(at: 0)!.bounds(for: .cropBox), from: document.page(at: 0)!)
+            let second = reader.convert(document.page(at: 1)!.bounds(for: .cropBox), from: document.page(at: 1)!)
+            let gap = CGPoint(x: reader.bounds.midX, y: (first.maxY + second.minY) / 2)
+            let darkGap = PageColors.default.paper
+            try await expectShown(RGB(darkGap.r / 2, darkGap.g / 2, darkGap.b / 2), at: gap, in: reader)
+
+            reader.pageAppearance = .light
+            try await expectShown(RGB(0.5, 0.5, 0.5), at: gap, in: reader)
+        }
+
         @Test func darkPagesNeverShowLightWhileOpening() async throws {
             let reader = try makeReader(appearance: .dark(.default))
             try await expectAlwaysShown(paper, at: centre(of: marked, in: reader), in: reader)
@@ -103,7 +142,7 @@
         /// Page Style and Highlights before the view gets it.
         func makeReader(
             appearance: PageAppearance = .light, highlights: [Highlight] = [], pageCount: Int = 2,
-            opening state: ReaderViewState? = nil
+            opening state: ReaderViewState? = nil, interfaceStyle: UIUserInterfaceStyle = .light
         ) throws -> ReaderPDFView {
             let document = try #require(StyledDocument(url: writePDF(named: "Redraw.pdf", pageCount: pageCount)))
             document.appearance = appearance
@@ -118,7 +157,7 @@
             let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
             let window = scene.map(UIWindow.init(windowScene:)) ?? UIWindow()
             window.frame = CGRect(x: 0, y: 0, width: 400, height: 800)
-            window.overrideUserInterfaceStyle = .light
+            window.overrideUserInterfaceStyle = interfaceStyle
             window.addSubview(reader)
             window.makeKeyAndVisible()
             windows.append(window)
