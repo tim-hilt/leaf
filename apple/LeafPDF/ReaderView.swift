@@ -97,6 +97,9 @@ struct ReaderView: View {
             highlights = await library.highlights(of: document)
             pageNotes = await library.pageNotes(of: document)
             contents = opened.map(TableOfContents.init)
+            // Styled before PDFKit sees it, so it never starts drawing in Light Pages.
+            opened?.appearance = settings.pageAppearance(systemScheme: colorScheme)
+            opened?.highlights = highlights
             pdf = opened
         }
         // Markup from another Device shows live. Reading Progress never moves the Reader.

@@ -632,8 +632,9 @@ final class ReaderPDFView: PDFView {
         override func layoutSubviews() {
             super.layoutSubviews()
             insetBySafeArea()
-            styleBackdrops()
             layoutDidChange()
+            // Last: opening scrolls to a place, which adds pages.
+            styleBackdrops()
         }
 
         /// Insets the pages by the safe area without moving them. Bars come and go

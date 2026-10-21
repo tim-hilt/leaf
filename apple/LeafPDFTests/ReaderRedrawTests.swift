@@ -67,6 +67,15 @@
             try await expectAlwaysShown(paper, at: CGPoint(x: 200, y: 400), in: reader)
         }
 
+        @Test func darkPagesNeverShowLightWhenOpeningPartwayIn() async throws {
+            // What a Tab switch does: reopen from the saved place, zoom and Back place.
+            let state = ReaderViewState(
+                place: Place(pageIndex: 40, point: CGPoint(x: 0, y: 700)), zoom: 1.5,
+                backPlace: Place(pageIndex: 3, point: CGPoint(x: 0, y: 500)))
+            let reader = try makeReader(appearance: .dark(.default), pageCount: 60, opening: state)
+            try await expectAlwaysShown(paper, at: CGPoint(x: 200, y: 400), in: reader)
+        }
+
         func highlight() -> Highlight {
             Highlight(
                 id: "a", anchor: HighlightAnchor(pages: [.init(pageIndex: 0, rects: [marked])], quotedText: "a"),
@@ -78,15 +87,20 @@
         }
 
         /// A Reader on a blank two-page `StyledDocument`, set up as the app does:
-        /// everything is set before the view has a size.
+        /// everything is set before the view has a size, and the Document has its
+        /// Page Style and Highlights before the view gets it.
         func makeReader(
-            appearance: PageAppearance = .light, highlights: [Highlight] = [], pageCount: Int = 2
+            appearance: PageAppearance = .light, highlights: [Highlight] = [], pageCount: Int = 2,
+            opening state: ReaderViewState? = nil
         ) throws -> ReaderPDFView {
+            let document = try #require(StyledDocument(url: writePDF(named: "Redraw.pdf", pageCount: pageCount)))
+            document.appearance = appearance
+            document.highlights = highlights
             let reader = ReaderPDFView(handle: ReaderHandle())
             reader.displayMode = .singlePageContinuous
             reader.autoScales = true
-            reader.document = try #require(StyledDocument(url: writePDF(named: "Redraw.pdf", pageCount: pageCount)))
-            reader.pageAppearance = appearance
+            if let state { reader.open(from: state) }
+            reader.document = document
             reader.highlights = highlights
             // On screen: PDFKit draws differently into windows that aren't.
             let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
