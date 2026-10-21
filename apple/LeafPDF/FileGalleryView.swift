@@ -123,8 +123,8 @@ struct FileGalleryView: View {
                 if let document = activeDocument {
                     ReaderView(document: document).id(document.id)
                         // Outside the per-Tab Reader, so switching Tabs doesn't rebuild the strip.
-                        // An inset, not a stack sibling: toggling it must not move the pages.
-                        .safeAreaInset(edge: .top, spacing: 0) { ReaderTabStrip() }
+                        // Not a stack sibling: toggling it must not move the pages.
+                        .readerTabStrip()
                 }
             }
             .toolbar {

@@ -1,6 +1,6 @@
 # Tabs in one window, not native window tabs
 
-LeafPDF is one window per Device, on iPhone, iPad and Mac. The Reader keeps several Documents open as Tabs in a custom strip under the toolbar. A `Tabs` model owns the window's state: the open Documents, the active one, and whether the Reader or the Gallery shows. The Mac app uses a single `Window` scene; iPadOS supports one scene. Tabs are saved per Device in user defaults and never synced.
+LeafPDF is one window per Device, on iPhone, iPad and Mac. The Reader keeps several Documents open as Tabs in a custom strip under the toolbar. On iOS the strip hangs under the navigation bar and follows its slide, so Immersive Mode moves both as one; UIKit has no public bottom area for the bar, so the strip reads the bar's frame on screen. A `Tabs` model owns the window's state: the open Documents, the active one, and whether the Reader or the Gallery shows. The Mac app uses a single `Window` scene; iPadOS supports one scene. Tabs are saved per Device in user defaults and never synced.
 
 ## Considered Options
 

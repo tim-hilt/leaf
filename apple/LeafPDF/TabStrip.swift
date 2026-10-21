@@ -1,21 +1,128 @@
 import SwiftUI
 
-/// The `TabStrip` above the Reader, once a second Tab is open. Immersive Mode
-/// collapses it instead of removing it, so it keeps its layout and scroll position.
-struct ReaderTabStrip: View {
-    @Environment(Tabs.self) private var tabs
+extension View {
+    /// Shows the `TabStrip` under the toolbar, once a second Tab is open. Immersive
+    /// Mode hides it instead of removing it, so it keeps its layout and scroll position.
+    func readerTabStrip() -> some View { modifier(ReaderTabStrip()) }
+}
 
-    var body: some View {
-        if tabs.openIDs.count > 1 {
-            TabStrip()
-                .frame(height: tabs.isImmersive ? 0 : TabStrip.height, alignment: .top)
-                .clipped()
-                .allowsHitTesting(!tabs.isImmersive)
-                .accessibilityHidden(tabs.isImmersive)
-                .animation(.default, value: tabs.isImmersive)
-        }
+private struct ReaderTabStrip: ViewModifier {
+    @Environment(Tabs.self) private var tabs
+    #if os(iOS)
+        /// Top edge of the strip while it follows the navigation bar; nil until the bar is known.
+        @State private var top: CGFloat?
+    #endif
+
+    private var isShown: Bool { tabs.openIDs.count > 1 }
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+            // An inset only for the safe area, which changes at once: the pages stay put.
+            // The strip itself is an overlay that moves with the bar, in one motion.
+            content
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    Color.clear.frame(height: isShown && !tabs.isImmersive ? TabStrip.height : 0)
+                }
+                .overlay(alignment: .top) {
+                    if isShown {
+                        TabStrip()
+                            .background(NavigationBarFollower(isHidden: tabs.isImmersive, top: $top))
+                            .allowsHitTesting(!tabs.isImmersive)
+                            .accessibilityHidden(tabs.isImmersive)
+                            .offset(y: top ?? -TabStrip.height)
+                            .frame(maxHeight: .infinity, alignment: .top)
+                            .ignoresSafeArea(.container, edges: .top)
+                    }
+                }
+        #else
+            content.safeAreaInset(edge: .top, spacing: 0) {
+                if isShown {
+                    TabStrip()
+                        .frame(height: tabs.isImmersive ? 0 : TabStrip.height, alignment: .top)
+                        .clipped()
+                        .accessibilityHidden(tabs.isImmersive)
+                        .animation(.default, value: tabs.isImmersive)
+                }
+            }
+        #endif
     }
 }
+
+#if os(iOS)
+    /// Reports where the `TabStrip` goes to follow the navigation bar: right under it
+    /// while shown, off the top of the screen once hidden, and in between at the same
+    /// pace as the bar's own slide. The bar's animation is UIKit's, so the strip reads
+    /// the bar's frame on screen instead of guessing its timing.
+    private struct NavigationBarFollower: UIViewRepresentable {
+        let isHidden: Bool
+        @Binding var top: CGFloat?
+
+        func makeUIView(context: Context) -> FollowerView { FollowerView() }
+
+        func updateUIView(_ view: FollowerView, context: Context) {
+            view.onMove = { top = $0 }
+            view.isHidden(isHidden)
+        }
+    }
+
+    private final class FollowerView: UIView {
+        var onMove: (CGFloat) -> Void = { _ in }
+        private var link: CADisplayLink?
+        private var wasHidden: Bool?
+        /// The bar's resting frame while shown and while hidden, as UIKit sets it at once.
+        private var ends: (shown: CGFloat, hidden: CGFloat)?
+        private var lastMoved = CACurrentMediaTime()
+
+        private var bar: UINavigationBar? {
+            sequence(first: self as UIResponder, next: \.next)
+                .lazy.compactMap { ($0 as? UIViewController)?.navigationController }.first?.navigationBar
+        }
+
+        /// Follows the bar for as long as it moves, when `hidden` changes.
+        func isHidden(_ hidden: Bool) {
+            defer { wasHidden = hidden }
+            guard wasHidden != nil, wasHidden != hidden, window != nil, link == nil else { return }
+            lastMoved = CACurrentMediaTime()
+            link = CADisplayLink(target: self, selector: #selector(tick))
+            link?.add(to: .main, forMode: .common)
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            link?.invalidate()
+            link = nil
+            // After the update that added this view.
+            if window != nil { DispatchQueue.main.async { [weak self] in self?.follow() } }
+        }
+
+        @objc private func tick() {
+            follow()
+            if CACurrentMediaTime() - lastMoved > 0.25 {
+                link?.invalidate()
+                link = nil
+            }
+        }
+
+        private func follow() {
+            guard let bar else { return }
+            let target = bar.frame.minY
+            let shownNow = bar.layer.presentation()?.frame.minY ?? target
+            if abs(shownNow - target) > 0.5 { lastMoved = CACurrentMediaTime() }
+            // `target` is one of the two ends; the higher one is the bar shown.
+            var current = ends ?? (target, target)
+            if target >= (current.shown + current.hidden) / 2 {
+                current.shown = target
+            } else {
+                current.hidden = target
+            }
+            ends = current
+            let travel = current.shown - current.hidden
+            let hiddenAmount = travel > 0 ? min(max((current.shown - shownNow) / travel, 0), 1) : 0
+            let rest = current.shown + bar.frame.height
+            onMove(rest - hiddenAmount * (rest + TabStrip.height))
+        }
+    }
+#endif
 
 /// The strip of Tabs under the toolbar: each Tab's Title and an (x), the active
 /// one emphasized, scrolling sideways when they don't fit.
