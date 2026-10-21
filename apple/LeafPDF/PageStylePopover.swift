@@ -9,8 +9,10 @@ struct PageStylePopover: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Page Style").font(.headline)
             PageStylePicker(selection: $settings.pageStyle, paper: settings.pageColors.paper)
-            Text("Page Colors").font(.headline)
-            PageColorsEditor()
+            if settings.pageStyle == .dark {
+                Text("Dark Page Colors").font(.headline)
+                PageColorsEditor()
+            }
         }
         .padding()
         .frame(minWidth: 280)
