@@ -37,7 +37,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.timhilt.leafpdf
-        # XcodeGen presets an empty team; inherit it from Config/Local.xcconfig.
+        # Automatic signing with the team from Config/Local.xcconfig, so no
+        # manual signing setup is needed after regenerating the project.
+        CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: $(inherited)
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
@@ -67,6 +69,9 @@ targets:
     platform: auto
     supportedDestinations: [iOS, macOS]
     sources: [LeafPDFTests]
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
     dependencies:
       - target: LeafPDF
     settings:
@@ -74,6 +79,8 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "6.0"
         ARCHS: arm64
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: $(inherited)
         "CODE_SIGN_IDENTITY[sdk=macosx*]": "-"
         # macOS app bundles keep the executable under Contents/MacOS.
         "TEST_HOST[sdk=macosx*]": "$(BUILT_PRODUCTS_DIR)/LeafPDF.app/Contents/MacOS/LeafPDF"
