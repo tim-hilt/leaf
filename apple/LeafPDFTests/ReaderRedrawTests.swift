@@ -25,6 +25,35 @@
             try await expectShown(paper, at: spot, in: reader)
         }
 
+        @Test func changingThePageAppearanceRedrawsPagesJustOutOfView() async throws {
+            let reader = try makeReader(appearance: .dark(.default), pageCount: 4)
+            try await settle()
+
+            reader.pageAppearance = .light
+            try await settle()
+            reader.go(to: Place(pageIndex: 1, point: CGPoint(x: 0, y: 700)))
+            try await expectShown(white, at: CGPoint(x: 200, y: 400), in: reader)
+        }
+
+        @Test func changingThePageAppearanceSwitchesTheShownPagesAtOnce() async throws {
+            // PDFKit redraws a page in tiles, one after the other. Large enough for several.
+            let reader = try makeReader(appearance: .dark(.default), size: CGSize(width: 1024, height: 1366))
+            try await settle()
+            let corners = [
+                CGPoint(x: 100, y: 200), CGPoint(x: 900, y: 200), CGPoint(x: 100, y: 1200), CGPoint(x: 900, y: 1200),
+            ]
+
+            reader.pageAppearance = .light
+            for _ in 0..<30 {
+                let shown = pixels(at: corners, in: reader)
+                let uniform = shown.allSatisfy { $0.isClose(to: paper) } || shown.allSatisfy { $0.isClose(to: white) }
+                #expect(uniform, "\(shown)")
+                guard uniform else { return }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            try await expectShown(white, at: corners[0], in: reader)
+        }
+
         @Test func changingHighlightsRedrawsTheShownPages() async throws {
             // Starts on what only drawn pages show.
             let reader = try makeReader(highlights: [highlight()])
@@ -142,7 +171,8 @@
         /// Page Style and Highlights before the view gets it.
         func makeReader(
             appearance: PageAppearance = .light, highlights: [Highlight] = [], pageCount: Int = 2,
-            opening state: ReaderViewState? = nil, interfaceStyle: UIUserInterfaceStyle = .light
+            opening state: ReaderViewState? = nil, interfaceStyle: UIUserInterfaceStyle = .light,
+            size: CGSize = CGSize(width: 400, height: 800)
         ) throws -> ReaderPDFView {
             let document = try #require(StyledDocument(url: writePDF(named: "Redraw.pdf", pageCount: pageCount)))
             document.appearance = appearance
@@ -156,7 +186,7 @@
             // On screen: PDFKit draws differently into windows that aren't.
             let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
             let window = scene.map(UIWindow.init(windowScene:)) ?? UIWindow()
-            window.frame = CGRect(x: 0, y: 0, width: 400, height: 800)
+            window.frame = CGRect(origin: .zero, size: size)
             window.overrideUserInterfaceStyle = interfaceStyle
             window.addSubview(reader)
             window.makeKeyAndVisible()

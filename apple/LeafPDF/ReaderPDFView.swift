@@ -54,11 +54,18 @@ final class ReaderPDFView: PDFView {
         get { (document as? StyledDocument)?.appearance ?? .light }
         set {
             guard newValue != pageAppearance, let styled = document as? StyledDocument else { return }
-            styled.appearance = newValue
-            styleGaps()
-            redrawPages()
+            func restyle() {
+                styled.appearance = newValue
+                styleGaps()
+                redrawPages()
+            }
             #if os(iOS)
-                styleBackdrops()
+                coverPages {
+                    restyle()
+                    styleBackdrops()
+                }
+            #else
+                restyle()
             #endif
         }
     }
@@ -99,13 +106,8 @@ final class ReaderPDFView: PDFView {
     private func redrawPages() {
         #if os(iOS)
             // `layoutDocumentView()` keeps the drawn tiles on iOS: only scrolling
-            // to new ones would show the change. PDFKit's own layers (tiles
-            // among them) redraw themselves; plain ones would lose their contents.
-            func redraw(_ layer: CALayer) {
-                if type(of: layer) != CALayer.self { layer.setNeedsDisplay() }
-                layer.sublayers?.forEach(redraw)
-            }
-            documentView.map { redraw($0.layer) }
+            // to new ones would show the change.
+            setNeedsDisplay()
         #else
             layoutDocumentView()
         #endif
@@ -580,6 +582,56 @@ final class ReaderPDFView: PDFView {
                     }
                 }
             }
+        }
+
+        /// The pages as they looked before a restyle, over them until all are redrawn.
+        private var cover: UIView?
+        private var uncovering: Task<Void, Never>?
+
+        /// Restyles under a picture of the pages as they are, which fades out once
+        /// every shown tile is redrawn: PDFKit redraws them one after the other.
+        private func coverPages(while restyle: () -> Void) {
+            if cover == nil, window != nil, let picture = snapshotView(afterScreenUpdates: false) {
+                picture.frame = bounds
+                picture.isUserInteractionEnabled = false
+                addSubview(picture)
+                cover = picture
+            }
+            let before = shownTiles()
+            restyle()
+            guard let cover else { return }
+            uncovering?.cancel()
+            uncovering = Task { [weak self] in
+                // Up to half a second, should PDFKit draw differently.
+                for _ in 0..<30 {
+                    try? await Task.sleep(for: .milliseconds(16))
+                    guard let self, !Task.isCancelled else { return }
+                    if self.shownTiles().allSatisfy({ before[$0.key] != $0.value }) { break }
+                }
+                guard !Task.isCancelled else { return }
+                self?.cover = nil
+                UIView.animate(withDuration: 0.2) {
+                    cover.alpha = 0
+                } completion: { _ in
+                    cover.removeFromSuperview()
+                }
+            }
+        }
+
+        /// What each of PDFKit's tiles in view shows. Tiles are the drawn layers
+        /// without sublayers; each redraw gives them a new surface.
+        private func shownTiles() -> [ObjectIdentifier: ObjectIdentifier] {
+            var tiles: [ObjectIdentifier: ObjectIdentifier] = [:]
+            func collect(_ layer: CALayer) {
+                if type(of: layer) != CALayer.self, layer.sublayers?.isEmpty ?? true, let contents = layer.contents,
+                    layer.convert(layer.bounds, to: self.layer).intersects(self.layer.bounds)
+                {
+                    tiles[ObjectIdentifier(layer)] = ObjectIdentifier(contents as AnyObject)
+                }
+                layer.sublayers?.forEach(collect)
+            }
+            documentView.map { collect($0.layer) }
+            return tiles
         }
 
         /// The native find bar over Document Search.

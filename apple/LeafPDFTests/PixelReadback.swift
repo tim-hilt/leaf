@@ -32,20 +32,26 @@
             }
         }
 
-        func pixel(at point: CGPoint, in view: UIView) -> RGB {
+        func pixel(at point: CGPoint, in view: UIView) -> RGB { pixels(at: [point], in: view)[0] }
+
+        /// What `view` shows at each point, all from the same moment.
+        func pixels(at points: [CGPoint], in view: UIView) -> [RGB] {
             let format = UIGraphicsImageRendererFormat()
             format.scale = 1
             let image = UIGraphicsImageRenderer(bounds: view.bounds, format: format).image { _ in
                 view.drawHierarchy(in: view.bounds, afterScreenUpdates: true)
             }
-            var bytes = [UInt8](repeating: 0, count: 4)
-            let context = CGContext(
-                data: &bytes, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
-                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
             let cg = image.cgImage!
             let (width, height) = (CGFloat(cg.width), CGFloat(cg.height))
-            context.draw(cg, in: CGRect(x: -point.x, y: point.y - height + 1, width: width, height: height))
-            return RGB(Double(bytes[0]) / 255, Double(bytes[1]) / 255, Double(bytes[2]) / 255)
+            return points.map { point in
+                var bytes = [UInt8](repeating: 0, count: 4)
+                let context = CGContext(
+                    data: &bytes, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                    space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(cg, in: CGRect(x: -point.x, y: point.y - height + 1, width: width, height: height))
+                return RGB(Double(bytes[0]) / 255, Double(bytes[1]) / 255, Double(bytes[2]) / 255)
+            }
         }
     }
 
@@ -53,7 +59,7 @@
     @MainActor var windows: [UIWindow] = []
 
     extension RGB {
-        fileprivate func isClose(to other: RGB) -> Bool {
+        func isClose(to other: RGB) -> Bool {
             abs(r - other.r) < 0.05 && abs(g - other.g) < 0.05 && abs(b - other.b) < 0.05
         }
     }
