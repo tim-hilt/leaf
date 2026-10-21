@@ -7,7 +7,7 @@
 
 use leafpdf_core::library::Document as CoreDocument;
 use leafpdf_core::library::ImportResult;
-use leafpdf_core::listing::{self, Sort, SortKey};
+use leafpdf_core::listing::{self, Item, Sort, SortKey};
 use leafpdf_core::markup::{Highlight, Markup, PageNote, PageRects, Rect, Rgb};
 use leafpdf_core::preferences::{HighlightColor, HighlightColors};
 use leafpdf_core::progress::ReadingProgress;
@@ -117,6 +117,15 @@ pub struct Markup {
     pub page_notes: Vec<PageNote>,
 }
 
+#[uniffi::remote(Record)]
+pub struct Item {
+    pub title: String,
+    pub file_name: String,
+    pub author: Option<String>,
+    pub imported: u64,
+    pub last_read: Option<u64>,
+}
+
 #[uniffi::remote(Enum)]
 pub enum SortKey {
     DateImported,
@@ -177,37 +186,19 @@ impl From<leafpdf_core::library::Document> for Document {
     }
 }
 
-impl From<&Document> for listing::Item {
-    fn from(d: &Document) -> Self {
-        let path = std::path::Path::new(&d.path);
-        Self {
-            title: d.title.clone(),
-            file_name: path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            author: d.author.clone(),
-            imported: d.imported,
-            last_read: d.progress.as_ref().map(|p| p.last_read),
-        }
-    }
-}
-
-/// Documents in the order of a `Sort`, ready for Library Search, see
-/// `leafpdf_core::listing::Listing`.
+/// Documents in the order of a `Sort`, ready for Library Search, built from
+/// one `Item` per Document, see `leafpdf_core::listing::Listing`.
 #[derive(uniffi::Object)]
 pub struct Listing(listing::Listing);
 
 #[uniffi::export]
 impl Listing {
     #[uniffi::constructor]
-    pub fn new(documents: &[Document], sort: Sort) -> Arc<Self> {
-        let items: Vec<_> = documents.iter().map(Into::into).collect();
-        Arc::new(Self(listing::Listing::new(&items, sort)))
+    pub fn new(items: &[Item], sort: Sort) -> Arc<Self> {
+        Arc::new(Self(listing::Listing::new(items, sort)))
     }
 
-    /// The positions in `documents` of those matching `search`, in order.
+    /// The positions in the items of those matching `search`, in order.
     pub fn matching(&self, search: &str) -> Vec<u32> {
         let found = self.0.matching(search).into_iter();
         found
@@ -580,6 +571,33 @@ mod tests {
         fn library_changed(&self) {}
         fn markup_changed(&self, _: String) {}
         fn transfer_progress(&self, _: u64, _: u64) {}
+    }
+
+    fn item(title: &str, file_name: &str, author: Option<&str>, imported: u64) -> Item {
+        Item {
+            title: title.into(),
+            file_name: file_name.into(),
+            author: author.map(Into::into),
+            imported,
+            last_read: None,
+        }
+    }
+
+    #[test]
+    fn a_listing_from_items_orders_and_searches() {
+        let items = [
+            item("Zebra", "z.pdf", None, 1),
+            item("apple 10", "a10.pdf", Some("Émile Zola"), 2),
+            item("apple 2", "a2.pdf", None, 3),
+        ];
+        let positions = |key, reversed, search: &str| {
+            Listing::new(&items, Sort { key, reversed }).matching(search)
+        };
+        assert_eq!(positions(SortKey::DateImported, false, ""), [2, 1, 0]);
+        assert_eq!(positions(SortKey::Title, false, ""), [2, 1, 0]);
+        assert_eq!(positions(SortKey::Title, true, ""), [0, 1, 2]);
+        assert_eq!(positions(SortKey::Title, false, "emile"), [1]);
+        assert_eq!(positions(SortKey::Title, false, "A2.PDF"), [2]);
     }
 
     struct NoProgress;

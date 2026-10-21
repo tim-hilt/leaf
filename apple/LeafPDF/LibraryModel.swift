@@ -13,8 +13,8 @@ struct LibraryDocument: Identifiable, Hashable {
     fileprivate let stored: LeafCore.Document
 
     var id: String { stored.id }
-    /// The stored File.
-    var file: URL { URL(fileURLWithPath: stored.path) }
+    /// The stored File. Built without asking the file system whether it is a directory.
+    var file: URL { URL(fileURLWithPath: stored.path, isDirectory: false) }
     /// The PDF's title, or else the file name without extension.
     var title: String { stored.title }
     /// Nil if the PDF has none, or until it is read.
@@ -45,6 +45,13 @@ struct LibraryDocument: Identifiable, Hashable {
     }
 
     fileprivate init(_ stored: LeafCore.Document) { self.stored = stored }
+
+    /// What the Gallery's `Listing` needs of this Document. Last Read only if `withLastRead`.
+    fileprivate func listingItem(withLastRead: Bool) -> Item {
+        Item(
+            title: title, fileName: fileName, author: author, imported: stored.imported,
+            lastRead: withLastRead ? progress?.lastRead : nil)
+    }
 }
 
 /// Why a File isn't Imported at all; nothing was copied.
@@ -254,8 +261,7 @@ private final class SyncRelay: SyncObserver {
 final class LibraryModel {
     /// Every Document, newest Import first.
     private(set) var documents: [LibraryDocument] = [] {
-        // Saving Reading Progress changes a Document often; it orders nothing unless sorted by it.
-        didSet { if listed(documents) != listed(oldValue) { relist() } }
+        didSet { relistIfItemsDiffer() }
     }
     /// How the Gallery orders its Documents. Remembered on this device (user
     /// defaults, not synced) and shared by all windows; setting it re-orders at once.
@@ -267,7 +273,9 @@ final class LibraryModel {
         }
     }
     /// `documents` in `sort` order, kept up to date as Titles arrive.
-    private var listing = Listing(documents: [], sort: LibrarySort.standard.core)
+    private var listing = Listing(items: [], sort: LibrarySort.standard.core)
+    /// The items `listing` was built from.
+    @ObservationIgnored private var listedItems: [Item] = []
     /// The Highlight Colors to choose from: the built-in ones, yellow first, then
     /// the Custom Colors in the order added. Kept in the Library's Preferences.
     private(set) var highlightColors: [HighlightColor]
@@ -847,26 +855,20 @@ final class LibraryModel {
         return .failure(head == Data("%PDF-".utf8) ? .unreadable : .notPDF)
     }
 
-    private func relist() { listing = Listing(documents: documents.map(\.stored), sort: sort.core) }
-
-    /// What of `documents` decides `listing`: the Library Search fields, and the
-    /// fields `sort` orders by.
-    private func listed(_ documents: [LibraryDocument]) -> [ListedFields] {
+    /// One item per Document; Last Read only when sorted by it.
+    private func items() -> [Item] {
         let byLastRead = sort.key == .recentlyRead
-        return documents.map {
-            ListedFields(
-                id: $0.id, title: $0.title, fileName: $0.fileName, author: $0.author, imported: $0.stored.imported,
-                lastRead: byLastRead ? $0.lastRead : nil)
-        }
+        return documents.map { $0.listingItem(withLastRead: byLastRead) }
     }
 
-    private struct ListedFields: Equatable {
-        let id: String
-        let title: String
-        let fileName: String
-        let author: String?
-        let imported: UInt64
-        let lastRead: Date?
+    private func relist() {
+        listedItems = items()
+        listing = Listing(items: listedItems, sort: sort.core)
+    }
+
+    /// Saving Reading Progress changes a Document often; it orders nothing unless sorted by it.
+    private func relistIfItemsDiffer() {
+        if items() != listedItems { relist() }
     }
 
     /// Reloads `documents` from the core. If the listing fails, `documents`
