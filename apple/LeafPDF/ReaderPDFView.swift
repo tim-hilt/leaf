@@ -55,6 +55,7 @@ final class ReaderPDFView: PDFView {
         set {
             guard newValue != pageAppearance, let styled = document as? StyledDocument else { return }
             styled.appearance = newValue
+            styleGaps()
             redrawPages()
             #if os(iOS)
                 styleBackdrops()
@@ -75,6 +76,29 @@ final class ReaderPDFView: PDFView {
             styled.highlights = highlights
             redrawPages()
         }
+    }
+
+    override var document: PDFDocument? {
+        didSet { styleGaps() }
+    }
+
+    /// The system's color between pages, before Dark Pages replace it.
+    private lazy var systemGapColor = backgroundColor
+
+    /// Between Dark Pages, a darker paper, whatever the system theme: the system's
+    /// own gap would be light in a light theme.
+    private func styleGaps() {
+        let system = systemGapColor
+        guard case .dark(let colors) = pageAppearance else {
+            backgroundColor = system
+            return
+        }
+        let (r, g, b) = (colors.paper.r / 2, colors.paper.g / 2, colors.paper.b / 2)
+        #if os(iOS)
+            backgroundColor = UIColor(red: r, green: g, blue: b, alpha: 1)
+        #else
+            backgroundColor = NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
+        #endif
     }
 
     /// Redraws the pages, keeping the viewport.

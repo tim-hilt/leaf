@@ -55,6 +55,18 @@
             try await expectShown(paper, at: CGPoint(x: reader.bounds.width - 1, y: 100), in: reader)
         }
 
+        @Test func darkPagesAreSeparatedByDarkEvenInALightSystem() async throws {
+            let reader = try makeReader(appearance: .dark(.default))
+            try await settle()
+            let document = try #require(reader.document)
+            let first = reader.convert(document.page(at: 0)!.bounds(for: .cropBox), from: document.page(at: 0)!)
+            let second = reader.convert(document.page(at: 1)!.bounds(for: .cropBox), from: document.page(at: 1)!)
+            let gap = CGPoint(x: reader.bounds.midX, y: (first.maxY + second.minY) / 2)
+            #expect(second.minY > first.maxY)
+            let shown = pixel(at: gap, in: reader)
+            #expect(shown.r < 0.2 && shown.g < 0.2 && shown.b < 0.2, "\(shown) at \(gap)")
+        }
+
         @Test func darkPagesNeverShowLightWhileOpening() async throws {
             let reader = try makeReader(appearance: .dark(.default))
             try await expectAlwaysShown(paper, at: centre(of: marked, in: reader), in: reader)
@@ -106,6 +118,7 @@
             let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
             let window = scene.map(UIWindow.init(windowScene:)) ?? UIWindow()
             window.frame = CGRect(x: 0, y: 0, width: 400, height: 800)
+            window.overrideUserInterfaceStyle = .light
             window.addSubview(reader)
             window.makeKeyAndVisible()
             windows.append(window)
