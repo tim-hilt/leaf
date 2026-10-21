@@ -26,7 +26,7 @@ private struct ReaderTabStrip: ViewModifier {
                 .overlay(alignment: .top) {
                     if isShown {
                         TabStrip()
-                            .background(NavigationBarFollower(isHidden: tabs.isImmersive, top: $top))
+                            .background(NavigationBarFollower(isBarHidden: tabs.isImmersive, top: $top))
                             .allowsHitTesting(!tabs.isImmersive)
                             .accessibilityHidden(tabs.isImmersive)
                             .offset(y: top ?? -TabStrip.height)
@@ -40,8 +40,8 @@ private struct ReaderTabStrip: ViewModifier {
                     TabStrip()
                         .frame(height: tabs.isImmersive ? 0 : TabStrip.height, alignment: .top)
                         .clipped()
+                        .allowsHitTesting(!tabs.isImmersive)
                         .accessibilityHidden(tabs.isImmersive)
-                        .animation(.default, value: tabs.isImmersive)
                 }
             }
         #endif
@@ -54,78 +54,82 @@ private struct ReaderTabStrip: ViewModifier {
     /// pace as the bar's own slide. The bar's animation is UIKit's, so the strip reads
     /// the bar's frame on screen instead of guessing its timing.
     private struct NavigationBarFollower: UIViewRepresentable {
-        let isHidden: Bool
+        /// Changes as the bar starts to slide.
+        let isBarHidden: Bool
         @Binding var top: CGFloat?
 
         func makeUIView(context: Context) -> FollowerView { FollowerView() }
 
         func updateUIView(_ view: FollowerView, context: Context) {
             view.onMove = { top = $0 }
-            view.isHidden(isHidden)
+            view.isBarHidden = isBarHidden
         }
     }
 
     private final class FollowerView: UIView {
         var onMove: (CGFloat) -> Void = { _ in }
+        var isBarHidden = false {
+            didSet { if isBarHidden != oldValue { follow() } }
+        }
         private var link: CADisplayLink?
-        private var wasHidden: Bool?
-        /// The bar's resting frame while shown and while hidden, as UIKit sets it at once.
-        private var ends: (shown: CGFloat, hidden: CGFloat)?
         private var lastMoved = CACurrentMediaTime()
+        /// The bar's top edge while shown; while hidden, its frame only says where it hides.
+        private var shownBarTop: CGFloat = 0
+        private var size = CGSize.zero
 
         private var bar: UINavigationBar? {
             sequence(first: self as UIResponder, next: \.next)
                 .lazy.compactMap { ($0 as? UIViewController)?.navigationController }.first?.navigationBar
         }
 
-        /// Follows the bar for as long as it moves, when `hidden` changes.
-        func isHidden(_ hidden: Bool) {
-            defer { wasHidden = hidden }
-            guard wasHidden != nil, wasHidden != hidden, window != nil, link == nil else { return }
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window != nil { follow() } else { stop() }
+        }
+
+        // Rotating or resizing the window moves the bar too.
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            guard bounds.size != size else { return }
+            size = bounds.size
+            follow()
+        }
+
+        /// Follows the bar, frame by frame, until it has rested for a moment: UIKit
+        /// starts the bar's slide only after the update that hides or shows it.
+        private func follow() {
             lastMoved = CACurrentMediaTime()
+            guard link == nil, window != nil else { return }
             link = CADisplayLink(target: self, selector: #selector(tick))
             link?.add(to: .main, forMode: .common)
         }
 
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
+        private func stop() {
             link?.invalidate()
             link = nil
-            // After the update that added this view.
-            if window != nil { DispatchQueue.main.async { [weak self] in self?.follow() } }
         }
 
         @objc private func tick() {
-            follow()
-            if CACurrentMediaTime() - lastMoved > 0.25 {
-                link?.invalidate()
-                link = nil
+            guard let bar else { return stop() }
+            let target = bar.frame
+            let now = bar.layer.presentation()?.frame ?? target
+            // UIKit sets the frame to where the bar slides at once, and hides the bar
+            // right above the screen, ending at 0.
+            if target.maxY > 0 { shownBarTop = target.minY }
+            let shownBottom = shownBarTop + target.height
+            let shownAmount = min(max(now.maxY / shownBottom, 0), 1)
+            onMove(-TabStrip.height + shownAmount * (shownBottom + TabStrip.height))
+            if abs(now.minY - target.minY) > 0.5 {
+                lastMoved = CACurrentMediaTime()
+            } else if CACurrentMediaTime() - lastMoved > 0.25 {
+                stop()
             }
-        }
-
-        private func follow() {
-            guard let bar else { return }
-            let target = bar.frame.minY
-            let shownNow = bar.layer.presentation()?.frame.minY ?? target
-            if abs(shownNow - target) > 0.5 { lastMoved = CACurrentMediaTime() }
-            // `target` is one of the two ends; the higher one is the bar shown.
-            var current = ends ?? (target, target)
-            if target >= (current.shown + current.hidden) / 2 {
-                current.shown = target
-            } else {
-                current.hidden = target
-            }
-            ends = current
-            let travel = current.shown - current.hidden
-            let hiddenAmount = travel > 0 ? min(max((current.shown - shownNow) / travel, 0), 1) : 0
-            let rest = current.shown + bar.frame.height
-            onMove(rest - hiddenAmount * (rest + TabStrip.height))
         }
     }
 #endif
 
 /// The strip of Tabs under the toolbar: each Tab's Title and an (x), the active
-/// one emphasized, scrolling sideways when they don't fit.
+/// one on a raised shape, scrolling sideways when they don't fit.
 struct TabStrip: View {
     @Environment(Tabs.self) private var tabs
     @Environment(LibraryModel.self) private var library
@@ -184,7 +188,7 @@ struct TabStrip: View {
     }
 }
 
-/// Groups the Tabs' markers so Liquid Glass (iOS 26+) slides one between them.
+/// Groups the Tabs so the marker's Liquid Glass (iOS 26+) slides between them.
 private struct TabMarkerContainer<Content: View>: View {
     @ViewBuilder let content: Content
 
@@ -201,16 +205,17 @@ private struct TabMarkerContainer<Content: View>: View {
 /// Liquid Glass on iOS 26+, a plain system fill before.
 private struct TabMarker: ViewModifier {
     let isActive: Bool
-    let id: String
     let namespace: Namespace.ID
 
     private let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+    /// One ID, moving to the active Tab, so the glass slides there instead of fading.
+    private static let glassID = "active Tab"
 
     func body(content: Content) -> some View {
         if #available(iOS 26, macOS 26, *) {
             content
                 .glassEffect(isActive ? .regular : .identity, in: shape)
-                .glassEffectID(id, in: namespace)
+                .glassEffectID(isActive ? Self.glassID : nil, in: namespace)
         } else {
             content.background {
                 if isActive { shape.fill(.quaternary) }
@@ -246,7 +251,7 @@ private struct TabItem: View {
         .padding(.leading, 12)
         .padding(.trailing, 4)
         .frame(maxHeight: .infinity)
-        .modifier(TabMarker(isActive: isActive, id: document.id, namespace: marker))
+        .modifier(TabMarker(isActive: isActive, namespace: marker))
         .padding(.horizontal, 2)
         .padding(.vertical, 3)
         .contentShape(Rectangle())
