@@ -15,18 +15,42 @@ import CoreGraphics
 /// The text size is a CSS `zoom` on each chapter's body, so the book's own sizes scale
 /// with it while the side margin on the page stays as it is. `leaf.setTextSize` keeps
 /// the position at the top of the viewport.
+///
+/// Light Pages leave the book's colors alone. Dark Pages override the text and background
+/// of every chapter with the Page Colors, never touching images, and give the page behind
+/// the chapters the paper. `leaf.setAppearance` switches between them in place: colors
+/// don't move the text. The chapters stay hidden until the book is open, so none shows
+/// in the book's colors first.
 enum ReaderEPUBScript {
     static let channel = "reader"
 
-    /// The script for `frameCount` chapters at `textSize` (`TextSize`); it scrolls to
-    /// the position `start` (chapter index, offset) once all are laid out.
-    static func source(frameCount: Int, start: (chapter: Int, offset: Int)?, textSize: CGFloat) -> String {
+    /// `appearance` as JavaScript for `leaf.setAppearance`: the Page Colors as CSS
+    /// colors, or null for Light Pages.
+    static func literal(of appearance: PageAppearance) -> String {
+        guard case .dark(let colors) = appearance else { return "null" }
+        func css(_ color: RGB) -> String {
+            let byte = { (value: Double) in Int((value * 255).rounded()) }
+            return "rgb(\(byte(color.r)), \(byte(color.g)), \(byte(color.b)))"
+        }
+        return "{ paper: '\(css(colors.paper))', ink: '\(css(colors.ink))' }"
+    }
+
+    /// The script for `frameCount` chapters at `textSize` (`TextSize`) in `appearance`; it
+    /// scrolls to the position `start` (chapter index, offset) once all are laid out.
+    static func source(
+        frameCount: Int, start: (chapter: Int, offset: Int)?, textSize: CGFloat, appearance: PageAppearance
+    ) -> String {
         let start = start.map { "[\($0.chapter), \($0.offset)]" } ?? "null"
         return """
             (() => {
-              const style = ':where(html) { padding: 0 24px } :where(img, svg, video) { max-width: 100% }';
+              // No text autosizing: on iOS it cancels most of the zoom, so the text size wouldn't change.
+              const style = ':where(html) { padding: 0 24px; -webkit-text-size-adjust: none } '
+                + ':where(img, svg, video) { max-width: 100% }';
               let textSize = \(textSize);
+              let appearance = \(literal(of: appearance));
               const sheets = [];
+              const page = document.createElement('style');
+              document.documentElement.append(page);
               const post = message => window.webkit.messageHandlers.\(channel).postMessage(message);
               const frames = () => [...document.querySelectorAll('iframe')];
 
@@ -122,16 +146,23 @@ enum ReaderEPUBScript {
               const setTextSize = size => {
                 const place = ready ? position() : null;
                 textSize = size;
-                sheets.forEach(sheet => { sheet.textContent = css(); });
+                render();
                 frames().forEach(fit);
                 if (place) scrollToPosition(place);
                 if (ready) post(position());
+              };
+
+              // Switches the Page Colors (null: Light Pages); the text stays where it is.
+              const setAppearance = colors => {
+                appearance = colors;
+                render();
               };
 
               window.leaf = {
                 position,
                 scrollToPosition,
                 setTextSize,
+                setAppearance,
                 text: index => textOf(frames()[index].contentDocument).nodes.map(node => node.data).join(''),
                 offset: (index, node, k) => {
                   const { nodes, starts } = textOf(frames()[index].contentDocument);
@@ -139,8 +170,23 @@ enum ReaderEPUBScript {
                 },
               };
 
-              const css = () => style + ' body { zoom: ' + textSize + ' }';
+              // What Dark Pages add to a chapter: the ink on all text, the paper under it.
+              const dark = () => appearance ? [
+                'html, body { background: ' + appearance.paper + ' !important }',
+                'body, body :not(img, svg, svg *, video) { color: ' + appearance.ink + ' !important }',
+                'body :not(img, svg, svg *, video) { background-color: transparent !important }',
+              ].join(' ') : '';
+              const css = () => style + ' body { zoom: ' + textSize + ' }' + dark();
               let loaded = 0, ready = false, queued = false;
+              const renderPage = () => {
+                page.textContent = 'html { background: ' + (appearance ? appearance.paper : 'white') + ' }'
+                  + (ready ? '' : ' iframe { visibility: hidden }');
+              };
+              const render = () => {
+                renderPage();
+                sheets.forEach(sheet => { sheet.textContent = css(); });
+              };
+              renderPage();
               window.addEventListener('scroll', () => {
                 if (!ready || queued) return;
                 queued = true;
@@ -163,6 +209,7 @@ enum ReaderEPUBScript {
                   const start = \(start);
                   if (start) scrollToPosition(start);
                   ready = true;
+                  renderPage();
                   post(position());
                   post('opened');
                 }

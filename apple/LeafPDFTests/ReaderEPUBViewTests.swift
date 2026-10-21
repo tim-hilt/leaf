@@ -222,6 +222,52 @@ import WebKit
         #expect(reader.textSize == TextSize.normal)
     }
 
+    // MARK: Page Style
+
+    @Test func darkPagesOverrideTheBooksTextAndBackgroundColors() async throws {
+        let book = try await importedBook(chapters: [
+            "<style>body { background: #fff; color: #111 } div { background: #eee } p { color: red }</style><div><p id=\"p\">Text</p></div>"
+        ])
+        let reader = try await openReader(book: book, appearance: .dark(night))
+        let style = "frame(0).defaultView.getComputedStyle"
+
+        #expect(try await reader.evaluate("\(style)(frame(0).getElementById('p')).color") == "rgb(224, 208, 160)")
+        #expect(try await reader.evaluate("\(style)(frame(0).body).backgroundColor") == "rgb(16, 32, 48)")
+        #expect(
+            try await reader.evaluate("\(style)(frame(0).querySelector('div')).backgroundColor")
+                == "rgba(0, 0, 0, 0)")
+    }
+
+    @Test func switchingBackToLightPagesRestoresTheBooksColors() async throws {
+        let book = try await importedBook(chapters: ["<style>p { color: rgb(1, 2, 3) }</style><p id=\"p\">Text</p>"])
+        let reader = try await openReader(book: book, appearance: .dark(night))
+        let color = "frame(0).defaultView.getComputedStyle(frame(0).getElementById('p')).color"
+        #expect(try await reader.evaluate(color) == "rgb(224, 208, 160)")
+
+        reader.pageAppearance = .light
+        try await reader.settle()
+
+        #expect(try await reader.evaluate(color) == "rgb(1, 2, 3)")
+    }
+
+    @Test func switchingThePageStyleKeepsThePlace() async throws {
+        let book = try await importedBook(chapters: [paragraphs(20), paragraphs(60), paragraphs(5)])
+        let place = Place.epub(spineIndex: 1, offset: try offset(of: "Paragraph 30 ", in: 1, of: book))
+        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        let height = try await reader.scrollHeight()
+
+        for appearance in [.dark(night), .light, .dark(.default)] as [PageAppearance] {
+            reader.pageAppearance = appearance
+            try await reader.settle()
+            #expect(reader.topOfViewport == place)
+            #expect(try await reader.scrollHeight() == height)
+        }
+        let top = try await reader.evaluate(
+            "document.querySelectorAll('iframe')[1].getBoundingClientRect().top + frame(1).querySelectorAll('p')[30].getBoundingClientRect().top"
+        )
+        #expect(abs(try #require(Double(top))) < 2)
+    }
+
     // MARK: The core's text
 
     @Test func offsetsInTheDOMEqualTheCoresOffsets() async throws {
@@ -255,6 +301,85 @@ import WebKit
         #expect(library.epub(of: pdf) == nil)
     }
 }
+
+#if os(iOS)
+    /// What the Reader shows on screen in each Page Style, read back as pixels.
+    @MainActor @Suite struct ReaderEPUBAppearanceTests: PixelReadback {
+        let white = RGB(1, 1, 1)
+        /// Below the book's content: nothing but the page's background.
+        let empty = CGPoint(x: 5, y: 790)
+        let picture = CGPoint(x: 100, y: 400)
+        /// Inside the letter-block, and beside it but inside the white box the book gives it.
+        let text = CGPoint(x: 100, y: 100)
+        let box = CGPoint(x: 350, y: 20)
+
+        /// A book of black on white: one huge letter-block, and a red picture under it.
+        func book() async throws -> EpubBook {
+            try await importedBook(
+                chapters: [
+                    """
+                    <style>body { margin: 0 } div { margin: 0; background: #fff; color: #000; font: 900 300px/1 sans-serif }</style>\
+                    <div>\u{2588}</div><img src=\"pic.png\" style=\"display: block; width: 200px; height: 200px\"/>
+                    """
+                ],
+                manifest: "<item id=\"pic\" href=\"pic.png\" media-type=\"image/png\"/>",
+                files: ["OEBPS/pic.png": solidPNG(red: 255, green: 0, blue: 0)])
+        }
+
+        @Test func darkPagesShowTheBackgroundAndTextInPageColors() async throws {
+            let reader = try await openReader(book: book(), appearance: .dark(night), onScreen: true)
+
+            try await expectShown(night.ink, at: text, in: reader)
+            try await expectShown(night.paper, at: box, in: reader)
+            try await expectShown(night.paper, at: empty, in: reader)
+        }
+
+        @Test func lightPagesShowTheBooksOwnColors() async throws {
+            let reader = try await openReader(book: book(), appearance: .light, onScreen: true)
+
+            try await expectShown(RGB(0, 0, 0), at: text, in: reader)
+            try await expectShown(white, at: box, in: reader)
+            try await expectShown(white, at: empty, in: reader)
+        }
+
+        @Test func imagesKeepTheirColorsInDarkPages() async throws {
+            let reader = try await openReader(book: book(), appearance: .dark(night), onScreen: true)
+
+            try await expectShown(RGB(1, 0, 0), at: picture, in: reader)
+        }
+
+        @Test func switchingThePageStyleChangesTheColors() async throws {
+            let reader = try await openReader(book: book(), appearance: .dark(night), onScreen: true)
+            try await expectShown(night.ink, at: text, in: reader)
+
+            reader.pageAppearance = .light
+            try await expectShown(white, at: box, in: reader)
+            try await expectShown(white, at: empty, in: reader)
+            try await expectShown(RGB(0, 0, 0), at: text, in: reader)
+            try await expectShown(RGB(1, 0, 0), at: picture, in: reader)
+
+            reader.pageAppearance = .dark(night)
+            try await expectShown(night.paper, at: box, in: reader)
+            try await expectShown(night.paper, at: empty, in: reader)
+            try await expectShown(night.ink, at: text, in: reader)
+            try await expectShown(RGB(1, 0, 0), at: picture, in: reader)
+        }
+
+        @Test func theBackgroundIsPaperFromTheFirstFrame() async throws {
+            let reader = ReaderEPUBView(
+                book: try await book(), state: nil, textSize: TextSize.normal, appearance: .dark(night),
+                handle: ReaderHandle(), callbacks: ReaderCallbacks())
+            reader.frame = CGRect(x: 0, y: 0, width: 400, height: 800)
+            show(reader)
+
+            try await expectAlwaysShown(night.paper, at: empty, in: reader)
+        }
+    }
+#endif
+
+/// Page Colors that CSS spells without rounding: paper rgb(16, 32, 48), ink rgb(224, 208, 160).
+private let night = PageColors(
+    paper: RGB(16 / 255, 32 / 255, 48 / 255), ink: RGB(224 / 255, 208 / 255, 160 / 255))
 
 private struct ImportFailed: Error {}
 
@@ -296,15 +421,16 @@ private func openReader(
 @MainActor
 private func openReader(
     book: EpubBook, state: ReaderViewState? = nil, size: CGSize = CGSize(width: 400, height: 800),
-    textSize: CGFloat = TextSize.normal, onScreen: Bool = false, onSingleTap: @escaping () -> Void = {},
-    onScroll: @escaping () -> Void = {}, onTextSizeChange: @escaping (CGFloat) -> Void = { _ in },
+    textSize: CGFloat = TextSize.normal, appearance: PageAppearance = .light, onScreen: Bool = false,
+    onSingleTap: @escaping () -> Void = {}, onScroll: @escaping () -> Void = {},
+    onTextSizeChange: @escaping (CGFloat) -> Void = { _ in },
     openExternally: @escaping (URL) -> Void = { _ in }
 ) async throws -> ReaderEPUBView {
     var reader: ReaderEPUBView?
     await withCheckedContinuation { opened in
         var once: CheckedContinuation<Void, Never>? = opened
         reader = ReaderEPUBView(
-            book: book, state: state, textSize: textSize, handle: ReaderHandle(),
+            book: book, state: state, textSize: textSize, appearance: appearance, handle: ReaderHandle(),
             callbacks: ReaderCallbacks(
                 onSingleTap: onSingleTap,
                 onOpen: {

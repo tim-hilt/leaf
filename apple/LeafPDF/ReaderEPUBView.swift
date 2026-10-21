@@ -24,6 +24,10 @@ import WebKit
 /// text, keep its place and announce the new size through `onTextSizeChange`. The
 /// side margin keeps its size.
 ///
+/// The `pageAppearance` is the Page Style: Light Pages show the book's colors, Dark Pages
+/// the Page Colors instead (`ReaderEPUBScript`). Switching keeps the place, and the view
+/// behind the page has the paper's color from the start, so nothing flashes.
+///
 /// Not yet there for EPUBs: Jumps, Markup and the find bar, so the
 /// parts of `ReaderDocumentView` for them do nothing.
 final class ReaderEPUBView: WKWebView, ReaderDocumentView {
@@ -43,20 +47,33 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// The text size the page has been told, to tell it only what changed.
     private var pageTextSize: CGFloat
 
+    /// The Page Style the page has been told, to tell it only what changed.
+    private var toldAppearance: PageAppearance
+
     /// The text size of the book. Setting it reflows the text, keeping the place.
     var textSize: CGFloat {
         didSet { syncTextSize() }
     }
 
-    /// Opens `book` at the place of `state`, else at its start, at `textSize`, and
-    /// registers as the `handle`'s view.
+    /// How the pages look. Setting it restyles them, keeping the place.
+    var pageAppearance: PageAppearance {
+        didSet {
+            styleBackground()
+            syncAppearance()
+        }
+    }
+
+    /// Opens `book` at the place of `state`, else at its start, at `textSize` in
+    /// `appearance`, and registers as the `handle`'s view.
     init(
-        book: EpubBook, state: ReaderViewState?, textSize: CGFloat, handle: ReaderHandle,
-        callbacks: ReaderCallbacks
+        book: EpubBook, state: ReaderViewState?, textSize: CGFloat, appearance: PageAppearance,
+        handle: ReaderHandle, callbacks: ReaderCallbacks
     ) {
         self.callbacks = callbacks
         self.textSize = textSize
         pageTextSize = textSize
+        pageAppearance = appearance
+        toldAppearance = appearance
         let spine = book.spine()
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(
@@ -69,13 +86,15 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         if case .epub(let spineIndex, let offset) = state?.place { start = (spineIndex, offset) }
         configuration.userContentController.addUserScript(
             WKUserScript(
-                source: ReaderEPUBScript.source(frameCount: spine.count, start: start, textSize: textSize),
+                source: ReaderEPUBScript.source(
+                    frameCount: spine.count, start: start, textSize: textSize, appearance: pageAppearance),
                 injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .defaultClient))
         super.init(frame: .zero, configuration: configuration)
         messages.view = self
         navigationDelegate = self
         uiDelegate = self
         handle.view = self
+        styleBackground()
         #if os(iOS)
             // The text size takes the pinch, not the page's scale.
             scrollView.pinchGestureRecognizer?.isEnabled = false
@@ -104,6 +123,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
             case let text as String where text == "opened":
                 view.isOpen = true
                 view.syncTextSize()
+                view.syncAppearance()
                 view.callbacks.onOpen()
             case let text as String where text == "tap":
                 view.callbacks.onSingleTap()
@@ -143,6 +163,31 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         guard isOpen, textSize != pageTextSize else { return }
         pageTextSize = textSize
         let script = "leaf.setTextSize(\(textSize))"
+        Task { _ = try? await evaluateJavaScript(script, in: nil, contentWorld: .defaultClient) }
+    }
+
+    // MARK: Page Style
+
+    /// The paper's color behind the page, whatever the Theme: before the page has loaded
+    /// and where it scrolls past its end.
+    private func styleBackground() {
+        let paper = pageAppearance.paper
+        #if os(iOS)
+            let color = UIColor(red: paper.r, green: paper.g, blue: paper.b, alpha: 1)
+            isOpaque = false
+            backgroundColor = color
+            scrollView.backgroundColor = color
+        #else
+            let color = NSColor(srgbRed: paper.r, green: paper.g, blue: paper.b, alpha: 1)
+        #endif
+        underPageBackgroundColor = color
+    }
+
+    /// Tells the page the Page Style once it is open.
+    private func syncAppearance() {
+        guard isOpen, pageAppearance != toldAppearance else { return }
+        toldAppearance = pageAppearance
+        let script = "leaf.setAppearance(\(ReaderEPUBScript.literal(of: pageAppearance)))"
         Task { _ = try? await evaluateJavaScript(script, in: nil, contentWorld: .defaultClient) }
     }
 
