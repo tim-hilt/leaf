@@ -129,6 +129,7 @@ private struct ReaderTabStrip: ViewModifier {
 struct TabStrip: View {
     @Environment(Tabs.self) private var tabs
     @Environment(LibraryModel.self) private var library
+    @Namespace private var marker
 
     static let height: CGFloat = 36
     /// Wide enough for 3 Tabs on an iPhone in portrait.
@@ -149,12 +150,18 @@ struct TabStrip: View {
         GeometryReader { geometry in
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 0) {
-                        ForEach(documents) { document in
-                            TabItem(document: document, isActive: document.id == tabs.activeID)
+                    TabMarkerContainer {
+                        HStack(spacing: 0) {
+                            ForEach(documents) { document in
+                                TabItem(
+                                    document: document, isActive: document.id == tabs.activeID,
+                                    marker: marker
+                                )
                                 .frame(width: tabWidth(in: geometry.size.width))
                                 .id(document.id)
+                            }
                         }
+                        .animation(.default, value: tabs.activeID)
                     }
                 }
                 .onAppear { scrollToActive(with: proxy, animated: false) }
@@ -177,10 +184,46 @@ struct TabStrip: View {
     }
 }
 
+/// Groups the Tabs' markers so Liquid Glass (iOS 26+) slides one between them.
+private struct TabMarkerContainer<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        if #available(iOS 26, macOS 26, *) {
+            GlassEffectContainer { content }
+        } else {
+            content
+        }
+    }
+}
+
+/// The raised shape behind the active Tab, like the selected tab in native tab bars:
+/// Liquid Glass on iOS 26+, a plain system fill before.
+private struct TabMarker: ViewModifier {
+    let isActive: Bool
+    let id: String
+    let namespace: Namespace.ID
+
+    private let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26, macOS 26, *) {
+            content
+                .glassEffect(isActive ? .regular : .identity, in: shape)
+                .glassEffectID(id, in: namespace)
+        } else {
+            content.background {
+                if isActive { shape.fill(.quaternary) }
+            }
+        }
+    }
+}
+
 /// One Tab: its Document's Title, truncated, and an (x) that closes it.
 private struct TabItem: View {
     let document: LibraryDocument
     let isActive: Bool
+    let marker: Namespace.ID
     @Environment(Tabs.self) private var tabs
 
     var body: some View {
@@ -203,10 +246,9 @@ private struct TabItem: View {
         .padding(.leading, 12)
         .padding(.trailing, 4)
         .frame(maxHeight: .infinity)
-        .background(isActive ? Color.accentColor.opacity(0.15) : .clear)
-        .overlay(alignment: .bottom) {
-            if isActive { Rectangle().fill(Color.accentColor).frame(height: 2) }
-        }
+        .modifier(TabMarker(isActive: isActive, id: document.id, namespace: marker))
+        .padding(.horizontal, 2)
+        .padding(.vertical, 3)
         .contentShape(Rectangle())
         .onTapGesture { tabs.select(document.id) }
         .accessibilityElement(children: .ignore)
