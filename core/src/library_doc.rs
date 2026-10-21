@@ -15,8 +15,7 @@
 use crate::chunks::{Cursor, Outgoing, Pulled};
 use crate::state;
 use automerge::{
-    ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value,
-    transaction::Transactable,
+    ActorId, AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 use std::collections::HashSet;
 use std::io;
@@ -87,7 +86,7 @@ impl LibraryDoc {
     /// Records an Import of the File `hash`, `imported` in milliseconds since
     /// the Unix epoch, and returns its ID.
     pub fn add_import(&mut self, hash: &str, name: &str, imported: u64) -> String {
-        self.stamp_version();
+        state::stamp_version(&mut self.doc, SCHEMA_VERSION);
         let id = state::new_id();
         let map = state::map_to_write(&mut self.doc, "imports");
         let entry = self
@@ -123,7 +122,7 @@ impl LibraryDoc {
         if ids.is_empty() {
             return false;
         }
-        self.stamp_version();
+        state::stamp_version(&mut self.doc, SCHEMA_VERSION);
         let map = state::map_to_write(&mut self.doc, "removed");
         for id in ids {
             self.doc
@@ -169,16 +168,6 @@ impl LibraryDoc {
     pub fn save(&mut self) -> Vec<u8> {
         self.doc.save()
     }
-
-    /// Writes the current schema version, unless the document has it or a
-    /// newer one.
-    fn stamp_version(&mut self) {
-        if state::version(&self.doc) < SCHEMA_VERSION {
-            self.doc
-                .put(ROOT, "version", SCHEMA_VERSION)
-                .expect("a root map accepts new keys");
-        }
-    }
 }
 
 /// Every Import in `doc`, oldest first, ties by ID. Incomplete ones are
@@ -222,6 +211,7 @@ fn text(doc: &AutoCommit, entry: &ObjId, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ROOT;
 
     fn actor(n: u8) -> ActorId {
         ActorId::from([n; 16])

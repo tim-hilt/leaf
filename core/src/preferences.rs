@@ -14,7 +14,7 @@
 
 use crate::markup::Rgb;
 use crate::state;
-use automerge::{ActorId, AutoCommit, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 
 pub(crate) const SCHEMA_VERSION: u64 = 1;
 
@@ -121,16 +121,6 @@ pub(crate) fn default_color(bytes: Option<&[u8]>) -> HighlightColor {
     color.unwrap_or_else(|| BuiltInColor::YELLOW.into())
 }
 
-/// The Automerge document `existing` with `change` made as `actor`, stamped
-/// with the schema version and compacted.
-pub(crate) fn update(
-    existing: Option<&[u8]>,
-    actor: &ActorId,
-    change: impl FnOnce(&mut AutoCommit),
-) -> Vec<u8> {
-    state::update_versioned(existing, actor, SCHEMA_VERSION, change)
-}
-
 /// Makes the color `id` the Default Highlight Color in `doc`. It doesn't check
 /// that `id` is a color.
 pub(crate) fn set_default_color(doc: &mut AutoCommit, id: &str) {
@@ -190,7 +180,7 @@ mod tests {
     }
 
     fn edit(existing: Option<&[u8]>, change: impl FnOnce(&mut AutoCommit)) -> Vec<u8> {
-        update(existing, &ActorId::random(), change)
+        state::update_versioned(existing, &ActorId::random(), SCHEMA_VERSION, change)
     }
 
     fn set_default_color(existing: Option<&[u8]>, id: &str) -> Vec<u8> {

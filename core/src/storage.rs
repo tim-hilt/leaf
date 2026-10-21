@@ -7,7 +7,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 /// A blob in a storage directory.
@@ -93,6 +93,39 @@ pub(crate) fn flush_ordered(file: &File) -> io::Result<()> {
     file.sync_data()
 }
 
+/// A name no other call in this process, or an earlier one, has used for a
+/// scratch file or folder. Starts with the process ID.
+pub(crate) fn unique_name() -> String {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Relaxed))
+}
+
+/// `result`, except that a missing file or folder (`NotFound`) is `Ok`: there
+/// was nothing to do.
+pub(crate) fn ignore_not_found(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// Streams `data` into a new file in the directory `staging`, then renames it
+/// to `path`, so `path` is the old file or the new one, never a torn one. A
+/// failure leaves no staged file.
+pub(crate) fn write_atomically(staging: &Path, path: &Path, data: &mut dyn Read) -> io::Result<()> {
+    let staged = staging.join(unique_name());
+    let written = (|| {
+        let mut file = File::create_new(&staged)?;
+        io::copy(data, &mut file)?;
+        flush_ordered(&file)?;
+        fs::rename(&staged, path)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&staged);
+    }
+    written
+}
+
 /// A storage in a directory of the file system.
 #[derive(Debug)]
 pub struct DirStorage {
@@ -115,10 +148,7 @@ impl DirStorage {
         for entry in fs::read_dir(&incoming)? {
             let entry = entry?;
             if !entry.file_name().to_string_lossy().starts_with(&own) {
-                match fs::remove_file(entry.path()) {
-                    Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-                    _ => {}
-                }
+                ignore_not_found(fs::remove_file(entry.path()))?;
             }
         }
         Ok(Self { root })
@@ -134,25 +164,10 @@ impl DirStorage {
 impl Storage for DirStorage {
     fn put(&self, name: &str, data: &mut dyn Read) -> io::Result<()> {
         let path = self.path(name)?;
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let incoming = self.root.join(INCOMING).join(format!(
-            "{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Relaxed)
-        ));
-        let written = (|| {
-            let mut file = File::create_new(&incoming)?;
-            io::copy(data, &mut file)?;
-            flush_ordered(&file)?;
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::rename(&incoming, &path)
-        })();
-        if written.is_err() {
-            let _ = fs::remove_file(&incoming);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
         }
-        written
+        write_atomically(&self.root.join(INCOMING), &path, data)
     }
 
     fn get(&self, name: &str) -> io::Result<Option<Box<dyn Read + Send>>> {
@@ -190,10 +205,7 @@ impl Storage for DirStorage {
     }
 
     fn delete(&self, name: &str) -> io::Result<()> {
-        match fs::remove_file(self.path(name)?) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            result => result,
-        }
+        ignore_not_found(fs::remove_file(self.path(name)?))
     }
 }
 

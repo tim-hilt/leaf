@@ -23,7 +23,7 @@
 
 use super::*;
 use crate::chunks::{self, Outgoing};
-use crate::storage::{Blob, Storage, get_bytes};
+use crate::storage::{Blob, Storage, get_bytes, ignore_not_found};
 
 const REMOTE_DIR: &str = "v1";
 const LIBRARY_PREFIX: &str = "library.";
@@ -265,10 +265,11 @@ impl Library {
     /// Stores `cursor` in the file `path`. Nothing happens if its folder is
     /// gone: the Document was Removed.
     fn store_cursor(&self, path: &Path, cursor: &Cursor) -> io::Result<()> {
-        match write_atomically(&self.staging(), path, cursor.encode().as_bytes()) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            result => result,
-        }
+        ignore_not_found(write_atomically(
+            &self.staging(),
+            path,
+            cursor.encode().as_bytes(),
+        ))
     }
 
     /// Merges the other Devices' chunks of the Library document and collects
@@ -728,7 +729,7 @@ mod tests {
     use crate::markup::{Highlight, PageRects, Rgb};
     use crate::storage::DirStorage;
     use automerge::transaction::Transactable;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicU32, AtomicUsize};
     use std::thread::sleep;
     use std::time::Duration;
 
@@ -1599,9 +1600,14 @@ mod tests {
             markup::put_note(doc, "h", "a note");
         });
         fs::write(root.join(&id).join(LEGACY_STATE), state).unwrap();
-        let colors = preferences::update(None, &ActorId::random(), |doc| {
-            preferences::add_custom_color(doc, Rgb { r: 9, g: 9, b: 9 }, 1);
-        });
+        let colors = state::update_versioned(
+            None,
+            &ActorId::random(),
+            preferences::SCHEMA_VERSION,
+            |doc| {
+                preferences::add_custom_color(doc, Rgb { r: 9, g: 9, b: 9 }, 1);
+            },
+        );
         fs::write(root.join(PREFERENCES), colors).unwrap();
         let a = Device {
             library: Library::open(&root).unwrap(),

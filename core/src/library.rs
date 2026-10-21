@@ -34,14 +34,15 @@ use crate::markup::{self, Highlight, Markup, PageNote, PageRects, Rgb};
 use crate::preferences::{self, HighlightColor};
 use crate::progress::{self, ReadingProgress};
 use crate::state;
-use crate::storage::flush_ordered;
+use crate::storage;
+use crate::storage::{flush_ordered, ignore_not_found, unique_name};
 use automerge::{ActorId, AutoCommit};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -182,10 +183,7 @@ impl Library {
     pub fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
         let root = root.into();
         for dir in [root.join(STAGING), root.join(REMOVING)] {
-            match fs::remove_dir_all(&dir) {
-                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-                _ => {}
-            }
+            ignore_not_found(fs::remove_dir_all(&dir))?;
             fs::create_dir_all(&dir)?;
         }
         let device_id = load_device_id(&root)?;
@@ -420,7 +418,12 @@ impl Library {
         if self.entry(id).is_none() {
             return Ok(());
         }
-        self.replace_file(&path, |_| details::encode(details))
+        let _writing = self.writing();
+        ignore_not_found(write_atomically(
+            &self.staging(),
+            &path,
+            &details::encode(details),
+        ))
     }
 
     /// The Document of `entry`, if its File is stored.
@@ -463,11 +466,8 @@ impl Library {
             return Ok(());
         };
         let _writing = self.writing();
-        match self.write_progress(&entry, progress) {
-            // The folder is gone: the Document was Removed.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            result => result,
-        }
+        // The folder may be gone: the Document was Removed.
+        ignore_not_found(self.write_progress(&entry, progress))
     }
 
     /// Stores `progress` for the Document of `entry`, under its first Import.
@@ -664,7 +664,12 @@ impl Library {
 
     fn edit_preferences(&self, change: impl FnOnce(&mut AutoCommit)) -> io::Result<()> {
         self.replace_file(&self.preferences(), |existing| {
-            preferences::update(existing, &self.device_id, change)
+            state::update_versioned(
+                existing,
+                &self.device_id,
+                preferences::SCHEMA_VERSION,
+                change,
+            )
         })?;
         self.mark_dirty(PREFERENCES_KEY);
         Ok(())
@@ -737,11 +742,12 @@ impl Library {
     ) -> io::Result<()> {
         let _writing = self.writing();
         let existing = fs::read(path).ok();
-        match write_atomically(&self.staging(), path, &write(existing.as_deref())) {
-            // The folder is gone: the Document was never there or was Removed.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            result => result,
-        }
+        // The folder may be gone: the Document was never there or was Removed.
+        ignore_not_found(write_atomically(
+            &self.staging(),
+            path,
+            &write(existing.as_deref()),
+        ))
     }
 
     fn writing(&self) -> MutexGuard<'_, ()> {
@@ -859,13 +865,6 @@ fn millis(time: SystemTime) -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-/// A name no other call in this process, or an earlier one, has used for a
-/// scratch folder.
-fn unique_name() -> String {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Relaxed))
-}
-
 /// The Device ID stored in the Library folder `root`, generated first if there
 /// is none. Preferences from before Device IDs are then remade as it, see
 /// `state::remake`; before it is stored, so a crash doesn't skip that.
@@ -889,17 +888,9 @@ fn load_device_id(root: &Path) -> io::Result<ActorId> {
     Ok(id)
 }
 
-/// Writes `bytes` to a new file in `staging` and renames it to `path`.
-fn write_atomically(staging: &Path, path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let staged = staging.join(unique_name());
-    let mut file = File::create_new(&staged)?;
-    file.write_all(bytes)?;
-    flush_ordered(&file)?;
-    let result = fs::rename(&staged, path);
-    if result.is_err() {
-        let _ = fs::remove_file(&staged);
-    }
-    result
+/// `storage::write_atomically` for `bytes`.
+fn write_atomically(staging: &Path, path: &Path, mut bytes: &[u8]) -> io::Result<()> {
+    storage::write_atomically(staging, path, &mut bytes)
 }
 
 /// Streams the file `from` into a new file at `to`, returning the SHA-256 of

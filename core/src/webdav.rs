@@ -6,14 +6,13 @@
 //! temporary name and then moved into place, so a half-written blob is never
 //! visible under its final name.
 
-use crate::storage::{Blob, Storage, check_name};
+use crate::storage::{Blob, Storage, check_name, unique_name};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::HashSet;
 use std::fmt;
 use std::io::{self, Read};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ureq::http::{Request, Response};
 use ureq::{Agent, Body, SendBody};
@@ -276,16 +275,11 @@ impl Storage for WebDavStorage {
             self.ensure_dirs(parent)?;
         }
         self.ensure_dirs(INCOMING)?;
-        static NEXT: AtomicU32 = AtomicU32::new(0);
         // The temporary names of all Devices share one directory.
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |t| t.as_nanos());
-        let temp = format!(
-            "{INCOMING}/{nanos}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Relaxed)
-        );
+        let temp = format!("{INCOMING}/{nanos}-{}", unique_name());
         let result = self.upload_and_move(&temp, name, data);
         if result.is_err() {
             let _ = self.remove(&self.url(&temp));

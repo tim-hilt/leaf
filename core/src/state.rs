@@ -41,12 +41,17 @@ pub(crate) fn update_versioned(
         .unwrap_or_default()
         .with_actor(actor.clone());
     change(&mut doc);
-    // Never lowers the version, and adds no change if it is stamped already.
-    if self::version(&doc) < version {
+    stamp_version(&mut doc, version);
+    doc.save()
+}
+
+/// Writes schema `version` into `doc`, unless it has that or a newer one: it
+/// never lowers the version, and adds no change if it is stamped already.
+pub(crate) fn stamp_version(doc: &mut AutoCommit, version: u64) {
+    if self::version(doc) < version {
         doc.put(ROOT, "version", version)
             .expect("a root map accepts new keys");
     }
-    doc.save()
 }
 
 /// The Automerge document stored as `bytes`, made anew by `actor`: the same
