@@ -56,6 +56,12 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         # The core is built for Apple silicon only (see docs/adr/0006).
         ARCHS: arm64
+        # PDFKit's iOS 26 form-field analysis (`PDFPageAnalyzerV2`) violates
+        # MainActor isolation itself and crashes the app through its own
+        # runtime checks (Apple FB22409977). Enforcement is decided by the
+        # main executable, so turning it off here also silences PDFKit's
+        # checks until Apple ships a fix.
+        OTHER_SWIFT_FLAGS: "$(inherited) -disable-dynamic-actor-isolation"
         # Ad-hoc sign macOS builds so they run without a development team.
         # Revisit once macOS needs capabilities such as CloudKit.
         "CODE_SIGN_IDENTITY[sdk=macosx*]": "-"
