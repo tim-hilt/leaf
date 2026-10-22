@@ -10,7 +10,9 @@ use leafpdf_core::epub::{self, ContentsEntry};
 use leafpdf_core::library::Document as CoreDocument;
 use leafpdf_core::library::{ImportError, ImportResult};
 use leafpdf_core::listing::{self, Item, Sort, SortKey};
-use leafpdf_core::markup::{Highlight, Markup, PageNote, PageRects, Rect, Rgb};
+use leafpdf_core::markup::{
+    Anchor, EpubPosition, Highlight, Markup, PageNote, PageRects, Rect, Rgb,
+};
 use leafpdf_core::preferences::{HighlightColor, HighlightColors};
 use leafpdf_core::progress::{Place, ReadingProgress};
 use leafpdf_core::storage::{DirStorage, Storage};
@@ -104,6 +106,21 @@ pub struct PageRects {
 }
 
 #[uniffi::remote(Record)]
+pub struct EpubPosition {
+    pub spine_index: u32,
+    pub offset: u64,
+}
+
+#[uniffi::remote(Enum)]
+pub enum Anchor {
+    Pdf(Vec<PageRects>),
+    Epub {
+        start: EpubPosition,
+        end: EpubPosition,
+    },
+}
+
+#[uniffi::remote(Record)]
 pub struct Rgb {
     pub r: u8,
     pub g: u8,
@@ -126,7 +143,7 @@ pub struct HighlightColors {
 #[uniffi::remote(Record)]
 pub struct Highlight {
     pub id: String,
-    pub anchor: Vec<PageRects>,
+    pub anchor: Anchor,
     pub quoted_text: String,
     pub color: Rgb,
     pub created: u64,
@@ -264,6 +281,19 @@ impl EpubBook {
     /// isn't a spine item.
     pub fn locate(&self, path: String, fragment: Option<String>) -> Option<Place> {
         self.lock().locate(&path, fragment.as_deref())
+    }
+
+    /// Where the passage `quoted_text` of a Highlight from `start` to `end` is
+    /// now: there if the text still matches, else where the text occurs nearest;
+    /// none if it occurs nowhere.
+    pub fn relocate(
+        &self,
+        start: EpubPosition,
+        end: EpubPosition,
+        quoted_text: String,
+    ) -> Option<Anchor> {
+        let (start, end) = self.lock().relocate(start, end, &quoted_text)?;
+        Some(Anchor::Epub { start, end })
     }
 
     /// The file at `path` (a spine item or what it uses), if the EPUB has it.
@@ -564,7 +594,7 @@ impl Library {
     pub fn add_highlight(
         &self,
         id: String,
-        anchor: Vec<PageRects>,
+        anchor: Anchor,
         quoted_text: String,
         color: Rgb,
         created: u64,

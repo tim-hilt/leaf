@@ -605,18 +605,14 @@ final class LibraryModel {
         _ anchor: HighlightAnchor, to document: LibraryDocument, at created: Date = .now
     ) async -> Highlight? {
         let id = document.id
-        let pages = anchor.pages.map { page in
-            PageRects(
-                pageIndex: UInt32(page.pageIndex),
-                rects: page.rects.map { Rect(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height) })
-        }
+        let stored = anchor.stored
         let rgb = Rgb(defaultHighlightColor.color)
         let milliseconds = created.millisecondsSince1970
-        let stored = await inStateOrder {
+        let added = await inStateOrder {
             try? $0.addHighlight(
-                id: id, anchor: pages, quotedText: anchor.quotedText, color: rgb, created: milliseconds)
+                id: id, anchor: stored, quotedText: anchor.quotedText, color: rgb, created: milliseconds)
         }
-        return stored.map(Highlight.init)
+        return added.map(Highlight.init)
     }
 
     /// Sets the color of `highlight` of `document`. The core writes off the
@@ -864,14 +860,51 @@ extension Highlight {
     fileprivate init(_ stored: LeafCore.Highlight) {
         self.init(
             id: stored.id,
-            anchor: HighlightAnchor(
-                pages: stored.anchor.map { page in
+            anchor: HighlightAnchor(stored.anchor, quotedText: stored.quotedText), color: RGB(stored.color),
+            note: stored.note)
+    }
+}
+
+extension HighlightAnchor {
+    fileprivate init(_ stored: LeafCore.Anchor, quotedText: String) {
+        switch stored {
+        case .pdf(let pages):
+            self.init(
+                pages: pages.map { page in
                     .init(
                         pageIndex: Int(page.pageIndex),
                         rects: page.rects.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) })
                 },
-                quotedText: stored.quotedText),
-            color: RGB(stored.color), note: stored.note)
+                quotedText: quotedText)
+        case .epub(let start, let end):
+            self.init(location: .epub(Span(start: Position(start), end: Position(end))), quotedText: quotedText)
+        }
+    }
+
+    /// This anchor as the core stores it.
+    fileprivate var stored: LeafCore.Anchor {
+        switch location {
+        case .pdf(let pages):
+            .pdf(
+                pages.map { page in
+                    PageRects(
+                        pageIndex: UInt32(page.pageIndex),
+                        rects: page.rects.map { Rect(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height) })
+                })
+        case .epub(let span):
+            .epub(start: span.start.stored, end: span.end.stored)
+        }
+    }
+}
+
+extension HighlightAnchor.Position {
+    init(_ stored: EpubPosition) {
+        self.init(spineIndex: Int(stored.spineIndex), offset: Int(clamping: stored.offset))
+    }
+
+    /// This position as the core stores it.
+    var stored: EpubPosition {
+        EpubPosition(spineIndex: UInt32(spineIndex), offset: UInt64(offset))
     }
 }
 

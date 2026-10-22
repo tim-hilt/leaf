@@ -15,6 +15,13 @@ import CoreGraphics
 /// `leaf.setFindMarks` marks Document Search matches as CSS highlights, the current one in
 /// another color, and `leaf.reveal` scrolls one into view unless it is.
 ///
+/// `leaf.setHighlights` draws Highlights as CSS highlights over their words, one color each,
+/// so they follow the text when it reflows, and puts a Note icon at the end of those with a
+/// Note, in a layer above the chapters that the text size doesn't scale. `leaf.takeSelection`
+/// hands over the selection as `[chapter, offset, chapter, offset, text]` and clears it. A
+/// click on a Highlight or a Note icon posts `{ highlight, x, y }`, the point in the view's
+/// coordinates; `{ selection }` is posted when the selection appears or goes.
+///
 /// The text size is a CSS `zoom` on each chapter's body, so the book's own sizes scale
 /// with it while the side margin on the page stays as it is. `leaf.setTextSize` keeps
 /// the position at the top of the viewport.
@@ -158,6 +165,123 @@ enum ReaderEPUBScript {
 
               // Scrolls the match [index, offset, length] a third of the way down the viewport
               // unless its first line is in view; returns whether it scrolled.
+              // The offset in the text of the point (container, offset) of the DOM: of a text
+              // node's character, or of the first character at or after an element's point.
+              const pointOffset = ({ nodes, starts, length }, container, offset) => {
+                const k = nodes.indexOf(container);
+                if (k >= 0) return starts[k] + offset;
+                const child = container.childNodes[offset];
+                const next = nodes.findIndex(node => {
+                  const where = (child || container).compareDocumentPosition(node);
+                  return child ? node === child || (where & Node.DOCUMENT_POSITION_FOLLOWING)
+                    : (where & Node.DOCUMENT_POSITION_FOLLOWING) && !(where & Node.DOCUMENT_POSITION_CONTAINED_BY);
+                });
+                return next < 0 ? length : starts[next];
+              };
+
+              // The selection, as [chapter, start, chapter, end, text], and clears it; null
+              // if no chapter has one.
+              const takeSelection = () => {
+                const all = frames();
+                for (let index = 0; index < all.length; index++) {
+                  const selection = all[index].contentWindow.getSelection();
+                  if (!selection || selection.isCollapsed || !selection.rangeCount) continue;
+                  const range = selection.getRangeAt(0), text = textOf(all[index].contentDocument);
+                  const start = pointOffset(text, range.startContainer, range.startOffset);
+                  const end = pointOffset(text, range.endContainer, range.endOffset);
+                  if (end <= start) continue;
+                  selection.removeAllRanges();
+                  return [index, start, index, end, text.nodes.map(node => node.data).join('').slice(start, end)];
+                }
+                return null;
+              };
+
+              // Highlights: { id, color: 'rrggbb', note, start: [chapter, offset], end: [chapter, offset] },
+              // oldest first, with the DOM ranges of their words per chapter.
+              let placed = [], highlightNames = new Set(), highlightCss = '';
+              const rgb = color => [0, 2, 4].map(i => parseInt(color.substr(i, 2), 16)).join(', ');
+
+              // The [chapter, range] pieces of the words from start to end.
+              const segmentsOf = (start, end) => {
+                const pieces = [];
+                for (let index = start[0]; index <= end[0]; index++) {
+                  const frame = frames()[index];
+                  if (!frame) break;
+                  const from = index === start[0] ? start[1] : 0;
+                  const to = index === end[0] ? end[1] : textOf(frame.contentDocument).length;
+                  const range = to > from ? rangeOf(frame, from, to - from) : null;
+                  if (range) pieces.push([index, range]);
+                }
+                return pieces;
+              };
+
+              // The newest Highlight with a box at (x, y) in chapter index; null if none.
+              const highlightAt = (index, x, y) => {
+                for (let i = placed.length - 1; i >= 0; i--) {
+                  for (const [chapter, range] of placed[i].segments) {
+                    if (chapter !== index) continue;
+                    for (const box of range.getClientRects()) {
+                      if (x >= box.left && x <= box.right && y >= box.top && y <= box.bottom) return placed[i];
+                    }
+                  }
+                }
+                return null;
+              };
+
+              // The Note icons sit above the chapters, in the page's own coordinates.
+              const notes = document.createElement('div');
+              notes.style.cssText = 'position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 1';
+              document.documentElement.append(notes);
+              notes.addEventListener('click', click => {
+                const icon = click.target.closest('.leaf-note');
+                if (!icon) return;
+                const box = icon.getBoundingClientRect();
+                post({ highlight: icon.dataset.id, x: box.left + box.width / 2, y: box.top + box.height / 2 });
+              });
+
+              // Puts each Note icon at the end of its Highlight, centered on its top-right corner.
+              const layOutNotes = () => {
+                notes.replaceChildren();
+                for (const highlight of placed) {
+                  const last = highlight.note && highlight.segments[highlight.segments.length - 1];
+                  const boxes = last ? last[1].getClientRects() : [];
+                  if (!boxes.length) continue;
+                  const box = boxes[boxes.length - 1], frame = frames()[last[0]].getBoundingClientRect();
+                  const icon = document.createElement('div');
+                  icon.className = 'leaf-note';
+                  icon.dataset.id = highlight.id;
+                  icon.style.backgroundColor = 'rgb(' + rgb(highlight.color) + ')';
+                  icon.style.left = (window.scrollX + frame.left + box.right - 9) + 'px';
+                  icon.style.top = (window.scrollY + frame.top + box.top - 9) + 'px';
+                  notes.append(icon);
+                }
+              };
+
+              const setHighlights = list => {
+                frames().forEach(frame => highlightNames.forEach(name => frame.contentWindow.CSS.highlights.delete(name)));
+                highlightNames = new Set(list.map(highlight => 'leaf-hl-' + highlight.color));
+                placed = list.map(highlight => ({ ...highlight, segments: segmentsOf(highlight.start, highlight.end) }));
+                const groups = new Map();
+                for (const highlight of placed) {
+                  for (const [index, range] of highlight.segments) {
+                    const key = index + ' leaf-hl-' + highlight.color;
+                    if (!groups.has(key)) groups.set(key, []);
+                    groups.get(key).push(range);
+                  }
+                }
+                groups.forEach((ranges, key) => {
+                  const [index, name] = key.split(' ');
+                  const { CSS, Highlight } = frames()[index].contentWindow;
+                  const highlight = new Highlight();
+                  ranges.forEach(range => highlight.add(range));
+                  CSS.highlights.set(name, highlight);
+                });
+                highlightCss = [...highlightNames].map(name =>
+                  ' ::highlight(' + name + ') { background-color: rgba(' + rgb(name.slice(-6)) + ', 0.55) }').join('');
+                render();
+                layOutNotes();
+              };
+
               const reveal = ([index, offset, length]) => {
                 const frame = frames()[index];
                 const range = frame && rangeOf(frame, offset, length);
@@ -210,6 +334,7 @@ enum ReaderEPUBScript {
                 render();
                 frames().forEach(fit);
                 if (place) scrollToPosition(place);
+                layOutNotes();
                 if (ready) post(position());
               };
 
@@ -226,6 +351,8 @@ enum ReaderEPUBScript {
                 setAppearance,
                 reveal,
                 setFindMarks,
+                setHighlights,
+                takeSelection,
                 text: index => textOf(frames()[index].contentDocument).nodes.map(node => node.data).join(''),
                 offset: (index, node, k) => {
                   const { nodes, starts } = textOf(frames()[index].contentDocument);
@@ -241,11 +368,27 @@ enum ReaderEPUBScript {
               ].join(' ') : '';
               const marks = ' ::highlight(leaf-find) { background-color: rgba(255, 204, 0, 0.4) }'
                 + ' ::highlight(leaf-find-current) { background-color: rgb(255, 149, 0); color: black }';
-              const css = () => style + ' body { zoom: ' + textSize + ' }' + dark() + marks;
+              const css = () => style + ' body { zoom: ' + textSize + ' }' + dark() + marks + highlightCss;
               let loaded = 0, ready = false, queued = false;
+              const lines = 'linear-gradient(rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.6))';
+              const noteCss = ' .leaf-note { position: absolute; width: 18px; height: 18px; box-sizing: border-box;'
+                + ' border-radius: 4px; border: 1px solid rgba(0, 0, 0, 0.3); cursor: pointer; background-repeat: no-repeat;'
+                + ' background-size: 10px 1.5px; background-image: ' + [lines, lines, lines].join(', ') + ';'
+                + ' background-position: 3px 3.25px, 3px 7.25px, 3px 11.25px }';
               const renderPage = () => {
                 page.textContent = 'html { background: ' + (appearance ? appearance.paper : 'white') + ' }'
-                  + (ready ? '' : ' iframe { visibility: hidden }');
+                  + (ready ? '' : ' iframe { visibility: hidden }') + noteCss;
+              };
+              let layingOut = false;
+              const scheduleNotes = () => {
+                if (layingOut) return;
+                layingOut = true;
+                requestAnimationFrame(() => { layingOut = false; layOutNotes(); });
+              };
+              let selecting = false;
+              const selectionChanged = () => {
+                const now = frames().some(frame => !frame.contentDocument.getSelection().isCollapsed);
+                if (now !== selecting) post({ selection: selecting = now });
               };
               const render = () => {
                 renderPage();
@@ -266,9 +409,14 @@ enum ReaderEPUBScript {
                 sheets.push(sheet);
                 (doc.head || doc.documentElement).append(sheet);
                 fit(frame);
-                new ResizeObserver(() => fit(frame)).observe(doc.documentElement);
+                new ResizeObserver(() => { fit(frame); scheduleNotes(); }).observe(doc.documentElement);
+                doc.addEventListener('selectionchange', selectionChanged);
                 doc.addEventListener('click', click => {
-                  if (!click.target.closest('a[href]') && doc.getSelection().isCollapsed) post('tap');
+                  if (click.target.closest('a[href]') || !doc.getSelection().isCollapsed) return;
+                  const hit = highlightAt(frames().indexOf(frame), click.clientX, click.clientY);
+                  if (!hit) return post('tap');
+                  const box = frame.getBoundingClientRect();
+                  post({ highlight: hit.id, x: box.left + click.clientX, y: box.top + click.clientY });
                 });
                 if (++loaded === \(frameCount)) {
                   const start = \(start);

@@ -961,6 +961,21 @@ import UniformTypeIdentifiers
         #expect(await reopened.markup(of: document).highlights == [added])
     }
 
+    @Test func anEPUBHighlightKeepsItsPositionsAndQuotedTextAcrossReopening() async throws {
+        let library = try openLibrary()
+        let source = try writeEPUB(named: "book.epub", chapters: ["<p>Call me Ishmael</p>", "<p>Some years</p>"])
+        guard case .opened(let document) = await library.import(source) else { throw ImportFailed() }
+        let span = HighlightAnchor.Span(
+            start: .init(spineIndex: 0, offset: 8), end: .init(spineIndex: 1, offset: 4))
+        let epubAnchor = HighlightAnchor(location: .epub(span), quotedText: "Ishmael\nSome")
+
+        let added = try #require(await library.addHighlight(epubAnchor, to: document))
+
+        #expect(added.anchor == epubAnchor)
+        #expect(await library.markup(of: document).highlights == [added])
+        #expect(await (try openLibrary()).markup(of: document).highlights == [added])
+    }
+
     @Test func highlightsKeepTheOrderTheyWereAddedIn() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)

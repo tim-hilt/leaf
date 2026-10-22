@@ -35,7 +35,15 @@ import WebKit
 /// listed in `results` and marked in the text. Going to a match scrolls it into view, and
 /// during one search session that is one Jump: Back returns to where the search started.
 ///
-/// Not yet there for EPUBs: Markup, so the parts of `ReaderDocumentView` for it do nothing.
+/// Highlights are drawn over their words by the page (`ReaderEPUBScript`), so they follow
+/// the text when it reflows. A Highlight is placed at the positions it stores, or, when the
+/// text there isn't its quoted text, where the core finds that text (`EpubBook.relocate`);
+/// one that is found nowhere isn't drawn. Choosing "Highlight" in the selection menu, or
+/// `highlightSelection()`, reports the selection's positions and text to `onHighlight` and
+/// clears it. A click on a Highlight, or its Note icon, is reported to `onHighlightTap`;
+/// dragging still selects.
+///
+/// Not yet there for EPUBs: page Notes, so `popoverPoint(of:)` has none.
 final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// Opens a web link outside the Reader.
     var openExternally: (URL) -> Void = { url in
@@ -122,6 +130,24 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// The position at the top of the viewport, as last reported; nil until opened.
     private var top: Place?
     private var isOpen = false
+    /// The Highlights to draw. Setting them draws the change.
+    var highlights: [Highlight] {
+        didSet { if highlights != oldValue { syncHighlights() } }
+    }
+
+    /// Where each Highlight's words are now, by its ID; nil for one found nowhere. A
+    /// Highlight's anchor and quoted text never change, so this is asked of the core once.
+    private var placements: [String: HighlightAnchor.Span?] = [:]
+
+    /// Whether the page has a selection.
+    private var hasSelection = false {
+        didSet {
+            #if os(iOS)
+                if hasSelection != oldValue { UIMenuSystem.context.setNeedsRebuild() }
+            #endif
+        }
+    }
+
     /// The text size the page has been told, to tell it only what changed.
     private var pageTextSize: CGFloat
 
@@ -143,13 +169,14 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
 
     /// Opens `book` at the place of `state`, else at its start, with the Back place
     /// of `state`, at `textSize` in `appearance`, and registers as the `handle`'s view.
-    /// Document Search lists its matches in `results`.
+    /// Document Search lists its matches in `results`. Draws `highlights`.
     init(
         book: EpubBook, state: ReaderViewState?, contents: TableOfContents, textSize: CGFloat,
-        appearance: PageAppearance, handle: ReaderHandle, results: SearchResults = SearchResults(),
-        callbacks: ReaderCallbacks
+        appearance: PageAppearance, highlights: [Highlight] = [], handle: ReaderHandle,
+        results: SearchResults = SearchResults(), callbacks: ReaderCallbacks
     ) {
         self.book = book
+        self.highlights = highlights
         self.results = results
         self.contents = contents
         restoredBackPlace = state?.backPlace
@@ -209,9 +236,18 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
                 view.backPlace = view.restoredBackPlace
                 view.syncTextSize()
                 view.syncAppearance()
+                view.syncHighlights()
                 view.callbacks.onOpen()
             case let text as String where text == "tap":
                 view.callbacks.onSingleTap()
+            case let body as [String: Any]:
+                if let selecting = body["selection"] as? Bool {
+                    view.hasSelection = selecting
+                } else if let id = body["highlight"] as? String, let x = body["x"] as? Double,
+                    let y = body["y"] as? Double
+                {
+                    view.reportTap(onHighlight: id, at: CGPoint(x: x, y: y))
+                }
             default: break
             }
         }
@@ -246,7 +282,6 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     func zoomIn() { changeTextSize(to: TextSize.zoomedIn(from: textSize)) }
     func zoomOut() { changeTextSize(to: TextSize.zoomedOut(from: textSize)) }
     func zoomToFitWidth() { changeTextSize(to: TextSize.normal) }
-    func highlightSelection() {}
     func popoverPoint(of note: PageNote) -> CGPoint? { nil }
 
     // MARK: Document Search
@@ -287,6 +322,60 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
             let moved = try? await evaluateJavaScript(script, in: nil, contentWorld: .defaultClient) as? Bool
             if moved == true, let searchStart { backPlace = searchStart }
         }
+    }
+
+    // MARK: Highlights
+
+    /// Highlights the selection: reports its positions and text to `onHighlight` and clears
+    /// the selection. Does nothing without one.
+    func highlightSelection() {
+        guard isOpen else { return }
+        Task {
+            let taken = try? await evaluateJavaScript(
+                "leaf.takeSelection()", in: nil, contentWorld: .defaultClient)
+            guard let parts = taken as? [Any], parts.count == 5, let startSpine = parts[0] as? Int,
+                let start = parts[1] as? Int, let endSpine = parts[2] as? Int, let end = parts[3] as? Int,
+                let text = parts[4] as? String
+            else { return }
+            let span = HighlightAnchor.Span(
+                start: .init(spineIndex: startSpine, offset: start), end: .init(spineIndex: endSpine, offset: end))
+            callbacks.onHighlight(HighlightAnchor(location: .epub(span), quotedText: text))
+        }
+    }
+
+    /// Reports a click on Highlight `id`, or on its Note icon, at `point` in the view's coordinates.
+    fileprivate func reportTap(onHighlight id: String, at point: CGPoint) {
+        if let highlight = highlights.first(where: { $0.id == id }) { callbacks.onHighlightTap(highlight, point) }
+    }
+
+    /// Where the words of `highlight` are, if it is an EPUB Highlight and they can be found.
+    private func span(of highlight: Highlight) -> HighlightAnchor.Span? {
+        guard case .epub(let stored) = highlight.anchor.location else { return nil }
+        if let known = placements[highlight.id] { return known }
+        let found = book.relocate(
+            start: stored.start.stored, end: stored.end.stored, quotedText: highlight.anchor.quotedText)
+        var span: HighlightAnchor.Span?
+        if case .epub(let foundStart, let foundEnd) = found {
+            span = HighlightAnchor.Span(start: .init(foundStart), end: .init(foundEnd))
+        }
+        placements.updateValue(span, forKey: highlight.id)
+        return span
+    }
+
+    /// Tells the page the Highlights once it is open.
+    private func syncHighlights() {
+        guard isOpen else { return }
+        let drawn: [[String: Any]] = highlights.compactMap { highlight in
+            guard let span = span(of: highlight) else { return nil }
+            return [
+                "id": highlight.id, "color": highlight.color.hex, "note": highlight.note != nil,
+                "start": [span.start.spineIndex, span.start.offset], "end": [span.end.spineIndex, span.end.offset],
+            ]
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: drawn),
+            let json = String(data: data, encoding: .utf8)
+        else { return }
+        Task { _ = try? await evaluateJavaScript("leaf.setHighlights(\(json))", in: nil, contentWorld: .defaultClient) }
     }
 
     // MARK: Text size
@@ -340,7 +429,31 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
 
         // The find bar is presented from the first responder.
         override var canBecomeFirstResponder: Bool { true }
+
+        /// Adds "Highlight" to the edit menu of a selection.
+        override func buildMenu(with builder: any UIMenuBuilder) {
+            super.buildMenu(with: builder)
+            guard builder.system == .context, hasSelection else { return }
+            let highlight = UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { [weak self] _ in
+                self?.highlightSelection()
+            }
+            builder.insertChild(UIMenu(options: .displayInline, children: [highlight]), atStartOfMenu: .standardEdit)
+        }
     #else
+        /// Adds "Highlight" to the context menu of a selection.
+        override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+            super.willOpenMenu(menu, with: event)
+            guard hasSelection, !menu.items.contains(where: { $0.action == #selector(highlightFromMenu) }) else {
+                return
+            }
+            let item = NSMenuItem(title: "Highlight", action: #selector(highlightFromMenu), keyEquivalent: "")
+            item.target = self
+            menu.insertItem(item, at: 0)
+            menu.insertItem(.separator(), at: 1)
+        }
+
+        @objc private func highlightFromMenu(_ sender: Any?) { highlightSelection() }
+
         override func magnify(with event: NSEvent) {
             changeTextSize(to: TextSize.clamped(textSize * (1 + event.magnification)))
         }

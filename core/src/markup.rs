@@ -2,8 +2,7 @@
 //!
 //! The root's `highlights` map is keyed by Highlight ID, so Highlights added
 //! on several devices never conflict. Each Highlight is a map of separately
-//! written fields: `anchor` (a list of `{page_index, rects}`, where `rects`
-//! is a flat list of `x, y, width, height`), `quoted_text`, `color` (sRGB as
+//! written fields: the anchor, `quoted_text`, `color` (sRGB as
 //! `0xRRGGBB`) and `created`, and, only while it has a Note, `note`: Automerge
 //! text, so concurrent typing merges. A Note is updated by diffing, and emptying
 //! it deletes it. Devices that first write a Note to one Highlight
@@ -20,9 +19,13 @@
 //! therefore lists the Highlights of all of them, and writing goes to the
 //! winner. The same goes for page Notes.
 //!
-//! Positions are engine-neutral (ADR-0003): page index plus rectangles in PDF
-//! page space (points, origin at the page's bottom-left), with the quoted text
-//! as a fallback.
+//! The anchor of a PDF Highlight is `anchor`, a list of `{page_index, rects}`,
+//! where `rects` is a flat list of `x, y, width, height`: page index plus
+//! rectangles in PDF page space (points, origin at the page's bottom-left),
+//! engine-neutral (ADR-0003). That of an EPUB Highlight is `epub`, a map of
+//! `start_spine`, `start_offset`, `end_spine` and `end_offset` (ADR-0022). The
+//! quoted text is the fallback of both.
+//!
 
 use crate::state;
 use automerge::{
@@ -49,6 +52,28 @@ pub struct PageRects {
     pub rects: Vec<Rect>,
 }
 
+/// A character of an EPUB's text (ADR-0022).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EpubPosition {
+    /// Zero-based index of the spine item.
+    pub spine_index: u32,
+    /// Offset into that item's text, in UTF-16 code units.
+    pub offset: u64,
+}
+
+/// Where a Highlight is, in the terms of its Document's Format.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Anchor {
+    /// The rectangles it covers on each page, in page order.
+    Pdf(Vec<PageRects>),
+    /// From `start` up to, not including, `end`. They may be in different
+    /// spine items.
+    Epub {
+        start: EpubPosition,
+        end: EpubPosition,
+    },
+}
+
 /// A color in sRGB, 8 bits per channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb {
@@ -73,9 +98,9 @@ impl Rgb {
 pub struct Highlight {
     /// Unique among all Highlights, also across devices.
     pub id: String,
-    /// Where it is, in page order.
-    pub anchor: Vec<PageRects>,
-    /// The whole passage, however many pages it spans.
+    pub anchor: Anchor,
+    /// The whole passage, however many pages it spans. For an EPUB it is the
+    /// text from `start` to `end`, the spine items' texts joined by `\n`.
     pub quoted_text: String,
     pub color: Rgb,
     /// When it was added, in milliseconds since the Unix epoch.
@@ -274,19 +299,38 @@ fn read_page_note(doc: &AutoCommit, entry: &ObjId, id: String) -> Option<PageNot
 
 fn read_highlight(doc: &AutoCommit, entry: &ObjId, id: String) -> Option<Highlight> {
     let field = |name: &str| state::scalar(doc, entry, name);
-    let Some((Value::Object(ObjType::List), anchor)) = doc.get(entry, "anchor").ok()? else {
-        return None;
-    };
     Some(Highlight {
-        anchor: (0..doc.length(&anchor))
-            .map(|i| read_page_rects(doc, &anchor, i))
-            .collect::<Option<_>>()?,
+        anchor: read_anchor(doc, entry)?,
         quoted_text: field("quoted_text")?.into_string().ok()?,
         color: Rgb::unpacked(field("color")?.as_u64()?)?,
         created: field("created")?.as_u64()?,
         note: read_text(doc, entry, "note"),
         id,
     })
+}
+
+/// The anchor of the Highlight `entry`, of the Format it was written for.
+fn read_anchor(doc: &AutoCommit, entry: &ObjId) -> Option<Anchor> {
+    match doc.get(entry, "anchor").ok()? {
+        Some((Value::Object(ObjType::List), anchor)) => Some(Anchor::Pdf(
+            (0..doc.length(&anchor))
+                .map(|i| read_page_rects(doc, &anchor, i))
+                .collect::<Option<_>>()?,
+        )),
+        _ => {
+            let epub = entry_of(doc, entry, "epub")?;
+            let position = |spine: &str, offset: &str| {
+                Some(EpubPosition {
+                    spine_index: u32::try_from(state::scalar(doc, &epub, spine)?.as_u64()?).ok()?,
+                    offset: state::scalar(doc, &epub, offset)?.as_u64()?,
+                })
+            };
+            Some(Anchor::Epub {
+                start: position("start_spine", "start_offset")?,
+                end: position("end_spine", "end_offset")?,
+            })
+        }
+    }
 }
 
 /// The text at `key` of `entry`; none if it is missing or empty.
@@ -323,17 +367,12 @@ fn read_page_rects(doc: &AutoCommit, anchor: &ObjId, index: usize) -> Option<Pag
     })
 }
 
-/// Adds `highlight` to the winning `highlights` map of `doc`, creating it if
-/// there is none.
-pub(crate) fn put_highlight(doc: &mut AutoCommit, highlight: &Highlight) {
-    let map = state::map_to_write(doc, HIGHLIGHTS);
-    let entry = doc
-        .put_object(&map, highlight.id.as_str(), ObjType::Map)
-        .expect("a map accepts new keys");
+/// Writes `pages` as the `anchor` of the Highlight `entry`.
+fn put_pages(doc: &mut AutoCommit, entry: &ObjId, pages: &[PageRects]) {
     let anchor = doc
-        .put_object(&entry, "anchor", ObjType::List)
+        .put_object(entry, "anchor", ObjType::List)
         .expect("a new map accepts new keys");
-    for (i, page) in highlight.anchor.iter().enumerate() {
+    for (i, page) in pages.iter().enumerate() {
         let page_map = doc
             .insert_object(&anchor, i, ObjType::Map)
             .expect("a list accepts new items");
@@ -349,6 +388,33 @@ pub(crate) fn put_highlight(doc: &mut AutoCommit, highlight: &Highlight) {
         for (n, number) in numbers.enumerate() {
             doc.insert(&rects, n, ScalarValue::F64(number))
                 .expect("a list accepts new items");
+        }
+    }
+}
+
+/// Adds `highlight` to the winning `highlights` map of `doc`, creating it if
+/// there is none.
+pub(crate) fn put_highlight(doc: &mut AutoCommit, highlight: &Highlight) {
+    let map = state::map_to_write(doc, HIGHLIGHTS);
+    let entry = doc
+        .put_object(&map, highlight.id.as_str(), ObjType::Map)
+        .expect("a map accepts new keys");
+    match &highlight.anchor {
+        Anchor::Pdf(pages) => put_pages(doc, &entry, pages),
+        Anchor::Epub { start, end } => {
+            let epub = doc
+                .put_object(&entry, "epub", ObjType::Map)
+                .expect("a new map accepts new keys");
+            let fields = [
+                ("start_spine", u64::from(start.spine_index)),
+                ("start_offset", start.offset),
+                ("end_spine", u64::from(end.spine_index)),
+                ("end_offset", end.offset),
+            ];
+            for (key, value) in fields {
+                doc.put(&epub, key, ScalarValue::Uint(value))
+                    .expect("a new map accepts new keys");
+            }
         }
     }
     let fields = [
@@ -411,7 +477,7 @@ mod tests {
     fn highlight(id: &str, created: u64) -> Highlight {
         Highlight {
             id: id.to_owned(),
-            anchor: vec![PageRects {
+            anchor: Anchor::Pdf(vec![PageRects {
                 page_index: 1,
                 rects: vec![Rect {
                     x: 1.5,
@@ -419,7 +485,7 @@ mod tests {
                     width: 3.5,
                     height: 4.5,
                 }],
-            }],
+            }]),
             quoted_text: format!("passage {id}"),
             color: Rgb {
                 r: 255,
@@ -460,6 +526,38 @@ mod tests {
                 ..Markup::default()
             }
         );
+    }
+
+    fn epub_highlight(id: &str, start: (u32, u64), end: (u32, u64)) -> Highlight {
+        let position = |(spine_index, offset)| EpubPosition {
+            spine_index,
+            offset,
+        };
+        Highlight {
+            anchor: Anchor::Epub {
+                start: position(start),
+                end: position(end),
+            },
+            ..highlight(id, 5)
+        }
+    }
+
+    #[test]
+    fn an_epub_highlight_reads_back_across_spine_items_with_its_note() {
+        let mut added = epub_highlight("a", (2, 40), (3, 7));
+        let bytes = set_note(Some(&add(None, &added)), "a", "a thought");
+        added.note = Some("a thought".to_owned());
+        assert_eq!(read(&bytes).highlights, vec![added]);
+    }
+
+    #[test]
+    fn an_epub_highlight_without_a_complete_position_is_skipped() {
+        let bytes = add(None, &epub_highlight("a", (0, 1), (0, 2)));
+        let bytes = edit(Some(&bytes), |doc| {
+            let (_, epub) = doc.get(entry(doc, "a"), "epub").unwrap().unwrap();
+            doc.delete(&epub, "end_offset").unwrap();
+        });
+        assert!(read(&bytes).highlights.is_empty());
     }
 
     #[test]

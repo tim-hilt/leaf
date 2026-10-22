@@ -12,6 +12,7 @@ struct ReaderEPUBContent {
     let textSize: CGFloat
     /// The Page Style to show.
     let appearance: PageAppearance
+    let highlights: [Highlight]
     let handle: ReaderHandle
     let results: SearchResults
     let callbacks: ReaderCallbacks
@@ -22,7 +23,7 @@ struct ReaderEPUBContent {
     fileprivate func makeEPUBView() -> ReaderEPUBView {
         let view = ReaderEPUBView(
             book: book, state: state, contents: contents, textSize: textSize, appearance: appearance,
-            handle: handle, results: results, callbacks: callbacks)
+            highlights: highlights, handle: handle, results: results, callbacks: callbacks)
         #if os(iOS)
             view.find.onShowResults = onShowResults
         #endif
@@ -34,6 +35,7 @@ struct ReaderEPUBContent {
         view.contents = contents
         view.textSize = textSize
         view.pageAppearance = appearance
+        view.highlights = highlights
     }
 }
 

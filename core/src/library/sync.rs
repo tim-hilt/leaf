@@ -732,7 +732,7 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::markup::{Highlight, PageRects, Rgb};
+    use crate::markup::{Anchor, EpubPosition, Highlight, PageRects, Rgb};
     use crate::storage::DirStorage;
     use automerge::transaction::Transactable;
     use std::sync::atomic::{AtomicU32, AtomicUsize};
@@ -954,7 +954,13 @@ mod tests {
         a.sync();
         b.sync();
         a.library
-            .add_highlight(&imported.id, vec![], "quoted", Rgb { r: 1, g: 2, b: 3 }, 1)
+            .add_highlight(
+                &imported.id,
+                Anchor::Pdf(vec![]),
+                "quoted",
+                Rgb { r: 1, g: 2, b: 3 },
+                1,
+            )
             .unwrap()
             .unwrap();
 
@@ -1210,7 +1216,7 @@ mod tests {
     fn highlight_value(id: &str) -> Highlight {
         Highlight {
             id: id.to_owned(),
-            anchor: vec![],
+            anchor: Anchor::Pdf(vec![]),
             quoted_text: "quoted".to_owned(),
             color: Rgb { r: 1, g: 2, b: 3 },
             created: 1,
@@ -1219,10 +1225,10 @@ mod tests {
     }
 
     fn highlight(device: &Device, id: &str, text: &str) -> Highlight {
-        let anchor = vec![PageRects {
+        let anchor = Anchor::Pdf(vec![PageRects {
             page_index: 0,
             rects: vec![],
-        }];
+        }]);
         let color = Rgb { r: 1, g: 2, b: 3 };
         device
             .library
@@ -1290,6 +1296,43 @@ mod tests {
             let document = device.document(&id);
             assert_eq!(document.progress, Some(ReadingProgress::epub(1, 1, 200)));
             assert_eq!(document.percent_read(), Some(100));
+        }
+    }
+
+    #[test]
+    fn epub_highlights_and_their_notes_reach_the_other_device() {
+        let mut cloud = Cloud::new();
+        let (a, b) = (cloud.device(), cloud.device());
+        let book = crate::epub::fixtures::Book::new("").chapters(&["<p>a</p>", "<p>b</p>"]);
+        let id = a.import("book.epub", &book.bytes()).id;
+        a.sync();
+        b.sync();
+        let position = |spine_index, offset| EpubPosition {
+            spine_index,
+            offset,
+        };
+        let anchor = Anchor::Epub {
+            start: position(0, 0),
+            end: position(1, 1),
+        };
+
+        let added = a
+            .library
+            .add_highlight(&id, anchor, "a\nb", Rgb { r: 1, g: 2, b: 3 }, 1)
+            .unwrap()
+            .unwrap();
+        settle(&a, &b);
+        b.library
+            .set_highlight_note(&id, &added.id, "a note")
+            .unwrap();
+        settle(&b, &a);
+
+        for device in [&a, &b] {
+            let highlights = device.library.markup(&id).unwrap().highlights;
+            assert_eq!(highlights.len(), 1);
+            assert_eq!(highlights[0].anchor, added.anchor);
+            assert_eq!(highlights[0].quoted_text, "a\nb");
+            assert_eq!(highlights[0].note.as_deref(), Some("a note"));
         }
     }
 
@@ -1601,7 +1644,7 @@ mod tests {
         drop(a);
         let library = Library::open(&root).unwrap();
         library
-            .add_highlight(&id, vec![], "q", Rgb { r: 1, g: 2, b: 3 }, 1)
+            .add_highlight(&id, Anchor::Pdf(vec![]), "q", Rgb { r: 1, g: 2, b: 3 }, 1)
             .unwrap();
 
         library.sync(&cloud.storage()).unwrap();
@@ -1925,7 +1968,7 @@ mod tests {
         fs::write(&path, newer.save()).unwrap();
 
         a.library
-            .add_highlight(&id, vec![], "q", Rgb { r: 1, g: 2, b: 3 }, 1)
+            .add_highlight(&id, Anchor::Pdf(vec![]), "q", Rgb { r: 1, g: 2, b: 3 }, 1)
             .unwrap()
             .unwrap();
 

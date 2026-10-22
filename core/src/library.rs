@@ -31,7 +31,7 @@ use crate::chunks::Cursor;
 use crate::details::{self, Details, Format, Size};
 use crate::epub::{self, Epub};
 use crate::library_doc::{Import, LibraryDoc};
-use crate::markup::{self, Highlight, Markup, PageNote, PageRects, Rgb};
+use crate::markup::{self, Anchor, Highlight, Markup, PageNote, Rgb};
 use crate::preferences::{self, HighlightColor, HighlightColors};
 use crate::progress::{self, Place, ReadingProgress};
 use crate::state;
@@ -684,7 +684,7 @@ impl Library {
     pub fn add_highlight(
         &self,
         id: &str,
-        anchor: Vec<PageRects>,
+        anchor: Anchor,
         quoted_text: &str,
         color: Rgb,
         created: u64,
@@ -1136,7 +1136,7 @@ fn stored_file(dir: &Path) -> io::Result<Option<(String, u64)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::markup::Rect;
+    use crate::markup::{EpubPosition, PageRects, Rect};
     use automerge::{ActorId, AutoCommit};
     use std::fs;
     use std::thread::sleep;
@@ -2091,8 +2091,8 @@ mod tests {
         assert_eq!(listed_progress(&library, &document.id), None);
     }
 
-    fn anchor() -> Vec<PageRects> {
-        vec![
+    fn anchor() -> Anchor {
+        Anchor::Pdf(vec![
             PageRects {
                 page_index: 2,
                 rects: vec![Rect {
@@ -2119,7 +2119,157 @@ mod tests {
                     },
                 ],
             },
-        ]
+        ])
+    }
+
+    fn epub_anchor(start: (u32, u64), end: (u32, u64)) -> Anchor {
+        let position = |(spine_index, offset)| EpubPosition {
+            spine_index,
+            offset,
+        };
+        Anchor::Epub {
+            start: position(start),
+            end: position(end),
+        }
+    }
+
+    /// An imported EPUB whose chapters read "Call me Ishmael. 😀 Ishmael" and
+    /// "Some years ago", in a Library of its own.
+    fn moby(scratch: &Scratch) -> (Library, Document) {
+        let library = scratch.library();
+        let book = Book::new("").chapters(&[
+            "<p>Call me Ishmael.</p><p> \u{1F600} Ishmael</p>",
+            "<p>Some years ago</p>",
+        ]);
+        let document = import_new(&library, &scratch.file("moby.epub", &book.bytes()));
+        (library, document)
+    }
+
+    #[test]
+    fn an_epub_highlight_is_stored_with_its_positions_and_quoted_text_and_survives_reopening() {
+        let scratch = Scratch::new();
+        let (library, document) = moby(&scratch);
+
+        let added = library
+            .add_highlight(
+                &document.id,
+                epub_anchor((0, 8), (1, 4)),
+                "Ishmael. \u{1F600} Ishmael\nSome",
+                YELLOW,
+                7,
+            )
+            .unwrap()
+            .unwrap();
+        library
+            .set_highlight_note(&document.id, &added.id, "whale")
+            .unwrap();
+
+        let reopened = scratch.library();
+        let stored = reopened.markup(&document.id).unwrap().highlights;
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].anchor, epub_anchor((0, 8), (1, 4)));
+        assert_eq!(stored[0].quoted_text, "Ishmael. \u{1F600} Ishmael\nSome");
+        assert_eq!(stored[0].note.as_deref(), Some("whale"));
+        assert_eq!(stored[0].created, 7);
+    }
+
+    #[test]
+    fn overlapping_epub_highlights_stay_separate() {
+        let scratch = Scratch::new();
+        let (library, document) = moby(&scratch);
+        let add = |start, end, quoted: &str| {
+            library
+                .add_highlight(&document.id, epub_anchor(start, end), quoted, YELLOW, 1)
+                .unwrap()
+                .unwrap()
+        };
+        let (first, second) = (
+            add((0, 0), (0, 7), "Call me"),
+            add((0, 5), (0, 15), "e Ishmael"),
+        );
+
+        library.remove_highlight(&document.id, &first.id).unwrap();
+
+        let left = library.markup(&document.id).unwrap().highlights;
+        assert_eq!(left, vec![second]);
+    }
+
+    /// Where EPUB `document` of `library` says the passage `quoted` really is.
+    fn relocated(
+        library: &Library,
+        document: &Document,
+        anchor: Anchor,
+        quoted: &str,
+    ) -> Option<Anchor> {
+        let Anchor::Epub { start, end } = anchor else {
+            panic!("an EPUB anchor");
+        };
+        let (start, end) = library
+            .open_epub(&document.id)
+            .unwrap()
+            .unwrap()
+            .relocate(start, end, quoted)?;
+        Some(Anchor::Epub { start, end })
+    }
+
+    #[test]
+    fn an_epub_highlight_that_still_matches_its_text_stays_where_it_is() {
+        let scratch = Scratch::new();
+        let (library, document) = moby(&scratch);
+        let anchor = epub_anchor((0, 8), (1, 4));
+        let quoted = "Ishmael. \u{1F600} Ishmael\nSome";
+
+        assert_eq!(
+            relocated(&library, &document, anchor.clone(), quoted),
+            Some(anchor)
+        );
+    }
+
+    #[test]
+    fn an_epub_highlight_whose_offsets_no_longer_match_is_found_by_its_quoted_text() {
+        let scratch = Scratch::new();
+        let (library, document) = moby(&scratch);
+        let found = |anchor, quoted| relocated(&library, &document, anchor, quoted);
+
+        // Within one spine item, in UTF-16 offsets (the emoji counts two).
+        assert_eq!(
+            found(epub_anchor((0, 0), (0, 3)), "Ishmael."),
+            Some(epub_anchor((0, 8), (0, 16)))
+        );
+        // Across spine items.
+        assert_eq!(
+            found(epub_anchor((1, 99), (1, 99)), "Ishmael\nSome"),
+            Some(epub_anchor((0, 20), (1, 4)))
+        );
+        // Of several occurrences, the one nearest to where it was.
+        assert_eq!(
+            found(epub_anchor((0, 17), (0, 24)), "Ishmael"),
+            Some(epub_anchor((0, 20), (0, 27)))
+        );
+        assert_eq!(
+            found(epub_anchor((0, 1), (0, 8)), "Ishmael"),
+            Some(epub_anchor((0, 8), (0, 15)))
+        );
+    }
+
+    #[test]
+    fn an_epub_highlight_whose_text_is_nowhere_is_not_found() {
+        let scratch = Scratch::new();
+        let (library, document) = moby(&scratch);
+
+        assert_eq!(
+            relocated(
+                &library,
+                &document,
+                epub_anchor((0, 8), (0, 15)),
+                "Queequeg"
+            ),
+            None
+        );
+        assert_eq!(
+            relocated(&library, &document, epub_anchor((0, 8), (0, 15)), ""),
+            None
+        );
     }
 
     const YELLOW: Rgb = Rgb {
@@ -2671,7 +2821,7 @@ mod tests {
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
         let teal = library.add_custom_color(TEAL, 100).unwrap();
         let added = library
-            .add_highlight(&document.id, vec![], "x", teal.rgb, 1)
+            .add_highlight(&document.id, Anchor::Pdf(vec![]), "x", teal.rgb, 1)
             .unwrap()
             .unwrap();
 

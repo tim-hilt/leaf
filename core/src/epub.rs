@@ -14,6 +14,7 @@
 //! The Table of Contents (the EPUB 3 nav, else the EPUB 2 NCX) points into that
 //! text: a link's anchor (`#id`) is the offset of the text before its element.
 
+use crate::markup::EpubPosition;
 use crate::progress::Place;
 use miniz_oxide::inflate::decompress_to_vec_with_limit;
 use quick_xml::XmlVersion;
@@ -144,6 +145,81 @@ impl Epub {
     pub fn text(&mut self, index: usize) -> Option<String> {
         let item = self.package.spine.get(index)?;
         self.zip.read(item).map(|xhtml| text_of(&xhtml))
+    }
+
+    /// Where the passage `quoted` of a Highlight is, now: from `start` to `end`
+    /// if the text there is `quoted`, else where `quoted` occurs nearest to
+    /// `start` in the text of the whole book. Spine items' texts are joined by
+    /// `\n` there and in `quoted`. None if it occurs nowhere, or `quoted` is empty.
+    pub fn relocate(
+        &mut self,
+        start: EpubPosition,
+        end: EpubPosition,
+        quoted: &str,
+    ) -> Option<(EpubPosition, EpubPosition)> {
+        let quoted: Vec<u16> = quoted.encode_utf16().collect();
+        if quoted.is_empty() {
+            return None;
+        }
+        if self.passage(start, end).as_ref() == Some(&quoted) {
+            return Some((start, end));
+        }
+        let texts: Vec<Vec<u16>> = (0..self.package.spine.len())
+            .map(|i| self.units(i).unwrap_or_default())
+            .collect();
+        let mut starts = Vec::with_capacity(texts.len());
+        let mut whole = Vec::new();
+        for text in &texts {
+            starts.push(whole.len());
+            whole.extend_from_slice(text);
+            whole.push(u16::from(b'\n'));
+        }
+        let was = {
+            let index = (start.spine_index as usize).min(texts.len() - 1);
+            let offset = usize::try_from(start.offset).unwrap_or(usize::MAX);
+            starts[index] + offset.min(texts[index].len())
+        };
+        let found = whole
+            .windows(quoted.len())
+            .enumerate()
+            .filter(|(_, window)| *window == quoted)
+            .map(|(at, _)| at)
+            .min_by_key(|at| at.abs_diff(was))?;
+        let position = |at: usize| {
+            let index = starts.partition_point(|&s| s <= at) - 1;
+            EpubPosition {
+                spine_index: index as u32,
+                offset: (at - starts[index]) as u64,
+            }
+        };
+        Some((position(found), position(found + quoted.len())))
+    }
+
+    /// The text of spine item `index` in UTF-16 code units.
+    fn units(&mut self, index: usize) -> Option<Vec<u16>> {
+        Some(self.text(index)?.encode_utf16().collect())
+    }
+
+    /// The text from `start` to `end`, the spine items' texts joined by `\n`.
+    /// None if they aren't in order or beyond the text.
+    fn passage(&mut self, start: EpubPosition, end: EpubPosition) -> Option<Vec<u16>> {
+        let (first, last) = (start.spine_index as usize, end.spine_index as usize);
+        let mut passage = Vec::new();
+        for index in first..=last {
+            let text = self.units(index)?;
+            let from = if index == first { start.offset } else { 0 };
+            let to = if index == last {
+                end.offset
+            } else {
+                text.len() as u64
+            };
+            let text = text.get(usize::try_from(from).ok()?..usize::try_from(to).ok()?)?;
+            if index != first {
+                passage.push(u16::from(b'\n'));
+            }
+            passage.extend_from_slice(text);
+        }
+        Some(passage)
     }
 
     /// The Table of Contents: Chapters with their nested Sections, in reading

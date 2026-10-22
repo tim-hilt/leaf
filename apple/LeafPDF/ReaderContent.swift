@@ -59,7 +59,8 @@ struct ReaderContent: View {
         case .epub(let book):
             ReaderEPUBContent(
                 book: book, state: state, contents: contents, textSize: textSize, appearance: appearance,
-                handle: handle, results: results, callbacks: callbacks, onShowResults: onShowResults)
+                highlights: highlights, handle: handle, results: results, callbacks: callbacks,
+                onShowResults: onShowResults)
         }
     }
 }

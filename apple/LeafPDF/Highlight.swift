@@ -1,9 +1,11 @@
 import CoreGraphics
+import Foundation
 import LeafCore
 
-/// Where a Highlight is, in engine-neutral terms (ADR-0003): rectangles per
-/// page in PDF page space, in page order, and the whole quoted passage as the
-/// fallback.
+/// Where a Highlight is, in the terms of its Document's Format: for a PDF,
+/// rectangles per page in PDF page space, in page order (ADR-0003); for an EPUB,
+/// the characters from one position up to another in the core's text (ADR-0022).
+/// The whole quoted passage is the fallback of both.
 struct HighlightAnchor: Equatable {
     struct Page: Equatable {
         let pageIndex: Int
@@ -11,8 +13,41 @@ struct HighlightAnchor: Equatable {
         let rects: [CGRect]
     }
 
-    let pages: [Page]
+    /// A character of an EPUB's text: a spine item and a UTF-16 offset into its text.
+    struct Position: Equatable {
+        let spineIndex: Int
+        let offset: Int
+    }
+
+    /// The characters from `start` up to, not including, `end`; they may be in different spine items.
+    struct Span: Equatable {
+        let start: Position
+        let end: Position
+    }
+
+    enum Location: Equatable {
+        case pdf(pages: [Page])
+        case epub(Span)
+    }
+
+    let location: Location
+    /// The whole passage; for an EPUB the spine items' texts are joined by a line feed.
     let quotedText: String
+
+    init(location: Location, quotedText: String) {
+        self.location = location
+        self.quotedText = quotedText
+    }
+
+    init(pages: [Page], quotedText: String) {
+        self.init(location: .pdf(pages: pages), quotedText: quotedText)
+    }
+
+    /// The pages of a PDF anchor; none for another kind.
+    var pages: [Page] {
+        guard case .pdf(let pages) = location else { return [] }
+        return pages
+    }
 }
 
 /// A passage of a Document's text marked in a color.
@@ -51,5 +86,11 @@ extension [HighlightColor] {
 }
 
 extension RGB {
+    /// The color as six hexadecimal digits, `rrggbb`.
+    var hex: String {
+        let byte = { (value: Double) in Int((min(max(value, 0), 1) * 255).rounded()) }
+        return String(format: "%02x%02x%02x", byte(r), byte(g), byte(b))
+    }
+
     init(_ stored: Rgb) { self.init(Double(stored.r) / 255, Double(stored.g) / 255, Double(stored.b) / 255) }
 }

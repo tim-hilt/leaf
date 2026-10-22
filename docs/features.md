@@ -117,6 +117,6 @@ EPUBs behave like PDFs in every section above, except as listed. The core reads 
 - No page numbers: the Table of Contents lists Chapters and Sections without them, and Back reads "Back to <Chapter>". Reading Progress is a percentage of the text.
 - Document Search runs in the core's text of the Chapters; the results list has no page numbers.
 - Page Notes attach to a spot in the text, their icon in the margin at that line.
-- Markup and Reading Progress are anchored in the text (ADR-0022).
+- Markup and Reading Progress are anchored in the text (ADR-0022). A Highlight follows the text when it reflows; if the text at its position changed, its quoted text locates it. A Note icon keeps its size at any text size.
 - Not included: fixed layout, the EPUB's printed page list, font or spacing settings.
 

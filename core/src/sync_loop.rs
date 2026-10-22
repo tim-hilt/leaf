@@ -594,7 +594,7 @@ mod tests {
 
         a.add_highlight(
             &id,
-            vec![],
+            crate::markup::Anchor::Pdf(vec![]),
             "quoted",
             crate::markup::Rgb { r: 1, g: 2, b: 3 },
             1,
@@ -620,7 +620,7 @@ mod tests {
         });
 
         let color = crate::markup::Rgb { r: 1, g: 2, b: 3 };
-        b.add_highlight(&id, vec![], "quoted", color, 1)
+        b.add_highlight(&id, crate::markup::Anchor::Pdf(vec![]), "quoted", color, 1)
             .unwrap()
             .unwrap();
         b.save_progress(&id, &crate::progress::ReadingProgress::pdf(2, 0.0, 0.0, 7))

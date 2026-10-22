@@ -4,6 +4,9 @@ import WebKit
 
 @testable import LeafPDF
 
+/// The app's Highlight, not the core's.
+private typealias Highlight = LeafPDF.Highlight
+
 @MainActor @Suite struct ReaderEPUBViewTests {
     @Test func opensAndShowsTheFirstChaptersText() async throws {
         let reader = try await openReader(chapters: ["<p>First chapter text</p>", "<p>Second</p>"])
@@ -288,8 +291,11 @@ import WebKit
     }
 
     /// Waits until `condition` holds, for up to two seconds.
-    private func eventually(_ condition: () -> Bool) async throws {
-        for _ in 0..<40 where !condition() { try await Task.sleep(for: .milliseconds(50)) }
+    private func eventually(_ condition: () async throws -> Bool) async throws {
+        for _ in 0..<40 {
+            if try await condition() { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
     }
 
     @Test func aJumpScrollsThereAndBackReturns() async throws {
@@ -559,6 +565,254 @@ import WebKit
         }
     }
 
+    // MARK: Highlights
+
+    /// An EPUB Highlight of the characters from `start` to `end` (spine index, offset).
+    private func highlight(
+        _ id: String, from start: (Int, Int), to end: (Int, Int), quoting quoted: String,
+        color: RGB = .sampleYellow, note: String? = nil
+    ) -> Highlight {
+        let span = HighlightAnchor.Span(
+            start: .init(spineIndex: start.0, offset: start.1), end: .init(spineIndex: end.0, offset: end.1))
+        return Highlight(
+            id: id, anchor: HighlightAnchor(location: .epub(span), quotedText: quoted), color: color, note: note)
+    }
+
+    private let yellow = "leaf-hl-ffeb3c"
+
+    /// Selects, in chapter 0, from `startNode`'s character `start` to `endNode`'s character `end`,
+    /// the nodes found by the JavaScript expressions in `frame`'s document.
+    private func select(
+        in reader: ReaderEPUBView, from startNode: String, _ start: Int, to endNode: String, _ end: Int
+    ) async throws {
+        _ = try await reader.evaluate(
+            """
+            (() => { const d = frame(0), r = d.createRange(); r.setStart(\(startNode), \(start)); \
+            r.setEnd(\(endNode), \(end)); const s = d.defaultView.getSelection(); s.removeAllRanges(); \
+            s.addRange(r); })()
+            """)
+    }
+
+    /// What the Highlight drawn in `name` covers in chapter `index`, range by range.
+    private func covered(_ reader: ReaderEPUBView, _ name: String, in index: Int = 0) async throws -> [String] {
+        let list = try await reader.evaluateClient(
+            """
+            JSON.stringify([...(document.querySelectorAll('iframe')[\(index)].contentWindow.CSS.highlights.get('\(name)') \
+            ?? [])].map(r => r.toString()))
+            """)
+        return (try? JSONDecoder().decode([String].self, from: Data(list.utf8))) ?? []
+    }
+
+    @Test func highlightingTheSelectionReportsItsPositionsAndQuotedText() async throws {
+        var reported: [HighlightAnchor] = []
+        let reader = try await openReader(
+            chapters: ["<p id=\"p\">Call me <b id=\"b\">Ishmael</b>. Some years ago</p>"],
+            onHighlight: { reported.append($0) })
+
+        try await select(
+            in: reader, from: "frame(0).getElementById('b').firstChild", 2,
+            to: "frame(0).getElementById('p').lastChild", 6)
+        reader.highlightSelection()
+        try await eventually { !reported.isEmpty }
+
+        let span = HighlightAnchor.Span(
+            start: .init(spineIndex: 0, offset: 10), end: .init(spineIndex: 0, offset: 21))
+        #expect(reported == [HighlightAnchor(location: .epub(span), quotedText: "hmael. Some")])
+        // The selection is cleared once it is highlighted.
+        #expect(try await reader.evaluate("frame(0).getSelection().isCollapsed") == "true")
+    }
+
+    @Test func aSelectionBetweenElementsHasTheOffsetsOfItsText() async throws {
+        var reported: [HighlightAnchor] = []
+        let reader = try await openReader(
+            chapters: ["<h1>Title</h1><p id=\"p\">One <i>two</i> three</p>"], onHighlight: { reported.append($0) })
+
+        // From after the heading to the end of the paragraph, by element boundaries.
+        try await select(
+            in: reader, from: "frame(0).body", 1, to: "frame(0).getElementById('p')", 3)
+        reader.highlightSelection()
+        try await eventually { !reported.isEmpty }
+
+        let span = HighlightAnchor.Span(
+            start: .init(spineIndex: 0, offset: 5), end: .init(spineIndex: 0, offset: 18))
+        #expect(reported == [HighlightAnchor(location: .epub(span), quotedText: "One two three")])
+    }
+
+    @Test func highlightingWithoutASelectionDoesNothing() async throws {
+        var reported: [HighlightAnchor] = []
+        let reader = try await openReader(chapters: ["<p>Text</p>"], onHighlight: { reported.append($0) })
+
+        reader.highlightSelection()
+        try await Task.sleep(for: .milliseconds(300))
+
+        #expect(reported.isEmpty)
+    }
+
+    @Test func aHighlightIsDrawnOverItsWords() async throws {
+        let reader = try await openReader(
+            book: importedBook(chapters: ["<p>Call me <b>Ishmael</b>. Some years ago</p>"]),
+            highlights: [highlight("a", from: (0, 5), to: (0, 12), quoting: "me Ishm")])
+
+        #expect(try await covered(reader, yellow) == ["me Ishm"])
+    }
+
+    @Test func aHighlightMaySpanChaptersAndOverlappingOnesStaySeparate() async throws {
+        let green = RGB(0, 1, 0)
+        let reader = try await openReader(
+            book: importedBook(chapters: ["<p>Call me Ishmael.</p>", "<p>Some years ago</p>"]),
+            highlights: [
+                highlight("a", from: (0, 8), to: (1, 4), quoting: "Ishmael.\nSome"),
+                highlight("b", from: (0, 5), to: (0, 11), quoting: "e Ishm", color: green),
+            ])
+
+        #expect(try await covered(reader, yellow, in: 0) == ["Ishmael."])
+        #expect(try await covered(reader, yellow, in: 1) == ["Some"])
+        #expect(try await covered(reader, "leaf-hl-00ff00") == ["e Ishm"])
+    }
+
+    @Test func highlightsStayOnTheSameWordsWhenTheTextSizeChanges() async throws {
+        let text = String(repeating: "filler words that wrap onto several lines ", count: 30)
+        let reader = try await openReader(
+            book: importedBook(chapters: ["<p>\(text)</p><p>The target words are here</p>"]),
+            onScreen: true,
+            highlights: [highlight("a", from: (0, text.count + 4), to: (0, text.count + 10), quoting: "target")])
+        let before = try await reader.highlightBox(yellow)
+
+        reader.textSize = TextSize.zoomedIn(from: reader.textSize)
+        try await reader.settle()
+
+        #expect(try await covered(reader, yellow) == ["target"])
+        let after = try await reader.highlightBox(yellow)
+        // It moved and grew with the text it covers.
+        #expect(after.width > before.width)
+        #expect(after.maxY != before.maxY)
+    }
+
+    @Test func aHighlightWhoseOffsetsNoLongerMatchIsFoundByItsQuotedText() async throws {
+        let reader = try await openReader(
+            book: importedBook(chapters: ["<p>Call me Ishmael. Some years ago</p>"]),
+            highlights: [highlight("a", from: (0, 0), to: (0, 4), quoting: "Some years")])
+
+        #expect(try await covered(reader, yellow) == ["Some years"])
+    }
+
+    @Test func aHighlightWhoseTextIsNowhereIsNotDrawn() async throws {
+        let reader = try await openReader(
+            book: importedBook(chapters: ["<p>Call me Ishmael.</p>"]),
+            highlights: [highlight("a", from: (0, 0), to: (0, 4), quoting: "Queequeg")])
+        try await Task.sleep(for: .milliseconds(300))
+
+        #expect(try await covered(reader, yellow) == [])
+    }
+
+    @Test func changedHighlightsAreRedrawn() async throws {
+        let reader = try await openReader(
+            book: importedBook(chapters: ["<p>Call me Ishmael.</p>"]),
+            highlights: [highlight("a", from: (0, 0), to: (0, 4), quoting: "Call")])
+
+        reader.highlights = [highlight("b", from: (0, 8), to: (0, 15), quoting: "Ishmael", color: RGB(0, 1, 0))]
+        try await eventually { try await !self.covered(reader, "leaf-hl-00ff00").isEmpty }
+
+        #expect(try await covered(reader, yellow) == [])
+        #expect(try await covered(reader, "leaf-hl-00ff00") == ["Ishmael"])
+    }
+
+    /// Clicks the element `selector` of chapter 0 at `dx` points right of and 2 below its top-left corner.
+    private func click(_ reader: ReaderEPUBView, _ selector: String, dx: Int = 2) async throws {
+        _ = try await reader.evaluate(
+            """
+            (() => { const e = frame(0).querySelector('\(selector)'), r = e.getBoundingClientRect(); \
+            e.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: r.left + \(dx), clientY: r.top + 2 })); })()
+            """)
+    }
+
+    @Test func clickingAHighlightReportsTheNewestOneThereWithItsPoint() async throws {
+        var tapped: [(String, CGPoint)] = []
+        var taps = 0
+        let reader = try await openReader(
+            book: importedBook(chapters: ["<p>Plain text, <b id=\"b\">marked words</b>, plain text.</p>"]),
+            highlights: [
+                highlight("old", from: (0, 12), to: (0, 24), quoting: "marked words"),
+                highlight("new", from: (0, 14), to: (0, 20), quoting: "rked w"),
+            ],
+            onSingleTap: { taps += 1 }, onHighlightTap: { tapped.append(($0.id, $1)) })
+
+        // Left of the newer one: only the older covers it.
+        try await click(reader, "b")
+        try await eventually { tapped.count == 1 }
+        #expect(tapped.map(\.0) == ["old"])
+        // Where both do, the newer one is reported.
+        try await click(reader, "b", dx: 30)
+        try await eventually { tapped.count == 2 }
+        #expect(tapped.map(\.0) == ["old", "new"])
+        // Plain text is a tap on the page, not on a Highlight.
+        try await click(reader, "p")
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(tapped.count == 2)
+        #expect(taps == 1)
+        let box = try await reader.highlightBox(yellow)
+        #expect(abs(tapped[0].1.x - (box.minX + 2)) < 3)
+    }
+
+    @Test func aClickWhileTextIsSelectedIsNotATapOnAHighlight() async throws {
+        var tapped: [String] = []
+        let reader = try await openReader(
+            book: importedBook(chapters: ["<p id=\"p\">Some <b id=\"b\">marked</b> text</p>"]),
+            highlights: [highlight("a", from: (0, 5), to: (0, 11), quoting: "marked")],
+            onHighlightTap: { highlight, _ in tapped.append(highlight.id) })
+        try await select(
+            in: reader, from: "frame(0).getElementById('p').firstChild", 0,
+            to: "frame(0).getElementById('b').firstChild", 3)
+
+        try await click(reader, "b")
+        try await Task.sleep(for: .milliseconds(200))
+
+        #expect(tapped.isEmpty)
+    }
+
+    @Test func aHighlightWithANoteHasAnIconAtItsEndOfTheSameSizeAtAnyTextSize() async throws {
+        let green = RGB(0, 1, 0)
+        var tapped: [(String, CGPoint)] = []
+        let reader = try await openReader(
+            book: importedBook(chapters: ["<p>Call me Ishmael. Some years ago</p>"]), onScreen: true,
+            highlights: [
+                highlight("a", from: (0, 8), to: (0, 15), quoting: "Ishmael", color: green, note: "whale"),
+                highlight("b", from: (0, 17), to: (0, 21), quoting: "Some"),
+            ],
+            onHighlightTap: { tapped.append(($0.id, $1)) })
+
+        // Only the Highlight with a Note has one, at the right end of its last line.
+        var icons = try await reader.noteIcons()
+        #expect(icons.map { $0.id } == ["a"])
+        #expect(icons[0].box.size == CGSize(width: 18, height: 18))
+        #expect(icons[0].color == "rgb(0, 255, 0)")
+        let end = try await reader.highlightBox("leaf-hl-00ff00")
+        #expect(abs(icons[0].box.midX - end.maxX) < 2)
+
+        reader.textSize = TextSize.zoomedIn(from: reader.textSize)
+        try await reader.settle()
+
+        icons = try await reader.noteIcons()
+        #expect(icons[0].box.size == CGSize(width: 18, height: 18))
+        let moved = try await reader.highlightBox("leaf-hl-00ff00")
+        #expect(abs(icons[0].box.midX - moved.maxX) < 2)
+        #expect(moved.maxX > end.maxX)
+
+        // Clicking the icon opens the Highlight's popover at it.
+        _ = try await reader.evaluate("document.querySelector('.leaf-note').click()")
+        try await eventually { !tapped.isEmpty }
+        #expect(tapped.map(\.0) == ["a"])
+        #expect(abs(tapped[0].1.x - icons[0].box.midX) < 2)
+    }
+
+    @Test func noteIconsKeepTheirColorsInDarkPages() async throws {
+        let reader = try await openReader(
+            book: importedBook(chapters: ["<p>Call me Ishmael.</p>"]), appearance: .dark(night),
+            highlights: [highlight("a", from: (0, 8), to: (0, 15), quoting: "Ishmael", note: "whale")])
+
+        #expect(try await reader.noteIcons().map { $0.color } == ["rgb(255, 235, 60)"])
+    }
+
     @Test func onlyAnEPUBOpensAsABook() async throws {
         let library = try makeLibrary()
         guard case .opened(let pdf) = await library.import(try writePDF(named: "a.pdf", pageCount: 1))
@@ -677,11 +931,11 @@ func importedBook(
 private func openReader(
     chapters: [String], manifest: String = "", files: [String: Data] = [:],
     size: CGSize = CGSize(width: 400, height: 800), onSingleTap: @escaping () -> Void = {},
-    openExternally: @escaping (URL) -> Void = { _ in }
+    onHighlight: @escaping (HighlightAnchor) -> Void = { _ in }, openExternally: @escaping (URL) -> Void = { _ in }
 ) async throws -> ReaderEPUBView {
     try await openReader(
         book: importedBook(chapters: chapters, manifest: manifest, files: files), size: size,
-        onSingleTap: onSingleTap, openExternally: openExternally)
+        onSingleTap: onSingleTap, onHighlight: onHighlight, openExternally: openExternally)
 }
 
 /// A Reader on `book`, once it has opened.
@@ -689,8 +943,11 @@ private func openReader(
 private func openReader(
     book: EpubBook, state: ReaderViewState? = nil, size: CGSize = CGSize(width: 400, height: 800),
     textSize: CGFloat = TextSize.normal, appearance: PageAppearance = .light, onScreen: Bool = false,
-    contents: TableOfContents = TableOfContents(), onSingleTap: @escaping () -> Void = {},
-    onScroll: @escaping () -> Void = {}, onTextSizeChange: @escaping (CGFloat) -> Void = { _ in },
+    contents: TableOfContents = TableOfContents(), highlights: [Highlight] = [],
+    onSingleTap: @escaping () -> Void = {}, onScroll: @escaping () -> Void = {},
+    onHighlight: @escaping (HighlightAnchor) -> Void = { _ in },
+    onHighlightTap: @escaping (Highlight, CGPoint) -> Void = { _, _ in },
+    onTextSizeChange: @escaping (CGFloat) -> Void = { _ in },
     onBackChange: @escaping (BackTarget?) -> Void = { _ in }, openExternally: @escaping (URL) -> Void = { _ in }
 ) async throws -> ReaderEPUBView {
     var reader: ReaderEPUBView?
@@ -698,19 +955,28 @@ private func openReader(
         var once: CheckedContinuation<Void, Never>? = opened
         reader = ReaderEPUBView(
             book: book, state: state, contents: contents, textSize: textSize, appearance: appearance,
-            handle: ReaderHandle(),
+            highlights: highlights, handle: ReaderHandle(),
             callbacks: ReaderCallbacks(
                 onSingleTap: onSingleTap,
                 onOpen: {
                     once?.resume()
                     once = nil
                 },
-                onScroll: onScroll, onTextSizeChange: onTextSizeChange, onBackChange: onBackChange))
+                onScroll: onScroll, onHighlight: onHighlight, onHighlightTap: onHighlightTap,
+                onTextSizeChange: onTextSizeChange, onBackChange: onBackChange))
         reader?.openExternally = openExternally
         reader?.frame = CGRect(origin: .zero, size: size)
         if onScreen, let reader { show(reader) }
     }
-    return try #require(reader)
+    let opened = try #require(reader)
+    // Highlights are drawn right after opening; those found nowhere never are.
+    if !highlights.isEmpty {
+        for _ in 0..<20 {
+            if try await opened.hasHighlightDrawn() { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+    return opened
 }
 
 /// The windows showing the views under test, which a view only holds weakly. A web view
@@ -778,6 +1044,42 @@ extension ReaderEPUBView {
         try await evaluateClient(
             "[...document.querySelectorAll('iframe')].map(f => f.contentWindow.CSS.highlights.get('\(name)')?.size ?? 0)"
         ).split(separator: ",").compactMap { Int($0) }
+    }
+
+    /// Whether the page has drawn a Highlight, of any color, in any chapter.
+    fileprivate func hasHighlightDrawn() async throws -> Bool {
+        try await evaluateClient(
+            """
+            [...document.querySelectorAll('iframe')].some(f => \
+            [...f.contentWindow.CSS.highlights.keys()].some(name => name.startsWith('leaf-hl-')))
+            """) == "true"
+    }
+
+    /// The bounding box, in the page's coordinates, of what the Highlight `name` covers in chapter 0.
+    fileprivate func highlightBox(_ name: String) async throws -> CGRect {
+        let box = try await evaluateClient(
+            """
+            (() => { const f = document.querySelector('iframe'), r = [...f.contentWindow.CSS.highlights.get('\(name)')][0]\
+            .getBoundingClientRect(), o = f.getBoundingClientRect(); \
+            return [r.left + o.left, r.top + o.top, r.width, r.height].join(','); })()
+            """
+        ).split(separator: ",").compactMap { Double($0) }
+        return CGRect(x: box[0], y: box[1], width: box[2], height: box[3])
+    }
+
+    /// The Note icons in the page: Highlight ID, box and color.
+    fileprivate func noteIcons() async throws -> [(id: String, box: CGRect, color: String)] {
+        let icons = try await evaluate(
+            """
+            [...document.querySelectorAll('.leaf-note')].map(e => { const r = e.getBoundingClientRect(); \
+            return [e.dataset.id, r.left, r.top, r.width, r.height, e.style.backgroundColor].join('|'); \
+            }).join('~')
+            """)
+        return icons.split(separator: "~").map { icon in
+            let parts = icon.split(separator: "|").map(String.init)
+            let n = parts[1...4].compactMap { Double($0) }
+            return (parts[0], CGRect(x: n[0], y: n[1], width: n[2], height: n[3]), parts[5])
+        }
     }
 
     /// Waits for the page to reflow after a size change.
