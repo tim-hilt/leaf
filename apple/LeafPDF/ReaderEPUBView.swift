@@ -464,12 +464,22 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         callbacks.onTextSizeChange(size)
     }
 
+    /// Whether the page is still reflowing to a text size it has been told.
+    private var reflowing = false
+
     /// Tells the page the text size once it is open; it reflows and keeps its place.
+    /// One size at a time: a pinch changes it faster than the whole book reflows, so
+    /// the page gets the latest size once done, instead of a backlog it lags behind on.
     private func syncTextSize() {
-        guard isOpen, textSize != pageTextSize else { return }
+        guard isOpen, !reflowing, textSize != pageTextSize else { return }
         pageTextSize = textSize
+        reflowing = true
         let script = "leaf.setTextSize(\(textSize))"
-        Task { _ = try? await evaluateJavaScript(script, in: nil, contentWorld: .defaultClient) }
+        Task {
+            _ = try? await evaluateJavaScript(script, in: nil, contentWorld: .defaultClient)
+            reflowing = false
+            syncTextSize()
+        }
     }
 
     // MARK: Page Style
@@ -500,8 +510,11 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     #if os(iOS)
         private var sizeBeforePinch = TextSize.normal
 
+        /// Changes the text size; the page doesn't scroll meanwhile: a scroll in progress fights
+        /// the page keeping its place and leaves the old size on screen until the next scroll.
         @objc private func pinched(_ pinch: UIPinchGestureRecognizer) {
             if pinch.state == .began { sizeBeforePinch = textSize }
+            scrollView.panGestureRecognizer.isEnabled = ![.began, .changed].contains(pinch.state)
             changeTextSize(to: TextSize.clamped(sizeBeforePinch * pinch.scale))
         }
 

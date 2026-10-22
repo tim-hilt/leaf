@@ -4,6 +4,10 @@ import WebKit
 
 @testable import LeafPDF
 
+#if os(iOS)
+    import UIKit.UIGestureRecognizerSubclass
+#endif
+
 /// The app's Highlight, Place and PageNote, not the core's.
 private typealias Highlight = LeafPDF.Highlight
 private typealias Place = LeafPDF.Place
@@ -242,6 +246,34 @@ private typealias PageNote = LeafPDF.PageNote
         reader.zoomToFitWidth()
         #expect(reader.textSize == TextSize.normal)
     }
+
+    @Test func aBurstOfTextSizesAsInAPinchEndsAtTheLastAndKeepsThePlace() async throws {
+        let book = try await importedBook(chapters: [paragraphs(20), paragraphs(60)])
+        let place = Place.epub(spineIndex: 1, offset: try offset(of: "Paragraph 30 ", in: 1, of: book))
+        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+
+        for step in 1...30 { reader.textSize = 1 + CGFloat(step) / 30 }
+        try await reader.settle()
+
+        #expect(try await reader.evaluate("getComputedStyle(frame(1).body).zoom") == "2")
+        #expect(reader.topOfViewport == place, "\(String(describing: reader.topOfViewport)) vs \(place)")
+    }
+
+    #if os(iOS)
+        @Test func aPinchChangesTheTextSizeWithoutScrolling() async throws {
+            let reader = try await openReader(book: importedBook(chapters: [paragraphs(5)]), onScreen: true)
+            let pinch = try #require(reader.gestureRecognizers?.compactMap { $0 as? UIPinchGestureRecognizer }.first)
+            let pan = reader.scrollView.panGestureRecognizer
+
+            pinch.state = .began
+            try await eventually { !pan.isEnabled }
+            #expect(!pan.isEnabled)
+
+            pinch.state = .ended
+            try await eventually { pan.isEnabled }
+            #expect(pan.isEnabled)
+        }
+    #endif
 
     // MARK: Page Style
 
