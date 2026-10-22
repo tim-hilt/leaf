@@ -361,6 +361,179 @@ import WebKit
         #expect(reported == [.chapter("Start")])
     }
 
+    // MARK: Document Search
+
+    @Test func foundMatchesAreListedInReadingOrderAndMarkedInTheText() async throws {
+        let book = try await importedBook(chapters: [
+            "<p>alpha beta</p>", "<p>beta</p>", "<p>Beta gamma <b>beta</b></p>",
+        ])
+        let reader = try await openReader(book: book, onScreen: true)
+
+        reader.matches.search(.init("beta"))
+        try await eventually { reader.results.matches.count == 4 }
+
+        #expect(
+            reader.results.matches.map(\.excerpt.text) == ["alpha beta", "beta", "Beta gamma beta", "Beta gamma beta"])
+        #expect(reader.results.matches.allSatisfy { $0.pageNumber == nil })
+        // Every match is marked, the current one apart.
+        reader.matches.makeCurrent(2)
+        for _ in 0..<40 where try await reader.marks("leaf-find-current") != [0, 0, 1] {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(try await reader.marks("leaf-find") == [1, 1, 1])
+        #expect(try await reader.marks("leaf-find-current") == [0, 0, 1])
+        // They cover the matched text, also across elements.
+        #expect(
+            try await reader.evaluateClient(
+                "[...document.querySelectorAll('iframe')[2].contentWindow.CSS.highlights.get('leaf-find-current')].map(r => r.toString())"
+            ) == "Beta")
+        #expect(reader.results.current == 2)
+    }
+
+    @Test func aNewSearchReplacesTheMatchesAndEndingItClearsThem() async throws {
+        let reader = try await openReader(
+            book: importedBook(chapters: ["<p>apple banana</p><p>apple</p>"]), onScreen: true)
+        reader.matches.search(.init("apple"))
+        try await eventually { reader.results.matches.count == 2 }
+
+        reader.matches.search(.init("banana"))
+        try await eventually { reader.results.matches.count == 1 }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(reader.results.matches.count == 1)
+
+        for _ in 0..<40 where try await reader.marks("leaf-find") != [1] {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(try await reader.marks("leaf-find") == [1])
+
+        reader.matches.clear()
+        #expect(reader.results.matches.isEmpty)
+        for _ in 0..<40 where try await reader.marks("leaf-find") != [0] {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(try await reader.marks("leaf-find") == [0])
+    }
+
+    @Test func choosingAResultJumpsThereAndBackReturns() async throws {
+        let book = try await importedBook(chapters: [paragraphs(20), paragraphs(60)])
+        let reader = try await openReader(book: book, onScreen: true)
+        let start = try #require(reader.topOfViewport)
+        reader.beginSearchSession()
+        reader.matches.search(.init("Paragraph 30 "))
+        try await eventually { reader.results.matches.count == 1 }
+
+        reader.results.onChoose(0)
+
+        try await eventually { reader.backPlace != nil }
+        #expect(reader.backPlace == start)
+        try await eventually { reader.topOfViewport?.isSameSpot(as: start) == false }
+        // The match is on screen.
+        let top = try await reader.evaluate(
+            "document.querySelectorAll('iframe')[1].getBoundingClientRect().top + frame(1).querySelectorAll('p')[30].getBoundingClientRect().top"
+        )
+        #expect((0..<800).contains(try #require(Double(top))))
+
+        reader.back()
+        try await eventually { reader.topOfViewport == start }
+        #expect(reader.topOfViewport == start)
+        #expect(reader.backPlace == nil)
+    }
+
+    #if os(iOS)
+        @Test func theFindBarIsDrivenByDocumentSearch() async throws {
+            let book = try await importedBook(chapters: ["<p>apple</p>", "<p>nothing</p>", "<p>an apple, apple</p>"])
+            let reader = try await openReader(book: book, onScreen: true)
+            reader.presentFind()
+            let interaction = reader.find.interaction
+            #expect(interaction.isFindNavigatorVisible)
+
+            // As the bar does when the reader types (and "next" when they press it).
+            let session = try #require(interaction.activeFindSession)
+            session.performSearch(query: "app", options: nil)
+            try await eventually { session.resultCount == 3 }
+            #expect(session.resultCount == 3)
+            #expect(session.highlightedResultIndex == 0)
+            session.highlightNextResult(in: .forward)
+            #expect(session.highlightedResultIndex == 1)
+            session.highlightNextResult(in: .backward)
+            session.highlightNextResult(in: .backward)
+            #expect(session.highlightedResultIndex == 2)
+
+            // The results list reads the same matches, and choosing one makes it current.
+            #expect(reader.results.matches.count == 3)
+            #expect(reader.results.current == 2)
+            reader.results.onChoose(0)
+            #expect(session.highlightedResultIndex == 0)
+
+            interaction.dismissFindNavigator()
+            #expect(reader.results.matches.isEmpty)
+            #expect(!reader.results.isFindBarOpen)
+        }
+    #endif
+
+    #if os(macOS)
+        @Test func theFindBarStepsThroughMatchesInTheBooksText() async throws {
+            let book = try await importedBook(chapters: ["<p>x Apple</p>", "<p>nothing</p>", "<p>an apple, apple</p>"])
+            let reader = try await openReader(book: book, onScreen: true)
+            // The bar's options are remembered on the find pasteboard.
+            let pasteboard = NSPasteboard(name: .find)
+            pasteboard.clearContents()
+            pasteboard.setPropertyList(
+                [NSPasteboard.PasteboardType.TextFinderOptionKey.textFinderCaseInsensitiveKey: true],
+                forType: .textFinderOptions)
+            reader.presentFind()
+            #expect(reader.isFindBarVisible)
+            #expect(reader.results.isFindBarOpen)
+
+            // As the reader does when they type, and when they press ⌘G.
+            func searchField(in view: NSView) -> NSSearchField? {
+                (view as? NSSearchField) ?? view.subviews.lazy.compactMap(searchField(in:)).first
+            }
+            let field = try #require(reader.findBarView.flatMap(searchField(in:)))
+            field.stringValue = "app"
+            field.sendAction(field.action, to: field.target)
+
+            // The results list follows the bar's search, and its current match.
+            try await eventually { reader.results.matches.count == 3 && reader.results.current == 0 }
+            #expect(reader.results.matches.map(\.pageNumber) == [nil, nil, nil])
+            #expect(reader.results.matches.map(\.excerpt.text) == ["x Apple", "an apple, apple", "an apple, apple"])
+            #expect(reader.results.current == 0)
+
+            reader.find.next()
+            try await eventually { reader.results.current == 1 }
+            #expect(reader.results.current == 1)
+
+            // Choosing a match makes it current, and the bar goes on from there.
+            reader.results.onChoose(2)
+            #expect(reader.results.current == 2)
+            try await Task.sleep(for: .milliseconds(300))
+            reader.find.previous()
+            try await eventually { reader.results.current == 1 }
+            #expect(reader.results.current == 1)
+
+            reader.find.finder.performAction(.hideFindInterface)
+            #expect(!reader.isFindBarVisible)
+            #expect(reader.results.matches.isEmpty)
+            #expect(!reader.results.isFindBarOpen)
+        }
+
+    #endif
+
+    @Test func aMatchAlreadyInViewDoesNotMoveTheText() async throws {
+        let reader = try await openReader(
+            book: importedBook(chapters: ["<p>needle</p>" + paragraphs(40)]), onScreen: true)
+        let start = try #require(reader.topOfViewport)
+        reader.beginSearchSession()
+        reader.matches.search(.init("needle"))
+        try await eventually { reader.results.matches.count == 1 }
+
+        reader.results.onChoose(0)
+        try await Task.sleep(for: .milliseconds(300))
+
+        #expect(reader.topOfViewport == start)
+        #expect(reader.backPlace == nil)
+    }
+
     // MARK: The core's text
 
     @Test func offsetsInTheDOMEqualTheCoresOffsets() async throws {
@@ -547,7 +720,10 @@ private func openReader(
 @MainActor
 private func show(_ reader: ReaderEPUBView) {
     #if os(iOS)
-        let window = UIWindow(frame: reader.frame)
+        // In the app's scene, which the find bar needs to show.
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        let window = scene.map(UIWindow.init(windowScene:)) ?? UIWindow()
+        window.frame = reader.frame
         window.addSubview(reader)
         window.makeKeyAndVisible()
     #else
@@ -595,6 +771,13 @@ extension ReaderEPUBView {
             let n = rect.split(separator: ",").compactMap { Double($0) }
             return CGRect(x: n[0], y: n[1], width: n[2], height: n[3])
         }
+    }
+
+    /// How many matches the highlight `name` marks in each chapter.
+    fileprivate func marks(_ name: String) async throws -> [Int] {
+        try await evaluateClient(
+            "[...document.querySelectorAll('iframe')].map(f => f.contentWindow.CSS.highlights.get('\(name)')?.size ?? 0)"
+        ).split(separator: ",").compactMap { Int($0) }
     }
 
     /// Waits for the page to reflow after a size change.

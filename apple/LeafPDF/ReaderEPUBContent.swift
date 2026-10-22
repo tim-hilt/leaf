@@ -13,13 +13,20 @@ struct ReaderEPUBContent {
     /// The Page Style to show.
     let appearance: PageAppearance
     let handle: ReaderHandle
+    let results: SearchResults
     let callbacks: ReaderCallbacks
+    /// Called when the reader asks for the list of matches in the find bar (iOS only).
+    let onShowResults: () -> Void
 
     @MainActor
     fileprivate func makeEPUBView() -> ReaderEPUBView {
-        ReaderEPUBView(
+        let view = ReaderEPUBView(
             book: book, state: state, contents: contents, textSize: textSize, appearance: appearance,
-            handle: handle, callbacks: callbacks)
+            handle: handle, results: results, callbacks: callbacks)
+        #if os(iOS)
+            view.find.onShowResults = onShowResults
+        #endif
+        return view
     }
 
     @MainActor

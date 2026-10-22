@@ -12,6 +12,9 @@ import CoreGraphics
 /// position at the top of the viewport: once before "opened", then as the page
 /// scrolls. Tests and later features call `window.leaf` in the same content world.
 ///
+/// `leaf.setFindMarks` marks Document Search matches as CSS highlights, the current one in
+/// another color, and `leaf.reveal` scrolls one into view unless it is.
+///
 /// The text size is a CSS `zoom` on each chapter's body, so the book's own sizes scale
 /// with it while the side margin on the page stays as it is. `leaf.setTextSize` keeps
 /// the position at the top of the viewport.
@@ -118,19 +121,77 @@ enum ReaderEPUBScript {
                 return [index, starts[low] + from - 1];
               };
 
-              // The top of the line holding the character at offset, in the frame's coordinates.
-              const lineTop = (frame, offset) => {
-                const { nodes, starts } = textOf(frame.contentDocument);
+              // The index of the text node holding the character at offset: the last one
+              // starting at or before it. At a boundary between nodes, `end` takes the node
+              // that ends there instead, for the end of a range.
+              const nodeIndex = ({ nodes, starts }, offset, end) => {
                 let low = 0, high = nodes.length;
                 while (low < high) {
                   const middle = (low + high) >> 1;
-                  if (starts[middle] <= offset) low = middle + 1; else high = middle;
+                  if (end ? starts[middle] < offset : starts[middle] <= offset) low = middle + 1; else high = middle;
                 }
-                const node = nodes[Math.max(low - 1, 0)];
+                return Math.max(low - 1, 0);
+              };
+
+              // The top of the line holding the character at offset, in the frame's coordinates.
+              const lineTop = (frame, offset) => {
+                const text = textOf(frame.contentDocument);
+                const k = nodeIndex(text, offset, false);
+                const node = text.nodes[k];
                 if (!node) return 0;
-                const character = Math.min(offset - starts[Math.max(low - 1, 0)], Math.max(node.length - 1, 0));
+                const character = Math.min(offset - text.starts[k], Math.max(node.length - 1, 0));
                 const rect = lastRect(node, 0, character + 1) || node.parentElement.getBoundingClientRect();
                 return rect.top;
+              };
+
+              // The DOM range of the length characters at offset in the frame; null if it has no text.
+              const rangeOf = (frame, offset, length) => {
+                const doc = frame.contentDocument;
+                const text = textOf(doc);
+                const from = nodeIndex(text, offset, false), to = nodeIndex(text, offset + length, true);
+                if (!text.nodes[from] || !text.nodes[to]) return null;
+                const range = doc.createRange();
+                range.setStart(text.nodes[from], Math.min(offset - text.starts[from], text.nodes[from].length));
+                range.setEnd(text.nodes[to], Math.min(offset + length - text.starts[to], text.nodes[to].length));
+                return range;
+              };
+
+              // Scrolls the match [index, offset, length] a third of the way down the viewport
+              // unless its first line is in view; returns whether it scrolled.
+              const reveal = ([index, offset, length]) => {
+                const frame = frames()[index];
+                const range = frame && rangeOf(frame, offset, length);
+                const rect = range && range.getClientRects()[0];
+                if (!rect) return false;
+                const top = frame.getBoundingClientRect().top + rect.top;
+                if (top >= 0 && top + rect.height <= window.innerHeight) return false;
+                window.scrollTo(0, window.scrollY + top - window.innerHeight / 3);
+                return true;
+              };
+
+              // Marks the matches [[index, offset, length], ...] in the text, the one at
+              // `current` apart. The marks are CSS highlights, so the text stays as it is.
+              const setFindMarks = (matches, current) => {
+                frames().forEach(frame => {
+                  frame.contentWindow.CSS.highlights.delete('leaf-find');
+                  frame.contentWindow.CSS.highlights.delete('leaf-find-current');
+                });
+                const others = new Map(), chosen = new Map();
+                matches.forEach(([index, offset, length], number) => {
+                  const range = rangeOf(frames()[index], offset, length);
+                  if (!range) return;
+                  const group = number === current ? chosen : others;
+                  if (!group.has(index)) group.set(index, []);
+                  group.get(index).push(range);
+                });
+                const mark = (group, name) => group.forEach((ranges, index) => {
+                  const { CSS, Highlight } = frames()[index].contentWindow;
+                  const highlight = new Highlight();
+                  ranges.forEach(range => highlight.add(range));
+                  CSS.highlights.set(name, highlight);
+                });
+                mark(others, 'leaf-find');
+                mark(chosen, 'leaf-find-current');
               };
 
               const scrollToPosition = ([index, offset]) => {
@@ -163,6 +224,8 @@ enum ReaderEPUBScript {
                 scrollToPosition,
                 setTextSize,
                 setAppearance,
+                reveal,
+                setFindMarks,
                 text: index => textOf(frames()[index].contentDocument).nodes.map(node => node.data).join(''),
                 offset: (index, node, k) => {
                   const { nodes, starts } = textOf(frames()[index].contentDocument);
@@ -176,7 +239,9 @@ enum ReaderEPUBScript {
                 'body, body :not(img, svg, svg *, video) { color: ' + appearance.ink + ' !important }',
                 'body :not(img, svg, svg *, video) { background-color: transparent !important }',
               ].join(' ') : '';
-              const css = () => style + ' body { zoom: ' + textSize + ' }' + dark();
+              const marks = ' ::highlight(leaf-find) { background-color: rgba(255, 204, 0, 0.4) }'
+                + ' ::highlight(leaf-find-current) { background-color: rgb(255, 149, 0); color: black }';
+              const css = () => style + ' body { zoom: ' + textSize + ' }' + dark() + marks;
               let loaded = 0, ready = false, queued = false;
               const renderPage = () => {
                 page.textContent = 'html { background: ' + (appearance ? appearance.paper : 'white') + ' }'

@@ -144,14 +144,7 @@ private final class Running: NSObject {
         let text = text(of: page)
         let range = selection.range(at: 0, on: page)
         guard range.location != NSNotFound, NSMaxRange(range) <= text.length else { return nil }
-        let startsWord = !isWordCharacter(before: range.location, in: text)
-        let endsWord = !isWordCharacter(at: NSMaxRange(range), in: text)
-        switch query.wordMatch {
-        case .contains: break
-        case .startsWith: guard startsWord else { return nil }
-        case .endsWith: guard endsWord else { return nil }
-        case .fullWord: guard startsWord && endsWord else { return nil }
-        }
+        guard query.accepts(range, in: text) else { return nil }
         let index = document.index(for: page)
         let top = selection.bounds(for: page)
         return DocumentSearch.Match(
@@ -169,13 +162,42 @@ private final class Running: NSObject {
         return text
     }
 
-    private func isWordCharacter(before index: Int, in text: NSString) -> Bool {
-        index > 0 && isWordCharacter(at: index - 1, in: text)
+}
+
+extension DocumentSearch.Query {
+    /// Whether the text at `range` in `text` is a match as far as the word-match
+    /// method goes: it starts and ends at word boundaries as asked.
+    func accepts(_ range: NSRange, in text: NSString) -> Bool {
+        let startsWord = !Self.isWordCharacter(at: range.location - 1, in: text)
+        let endsWord = !Self.isWordCharacter(at: NSMaxRange(range), in: text)
+        return switch wordMatch {
+        case .contains: true
+        case .startsWith: startsWord
+        case .endsWith: endsWord
+        case .fullWord: startsWord && endsWord
+        }
+    }
+
+    /// Where the query is in `text`, in order and without overlap, keeping the
+    /// occurrences `accepts`.
+    func ranges(in text: NSString) -> [NSRange] {
+        guard !self.text.isEmpty else { return [] }
+        let options: NSString.CompareOptions = caseSensitive ? [] : [.caseInsensitive]
+        var found: [NSRange] = []
+        var from = 0
+        while from < text.length {
+            let range = text.range(
+                of: self.text, options: options, range: NSRange(location: from, length: text.length - from))
+            guard range.location != NSNotFound else { break }
+            if accepts(range, in: text) { found.append(range) }
+            from = NSMaxRange(range)
+        }
+        return found
     }
 
     /// Whether the character at UTF-16 offset `index` is a letter or digit;
     /// false past either end of the text.
-    private func isWordCharacter(at index: Int, in text: NSString) -> Bool {
+    private static func isWordCharacter(at index: Int, in text: NSString) -> Bool {
         guard index >= 0, index < text.length else { return false }
         let character = text.substring(with: text.rangeOfComposedCharacterSequence(at: index)).first
         return character.map { $0.isLetter || $0.isNumber } ?? false
@@ -189,7 +211,7 @@ extension DocumentSearch.Excerpt {
 
     /// The text around `range` in `text`, cut to a few words either side, with
     /// every run of white space (line breaks included) made one space.
-    fileprivate init(around range: NSRange, in text: NSString) {
+    init(around range: NSRange, in text: NSString) {
         let start = max(0, range.location - Self.before)
         let end = min(text.length, NSMaxRange(range) + Self.after)
         // Never cut a character in two.

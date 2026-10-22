@@ -48,7 +48,7 @@ import SwiftUI
 /// A trailing toolbar button opens the native find bar for Document Search,
 /// unless Immersive Mode hides it. ⌘F opens it too: on iOS with a keyboard, on
 /// macOS from Edit > Find, which also has ⌘G and ⇧⌘G. All matches are listed
-/// with their surrounding text and page numbers: in a leading sidebar while the
+/// with their surrounding text and page numbers (none in EPUBs): in a leading sidebar while the
 /// find bar is open and has matches, or on compact widths in a sheet that the
 /// find bar's options open.
 struct ReaderView: View {

@@ -287,7 +287,7 @@ import Testing
             // The results list follows the bar's search, and its current match.
             for _ in 0..<40 where reader.results.matches.count != 3 { try await Task.sleep(for: .milliseconds(50)) }
             #expect(reader.results.isFindBarOpen)
-            #expect(reader.results.matches.map(\.pageIndex) == [0, 2, 2])
+            #expect(reader.results.matches.map(\.pageNumber) == ["1", "3", "3"])
             #expect(reader.results.current == 1)
 
             // Choosing a match makes it current, and the bar goes on from there.

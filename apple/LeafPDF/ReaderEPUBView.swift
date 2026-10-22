@@ -30,8 +30,12 @@ import WebKit
 /// the Page Colors instead (`ReaderEPUBScript`). Switching keeps the place, and the view
 /// behind the page has the paper's color from the start, so nothing flashes.
 ///
-/// Not yet there for EPUBs: Markup and the find bar, so the
-/// parts of `ReaderDocumentView` for them do nothing.
+/// Document Search runs in the core's text of the spine items (`EPUBSearch`), so a match is
+/// a position. The native find bar (`find`) searches as the reader types; the matches are
+/// listed in `results` and marked in the text. Going to a match scrolls it into view, and
+/// during one search session that is one Jump: Back returns to where the search started.
+///
+/// Not yet there for EPUBs: Markup, so the parts of `ReaderDocumentView` for it do nothing.
 final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// Opens a web link outside the Reader.
     var openExternally: (URL) -> Void = { url in
@@ -42,8 +46,63 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         #endif
     }
 
-    private let book: EpubBook
+    let book: EpubBook
     private let callbacks: ReaderCallbacks
+
+    /// The matches of the Document Search that is going on, for the results list.
+    let results: SearchResults
+
+    /// The matches of the Document Search, marked in the text.
+    private(set) lazy var matches = EPUBMatches(view: self, results: results)
+
+    /// The native find bar over Document Search.
+    private(set) lazy var find = EPUBFind(view: self, matches: matches, results: results)
+
+    #if os(macOS)
+        /// The find bar the text finder hands over; it sits at the top of the view, and
+        /// the page starts below it.
+        var findBarView: NSView? {
+            didSet {
+                oldValue?.removeFromSuperview()
+                layOutFindBar()
+            }
+        }
+
+        var isFindBarVisible = false {
+            didSet {
+                layOutFindBar()
+                find.barVisibilityChanged(isFindBarVisible)
+            }
+        }
+
+        var contentView: NSView? { self }
+
+        func findBarViewDidChangeHeight() { layOutFindBar() }
+
+        private func layOutFindBar() {
+            guard let bar = findBarView else { return }
+            guard isFindBarVisible else {
+                bar.removeFromSuperview()
+                insetPage(by: 0)
+                return
+            }
+            let height = bar.frame.height
+            bar.frame = CGRect(x: 0, y: isFlipped ? 0 : bounds.height - height, width: bounds.width, height: height)
+            bar.autoresizingMask = isFlipped ? [.width, .maxYMargin] : [.width, .minYMargin]
+            if bar.superview !== self { addSubview(bar) }
+            insetPage(by: height)
+        }
+
+        /// Starts the page `top` points down, under the find bar. Before macOS 26 the bar covers the page.
+        private func insetPage(by top: CGFloat) {
+            if #available(macOS 26, *) {
+                obscuredContentInsets = NSEdgeInsets(top: top, left: 0, bottom: 0, right: 0)
+            }
+        }
+    #endif
+
+    /// Where the current Document Search session started; nil outside a session.
+    private var searchStart: Place?
 
     /// The Table of Contents, which names the Back place.
     var contents: TableOfContents
@@ -84,11 +143,14 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
 
     /// Opens `book` at the place of `state`, else at its start, with the Back place
     /// of `state`, at `textSize` in `appearance`, and registers as the `handle`'s view.
+    /// Document Search lists its matches in `results`.
     init(
         book: EpubBook, state: ReaderViewState?, contents: TableOfContents, textSize: CGFloat,
-        appearance: PageAppearance, handle: ReaderHandle, callbacks: ReaderCallbacks
+        appearance: PageAppearance, handle: ReaderHandle, results: SearchResults = SearchResults(),
+        callbacks: ReaderCallbacks
     ) {
         self.book = book
+        self.results = results
         self.contents = contents
         restoredBackPlace = state?.backPlace
         self.callbacks = callbacks
@@ -185,12 +247,47 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     func zoomOut() { changeTextSize(to: TextSize.zoomedOut(from: textSize)) }
     func zoomToFitWidth() { changeTextSize(to: TextSize.normal) }
     func highlightSelection() {}
-    func presentFind() {}
-    #if os(macOS)
-        func findNext() {}
-        func findPrevious() {}
-    #endif
     func popoverPoint(of note: PageNote) -> CGPoint? { nil }
+
+    // MARK: Document Search
+
+    /// Shows the find bar; matches are marked and revealed as they are found.
+    func presentFind() { find.present() }
+
+    #if os(macOS)
+        func findNext() { find.next() }
+        func findPrevious() { find.previous() }
+    #endif
+
+    /// Starts a Document Search session, called when the find bar opens. Until
+    /// `endSearchSession()`, every `reveal` that moves the text makes the top of
+    /// the viewport the Back place, so the session is one Jump: Back returns to
+    /// where the search started, also after an earlier Back.
+    func beginSearchSession() { searchStart = top }
+
+    /// Ends the Document Search session, called when the find bar closes. The
+    /// Back place it recorded stays.
+    func endSearchSession() { searchStart = nil }
+
+    /// Marks `matches` in the text, the one at `current` apart; no matches clears the marks.
+    func markMatches(_ matches: [EPUBSearch.Match], current: Int?) {
+        guard isOpen else { return }
+        let list = matches.map { "[\($0.spineIndex), \($0.range.location), \($0.range.length)]" }
+        let script = "leaf.setFindMarks([\(list.joined(separator: ","))], \(current ?? -1))"
+        Task { _ = try? await evaluateJavaScript(script, in: nil, contentWorld: .defaultClient) }
+    }
+
+    /// Scrolls a Document Search match into view, a third of the way down the
+    /// viewport; does nothing if it is already in view. Within a search session the
+    /// move is part of one Jump; see `beginSearchSession()`.
+    func reveal(_ match: EPUBSearch.Match) {
+        guard isOpen else { return }
+        let script = "leaf.reveal([\(match.spineIndex), \(match.range.location), \(match.range.length)])"
+        Task {
+            let moved = try? await evaluateJavaScript(script, in: nil, contentWorld: .defaultClient) as? Bool
+            if moved == true, let searchStart { backPlace = searchStart }
+        }
+    }
 
     // MARK: Text size
 
@@ -240,12 +337,19 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
             if pinch.state == .began { sizeBeforePinch = textSize }
             changeTextSize(to: TextSize.clamped(sizeBeforePinch * pinch.scale))
         }
+
+        // The find bar is presented from the first responder.
+        override var canBecomeFirstResponder: Bool { true }
     #else
         override func magnify(with event: NSEvent) {
             changeTextSize(to: TextSize.clamped(textSize * (1 + event.magnification)))
         }
     #endif
 }
+
+#if os(macOS)
+    extension ReaderEPUBView: @preconcurrency NSTextFinderBarContainer {}
+#endif
 
 #if os(iOS)
     extension ReaderEPUBView: UIGestureRecognizerDelegate {

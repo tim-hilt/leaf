@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The matches of Document Search as a lazy native `List`: each row shows the
-/// text around the match, the match in bold, and the printed page number at
-/// the trailing edge. With a Table of Contents, rows are in sections per
+/// text around the match, the match in bold, and the printed page number, if
+/// the Document has pages, at the trailing edge. With a Table of Contents, rows are in sections per
 /// Chapter or Section. The current match is selected, and choosing a row
 /// asks `results` to go to it, then calls `didChoose`.
 struct SearchResultsList: View {
@@ -46,13 +46,15 @@ struct SearchResultsList: View {
     }
 
     private struct Row: View {
-        let match: DocumentSearch.Match
+        let match: SearchResults.Match
 
         var body: some View {
             HStack {
                 Text(match.excerpt.highlighted).lineLimit(2)
                 Spacer()
-                Text(match.pageNumber).foregroundStyle(.secondary).monospacedDigit()
+                if let pageNumber = match.pageNumber {
+                    Text(pageNumber).foregroundStyle(.secondary).monospacedDigit()
+                }
             }
             .accessibilityElement(children: .combine)
         }

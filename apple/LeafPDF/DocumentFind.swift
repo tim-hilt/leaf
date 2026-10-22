@@ -22,24 +22,12 @@
             self.view = view
             self.results = results
             super.init()
-            interaction.optionsMenuProvider = { [weak self] defaults in
-                UIMenu(children: defaults + (self?.resultsMenu ?? []))
-            }
+            interaction.offerResults(of: results, in: view) { [weak self] in self?.onShowResults() }
             view.addInteraction(interaction)
         }
 
         /// Shows the find bar.
         func present() { interaction.presentFindNavigator(showingReplace: false) }
-
-        /// The options item that opens the list, on compact widths, where there is no sidebar.
-        private var resultsMenu: [UIMenuElement] {
-            guard view?.traitCollection.horizontalSizeClass == .compact else { return [] }
-            let show = UIAction(
-                title: "Show All Results", image: UIImage(systemName: "list.bullet"),
-                attributes: results.matches.isEmpty ? .disabled : []
-            ) { [weak self] _ in self?.onShowResults() }
-            return [UIMenu(options: .displayInline, children: [show])]
-        }
 
         func findInteraction(_ interaction: UIFindInteraction, sessionFor view: UIView) -> UIFindSession? {
             guard let reader = self.view, let document = reader.document else { return nil }
@@ -66,6 +54,8 @@
         private weak var view: ReaderPDFView?
         private let results: SearchResults
         private weak var interaction: UIFindInteraction?
+        /// The matches found, numbered as in `results`.
+        private var matches: [DocumentSearch.Match] = []
         private var isRefreshScheduled = false
 
         init(document: PDFDocument, view: ReaderPDFView, results: SearchResults, interaction: UIFindInteraction) {
@@ -91,7 +81,8 @@
             search.search(
                 DocumentSearch.Query(query, options: options),
                 onMatch: { [self] match in
-                    results.append(match)
+                    matches.append(match)
+                    results.append(.init(match))
                     match.selection.color = Self.otherColor
                     if results.current == nil { makeCurrent(0) }
                     refreshSoon()
@@ -108,6 +99,7 @@
 
         override func invalidateFoundResults() {
             search.cancel()
+            matches = []
             results.removeAll()
             view?.highlightedSelections = nil
             interaction?.updateResultCount()
@@ -115,11 +107,11 @@
 
         /// Makes match `number` the current one, orange among the others, and shows it.
         private func makeCurrent(_ number: Int) {
-            guard results.matches.indices.contains(number) else { return }
-            if let old = results.current { results.matches[old].selection.color = Self.otherColor }
+            guard matches.indices.contains(number) else { return }
+            if let old = results.current { matches[old].selection.color = Self.otherColor }
             results.current = number
-            results.matches[number].selection.color = Self.currentColor
-            view?.reveal(results.matches[number].selection)
+            matches[number].selection.color = Self.currentColor
+            view?.reveal(matches[number].selection)
             refreshSoon()
         }
 
@@ -133,15 +125,30 @@
             isRefreshScheduled = true
             Task { @MainActor in
                 isRefreshScheduled = false
-                view?.highlightedSelections = results.matches.map(\.selection)
+                view?.highlightedSelections = matches.map(\.selection)
                 interaction?.updateResultCount()
+            }
+        }
+    }
+
+    extension UIFindInteraction {
+        /// Adds "Show All Results" to the bar's options, on compact widths, where
+        /// there is no sidebar for the list of `results`; it calls `show`.
+        func offerResults(of results: SearchResults, in view: UIView, show: @escaping () -> Void) {
+            optionsMenuProvider = { [weak view] defaults in
+                guard view?.traitCollection.horizontalSizeClass == .compact else { return UIMenu(children: defaults) }
+                let item = UIAction(
+                    title: "Show All Results", image: UIImage(systemName: "list.bullet"),
+                    attributes: results.matches.isEmpty ? .disabled : []
+                ) { _ in show() }
+                return UIMenu(children: defaults + [UIMenu(options: .displayInline, children: [item])])
             }
         }
     }
 
     extension DocumentSearch.Query {
         /// The reader's choices in the system find bar.
-        @MainActor fileprivate init(_ text: String, options: UITextSearchOptions?) {
+        @MainActor init(_ text: String, options: UITextSearchOptions?) {
             let wordMatch: DocumentSearch.WordMatch =
                 switch options?.wordMatchMethod {
                 case .startsWith: .startsWith
@@ -179,6 +186,8 @@
         /// The current match, in the Document's text; empty before the first.
         private var selected = NSRange()
         private let search: DocumentSearch
+        /// The matches of the search the list shows, numbered as in `results`.
+        private var matches: [DocumentSearch.Match] = []
         /// The search the list shows; nil while the bar is hidden.
         private var listed: DocumentSearch.Query?
         private var barObservation: NSKeyValueObservation?
@@ -231,6 +240,7 @@
                 listed = nil
                 listedChange = nil
                 search.cancel()
+                matches = []
                 results.removeAll()
                 return
             }
@@ -250,13 +260,15 @@
             let query = DocumentSearch.Query(findPasteboard: pasteboard)
             guard query != listed else { return }
             listed = query
+            matches = []
             results.removeAll()
             search.search(
                 query,
                 onMatch: { [self] match in
-                    results.append(match)
+                    matches.append(match)
+                    results.append(.init(match))
                     if location(of: match) == selected.location, selected.length > 0 {
-                        results.current = results.matches.count - 1
+                        results.current = matches.count - 1
                     }
                 },
                 onFinish: {})
@@ -269,8 +281,8 @@
 
         /// Goes to the listed match with the given number, as if the bar had found it.
         private func choose(_ number: Int) {
-            guard results.matches.indices.contains(number) else { return }
-            let match = results.matches[number]
+            guard matches.indices.contains(number) else { return }
+            let match = matches[number]
             scrollRangeToVisible(NSRange(location: location(of: match), length: match.range.length))
             // NSTextFinder keeps its own place in its matches; this makes it
             // go on from the selection.
@@ -279,7 +291,6 @@
 
         /// Number of the listed match starting at `location`, if there is one.
         private func number(ofMatchAt location: Int) -> Int? {
-            let matches = results.matches
             var low = 0
             var high = matches.count
             while low < high {
