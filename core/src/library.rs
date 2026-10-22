@@ -723,24 +723,19 @@ impl Library {
         self.edit_states(id, |doc| markup::remove_highlight(doc, highlight))
     }
 
-    /// Adds a page Note at (`x`, `y`) in page space on page `page_index` of
-    /// Document `id`, `created` in milliseconds since the Unix epoch, and
-    /// returns it, still without text: it isn't in the Markup until
+    /// Adds a page Note at `place`, a spot of the Format of Document `id`,
+    /// `created` in milliseconds since the Unix epoch, and returns it, still without text: it isn't in the Markup until
     /// `set_page_note_text` gives it some. Like `add_highlight`, it adds nothing
     /// and returns `None` for a Document that isn't in the Library.
     pub fn add_page_note(
         &self,
         id: &str,
-        page_index: u32,
-        x: f64,
-        y: f64,
+        place: Place,
         created: u64,
     ) -> io::Result<Option<PageNote>> {
         let note = PageNote {
             id: state::new_id(),
-            page_index,
-            x,
-            y,
+            place,
             created,
             text: String::new(),
         };
@@ -2470,6 +2465,10 @@ mod tests {
         );
     }
 
+    fn pdf_spot(page_index: u32, x: f64, y: f64) -> Place {
+        Place::Pdf { page_index, x, y }
+    }
+
     #[test]
     fn a_page_note_survives_reopening_the_library_and_emptying_it_removes_it() {
         let scratch = Scratch::new();
@@ -2477,7 +2476,7 @@ mod tests {
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
 
         let added = library
-            .add_page_note(&document.id, 4, 100.5, 200.5, 1_000)
+            .add_page_note(&document.id, pdf_spot(4, 100.5, 200.5), 1_000)
             .unwrap()
             .unwrap();
         assert_eq!(library.markup(&document.id).unwrap(), Markup::default());
@@ -2494,7 +2493,7 @@ mod tests {
             reopened.markup(&document.id).unwrap().page_notes,
             vec![expected]
         );
-        assert_eq!((added.page_index, added.x, added.y), (4, 100.5, 200.5));
+        assert_eq!(added.place, pdf_spot(4, 100.5, 200.5));
         assert_eq!(added.created, 1_000);
 
         reopened
@@ -2507,16 +2506,44 @@ mod tests {
     }
 
     #[test]
+    fn an_epub_page_note_is_stored_with_its_spot_and_survives_reopening() {
+        let scratch = Scratch::new();
+        let (library, document) = moby(&scratch);
+        let spot = Place::Epub {
+            spine_index: 1,
+            offset: 5,
+        };
+
+        let added = library
+            .add_page_note(&document.id, spot, 1_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(added.place, spot);
+        library
+            .set_page_note_text(&document.id, &added.id, "years")
+            .unwrap();
+
+        let expected = PageNote {
+            text: "years".to_owned(),
+            ..added
+        };
+        assert_eq!(
+            scratch.library().markup(&document.id).unwrap().page_notes,
+            vec![expected]
+        );
+    }
+
+    #[test]
     fn a_removed_page_note_is_gone_after_reopening_the_library() {
         let scratch = Scratch::new();
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
         let first = library
-            .add_page_note(&document.id, 0, 1.0, 2.0, 1)
+            .add_page_note(&document.id, pdf_spot(0, 1.0, 2.0), 1)
             .unwrap()
             .unwrap();
         let second = library
-            .add_page_note(&document.id, 1, 3.0, 4.0, 2)
+            .add_page_note(&document.id, pdf_spot(1, 3.0, 4.0), 2)
             .unwrap()
             .unwrap();
         for note in [&first, &second] {
@@ -2544,7 +2571,7 @@ mod tests {
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
         let added = library
-            .add_page_note(&document.id, 0, 1.0, 2.0, 1)
+            .add_page_note(&document.id, pdf_spot(0, 1.0, 2.0), 1)
             .unwrap()
             .unwrap();
         library
@@ -2565,7 +2592,7 @@ mod tests {
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
         let added = library
-            .add_page_note(&document.id, 0, 1.0, 2.0, 1)
+            .add_page_note(&document.id, pdf_spot(0, 1.0, 2.0), 1)
             .unwrap()
             .unwrap();
         library
@@ -2641,7 +2668,9 @@ mod tests {
         let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
         library.remove(&document.id).unwrap();
 
-        let added = library.add_page_note(&document.id, 0, 1.0, 2.0, 1).unwrap();
+        let added = library
+            .add_page_note(&document.id, pdf_spot(0, 1.0, 2.0), 1)
+            .unwrap();
 
         assert_eq!(added, None);
         assert!(!scratch.0.join("library").join(&document.id).exists());
@@ -2949,7 +2978,7 @@ mod tests {
                 .set_highlight_note(&kept.id, &added.id, "my thought")
                 .unwrap();
             let note = library
-                .add_page_note(&kept.id, 0, 1.0, 2.0, 1)
+                .add_page_note(&kept.id, pdf_spot(0, 1.0, 2.0), 1)
                 .unwrap()
                 .unwrap();
             library.set_page_note_text(&kept.id, &note.id, "x").unwrap();

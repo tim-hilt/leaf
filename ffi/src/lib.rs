@@ -153,9 +153,7 @@ pub struct Highlight {
 #[uniffi::remote(Record)]
 pub struct PageNote {
     pub id: String,
-    pub page_index: u32,
-    pub x: f64,
-    pub y: f64,
+    pub place: Place,
     pub created: u64,
     pub text: String,
 }
@@ -630,12 +628,10 @@ impl Library {
     pub fn add_page_note(
         &self,
         id: String,
-        page_index: u32,
-        x: f64,
-        y: f64,
+        place: Place,
         created: u64,
     ) -> Result<Option<PageNote>, LibraryError> {
-        let note = self.core.add_page_note(&id, page_index, x, y, created);
+        let note = self.core.add_page_note(&id, place, created);
         self.written(note)
     }
 
@@ -808,7 +804,12 @@ mod tests {
             l.save_progress(id, progress).unwrap();
         });
         write("add_page_note", &|l, id| {
-            l.add_page_note(id, 0, 1.0, 2.0, 1).unwrap();
+            let place = Place::Pdf {
+                page_index: 0,
+                x: 1.0,
+                y: 2.0,
+            };
+            l.add_page_note(id, place, 1).unwrap();
         });
         write("add_custom_color", &|l, _| {
             l.add_custom_color(Rgb { r: 1, g: 2, b: 3 }, 1).unwrap();

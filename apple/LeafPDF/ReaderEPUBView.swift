@@ -43,7 +43,11 @@ import WebKit
 /// clears it. A click on a Highlight, or its Note icon, is reported to `onHighlightTap`;
 /// dragging still selects.
 ///
-/// Not yet there for EPUBs: page Notes, so `popoverPoint(of:)` has none.
+/// Page Notes have their icon in the left margin at the line of their spot, drawn by the
+/// page (`ReaderEPUBScript`) so it follows the text when it reflows, in `pageNoteColor`
+/// whatever the Page Style; a click on it is reported to `onPageNoteTap`. A long press (iOS)
+/// or right-click (macOS) on an empty spot, one without text, link, Highlight or icon,
+/// offers "Add Note", which reports the spot in the text to `onAddNote`.
 final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// Opens a web link outside the Reader.
     var openExternally: (URL) -> Void = { url in
@@ -135,6 +139,25 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         didSet { if highlights != oldValue { syncHighlights() } }
     }
 
+    /// The page Notes to show an icon for. Setting them draws the change.
+    var pageNotes: [PageNote] = [] {
+        didSet { if pageNotes.map(\.id) != oldValue.map(\.id) { syncPageNotes() } }
+    }
+
+    /// The color of the icons of page Notes.
+    var pageNoteColor = RGB(1, 0.92, 0.24) {
+        didSet { if pageNoteColor != oldValue { syncPageNotes() } }
+    }
+
+    /// Where a Note can be added at the last right-click, if anywhere.
+    private var contextSpot: Place?
+
+    #if os(iOS)
+        /// The edit menu offering "Add Note", and the spot it was asked at.
+        private lazy var addNoteMenu = UIEditMenuInteraction(delegate: self)
+        fileprivate var noteSpot: Place?
+    #endif
+
     /// Where each Highlight's words are now, by its ID; nil for one found nowhere. A
     /// Highlight's anchor and quoted text never change, so this is asked of the core once.
     private var placements: [String: HighlightAnchor.Span?] = [:]
@@ -212,6 +235,10 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
             let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched))
             pinch.delegate = self
             addGestureRecognizer(pinch)
+            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(longPressed))
+            longPress.delegate = self
+            addGestureRecognizer(longPress)
+            addInteraction(addNoteMenu)
         #endif
         load(URLRequest(url: EPUBSchemeHandler.rootURL))
     }
@@ -237,6 +264,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
                 view.syncTextSize()
                 view.syncAppearance()
                 view.syncHighlights()
+                view.syncPageNotes()
                 view.callbacks.onOpen()
             case let text as String where text == "tap":
                 view.callbacks.onSingleTap()
@@ -247,6 +275,12 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
                     let y = body["y"] as? Double
                 {
                     view.reportTap(onHighlight: id, at: CGPoint(x: x, y: y))
+                } else if let id = body["pageNote"] as? String, let x = body["x"] as? Double,
+                    let y = body["y"] as? Double
+                {
+                    view.reportTap(onPageNote: id, at: CGPoint(x: x, y: y))
+                } else if body.keys.contains("contextSpot") {
+                    view.contextSpot = (body["contextSpot"] as? [Int]).map { .epub(spineIndex: $0[0], offset: $0[1]) }
                 }
             default: break
             }
@@ -282,7 +316,14 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     func zoomIn() { changeTextSize(to: TextSize.zoomedIn(from: textSize)) }
     func zoomOut() { changeTextSize(to: TextSize.zoomedOut(from: textSize)) }
     func zoomToFitWidth() { changeTextSize(to: TextSize.normal) }
-    func popoverPoint(of note: PageNote) -> CGPoint? { nil }
+
+    func popoverPoint(of note: PageNote) async -> CGPoint? {
+        guard isOpen, case .epub(let spineIndex, let offset) = note.place else { return nil }
+        let icon = try? await evaluateJavaScript(
+            "leaf.notePoint([\(spineIndex), \(offset)])", in: nil, contentWorld: .defaultClient)
+        guard let point = icon as? [Double], point.count == 2 else { return nil }
+        return CGPoint(x: point[0], y: point[1])
+    }
 
     // MARK: Document Search
 
@@ -372,10 +413,47 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
                 "start": [span.start.spineIndex, span.start.offset], "end": [span.end.spineIndex, span.end.offset],
             ]
         }
-        guard let data = try? JSONSerialization.data(withJSONObject: drawn),
+        callPage("setHighlights", with: drawn)
+    }
+
+    /// Calls `leaf.<function>` of the page with `argument` as JSON.
+    private func callPage(_ function: String, with argument: Any) {
+        guard let data = try? JSONSerialization.data(withJSONObject: argument),
             let json = String(data: data, encoding: .utf8)
         else { return }
-        Task { _ = try? await evaluateJavaScript("leaf.setHighlights(\(json))", in: nil, contentWorld: .defaultClient) }
+        Task { _ = try? await evaluateJavaScript("leaf.\(function)(\(json))", in: nil, contentWorld: .defaultClient) }
+    }
+
+    // MARK: Page Notes
+
+    /// Reports a click on the icon of page Note `id` at `point` in the view's coordinates.
+    fileprivate func reportTap(onPageNote id: String, at point: CGPoint) {
+        if let note = pageNotes.first(where: { $0.id == id }) { callbacks.onPageNoteTap(note, point) }
+    }
+
+    /// Tells the page the page Notes once it is open.
+    private func syncPageNotes() {
+        guard isOpen else { return }
+        let drawn: [[String: Any]] = pageNotes.compactMap { note in
+            guard case .epub(let spineIndex, let offset) = note.place else { return nil }
+            return ["id": note.id, "color": pageNoteColor.hex, "at": [spineIndex, offset]]
+        }
+        callPage("setPageNotes", with: drawn)
+    }
+
+    /// Reports the spot in the text at `point`, in the view's coordinates, to `onAddNote`.
+    /// Does nothing unless the spot is empty.
+    func addNote(at point: CGPoint) {
+        Task { if let spot = await emptySpot(at: point) { callbacks.onAddNote(spot) } }
+    }
+
+    /// Where a Note added at `point` would be in the text; nil unless the spot is empty.
+    private func emptySpot(at point: CGPoint) async -> Place? {
+        guard isOpen else { return nil }
+        let spot = try? await evaluateJavaScript(
+            "leaf.emptySpot(\(point.x), \(point.y))", in: nil, contentWorld: .defaultClient)
+        guard let parts = spot as? [Int], parts.count == 2 else { return nil }
+        return .epub(spineIndex: parts[0], offset: parts[1])
     }
 
     // MARK: Text size
@@ -427,6 +505,16 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
             changeTextSize(to: TextSize.clamped(sizeBeforePinch * pinch.scale))
         }
 
+        @objc private func longPressed(_ press: UILongPressGestureRecognizer) {
+            guard press.state == .began else { return }
+            let point = press.location(in: self)
+            Task {
+                guard let spot = await emptySpot(at: point) else { return }
+                noteSpot = spot
+                addNoteMenu.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: point))
+            }
+        }
+
         // The find bar is presented from the first responder.
         override var canBecomeFirstResponder: Bool { true }
 
@@ -440,19 +528,30 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
             builder.insertChild(UIMenu(options: .displayInline, children: [highlight]), atStartOfMenu: .standardEdit)
         }
     #else
-        /// Adds "Highlight" to the context menu of a selection.
+        /// Adds "Highlight" to the context menu of a selection, and "Add Note" to that of an empty spot.
         override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
             super.willOpenMenu(menu, with: event)
-            guard hasSelection, !menu.items.contains(where: { $0.action == #selector(highlightFromMenu) }) else {
-                return
+            if hasSelection {
+                insert("Highlight", #selector(highlightFromMenu), into: menu)
+            } else if contextSpot != nil {
+                insert("Add Note", #selector(addNoteFromMenu), into: menu)
             }
-            let item = NSMenuItem(title: "Highlight", action: #selector(highlightFromMenu), keyEquivalent: "")
+        }
+
+        /// Puts an item for `action` at the top of `menu`, unless it has one.
+        private func insert(_ title: String, _ action: Selector, into menu: NSMenu) {
+            guard !menu.items.contains(where: { $0.action == action }) else { return }
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             menu.insertItem(item, at: 0)
             menu.insertItem(.separator(), at: 1)
         }
 
         @objc private func highlightFromMenu(_ sender: Any?) { highlightSelection() }
+
+        @objc private func addNoteFromMenu(_ sender: Any?) {
+            if let contextSpot { callbacks.onAddNote(contextSpot) }
+        }
 
         override func magnify(with event: NSEvent) {
             changeTextSize(to: TextSize.clamped(textSize * (1 + event.magnification)))
@@ -465,6 +564,19 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
 #endif
 
 #if os(iOS)
+    extension ReaderEPUBView: @MainActor UIEditMenuInteractionDelegate {
+        func editMenuInteraction(
+            _ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration,
+            suggestedActions: [UIMenuElement]
+        ) -> UIMenu? {
+            guard let spot = noteSpot else { return nil }
+            let add = UIAction(title: "Add Note", image: UIImage(systemName: "note.text.badge.plus")) { [weak self] _ in
+                self?.callbacks.onAddNote(spot)
+            }
+            return UIMenu(children: [add])
+        }
+    }
+
     extension ReaderEPUBView: UIGestureRecognizerDelegate {
         func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,

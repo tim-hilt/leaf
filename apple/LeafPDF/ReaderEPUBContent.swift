@@ -13,6 +13,8 @@ struct ReaderEPUBContent {
     /// The Page Style to show.
     let appearance: PageAppearance
     let highlights: [Highlight]
+    let pageNotes: [PageNote]
+    let pageNoteColor: RGB
     let handle: ReaderHandle
     let results: SearchResults
     let callbacks: ReaderCallbacks
@@ -24,6 +26,8 @@ struct ReaderEPUBContent {
         let view = ReaderEPUBView(
             book: book, state: state, contents: contents, textSize: textSize, appearance: appearance,
             highlights: highlights, handle: handle, results: results, callbacks: callbacks)
+        view.pageNotes = pageNotes
+        view.pageNoteColor = pageNoteColor
         #if os(iOS)
             view.find.onShowResults = onShowResults
         #endif
@@ -36,6 +40,8 @@ struct ReaderEPUBContent {
         view.textSize = textSize
         view.pageAppearance = appearance
         view.highlights = highlights
+        view.pageNotes = pageNotes
+        view.pageNoteColor = pageNoteColor
     }
 }
 

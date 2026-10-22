@@ -646,16 +646,12 @@ final class LibraryModel {
     /// Adds a page Note without text at `place` to `document`, `created` now. The
     /// core writes off the main thread, in order, and this returns the stored
     /// page Note when it has. It isn't listed by `markup(of:)` until it has
-    /// text (`setText`). Nil for a Document that was Removed, or if the write failed,
-    /// and for an EPUB Place, which the core can't store yet.
+    /// text (`setText`). Nil for a Document that was Removed, or if the write failed.
     func addPageNote(at place: Place, to document: LibraryDocument, at created: Date = .now) async -> PageNote? {
-        guard let (pageIndex, point) = place.pdfPosition else { return nil }
         let id = document.id
+        let spot = place.stored
         let milliseconds = created.millisecondsSince1970
-        let stored = await inStateOrder {
-            try? $0.addPageNote(
-                id: id, pageIndex: UInt32(pageIndex), x: point.x, y: point.y, created: milliseconds)
-        }
+        let stored = await inStateOrder { try? $0.addPageNote(id: id, place: spot, created: milliseconds) }
         return stored.map(PageNote.init)
     }
 
@@ -910,9 +906,7 @@ extension HighlightAnchor.Position {
 
 extension PageNote {
     fileprivate init(_ stored: LeafCore.PageNote) {
-        self.init(
-            id: stored.id, place: Place.pdf(pageIndex: Int(stored.pageIndex), point: CGPoint(x: stored.x, y: stored.y)),
-            text: stored.text)
+        self.init(id: stored.id, place: Place(stored.place), text: stored.text)
     }
 }
 

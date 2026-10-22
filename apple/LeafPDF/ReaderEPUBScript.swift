@@ -19,8 +19,15 @@ import CoreGraphics
 /// so they follow the text when it reflows, and puts a Note icon at the end of those with a
 /// Note, in a layer above the chapters that the text size doesn't scale. `leaf.takeSelection`
 /// hands over the selection as `[chapter, offset, chapter, offset, text]` and clears it. A
-/// click on a Highlight or a Note icon posts `{ highlight, x, y }`, the point in the view's
+/// click on a Highlight or its Note icon posts `{ highlight, x, y }`, the point in the view's
 /// coordinates; `{ selection }` is posted when the selection appears or goes.
+///
+/// `leaf.setPageNotes` puts the icons of page Notes in the same layer, in the left margin at
+/// the line of their spot, so they follow the text when it reflows; a click on one posts
+/// `{ pageNote, x, y }`. `leaf.emptySpot` gives the position for a new Note at a point of the
+/// view, or null where there is text, a link, a Highlight or an icon; `leaf.notePoint` is where
+/// the icon of a Note at a position is. A right-click posts `{ contextSpot }`, the position
+/// `emptySpot` gives there.
 ///
 /// The text size is a CSS `zoom` on each chapter's body, so the book's own sizes scale
 /// with it while the side margin on the page stays as it is. `leaf.setTextSize` keeps
@@ -140,16 +147,16 @@ enum ReaderEPUBScript {
                 return Math.max(low - 1, 0);
               };
 
-              // The top of the line holding the character at offset, in the frame's coordinates.
-              const lineTop = (frame, offset) => {
+              // The box of the line holding the character at offset, in the frame's coordinates.
+              const lineBox = (frame, offset) => {
                 const text = textOf(frame.contentDocument);
                 const k = nodeIndex(text, offset, false);
                 const node = text.nodes[k];
-                if (!node) return 0;
+                if (!node) return { top: 0, height: 0 };
                 const character = Math.min(offset - text.starts[k], Math.max(node.length - 1, 0));
-                const rect = lastRect(node, 0, character + 1) || node.parentElement.getBoundingClientRect();
-                return rect.top;
+                return lastRect(node, 0, character + 1) || node.parentElement.getBoundingClientRect();
               };
+              const lineTop = (frame, offset) => lineBox(frame, offset).top;
 
               // The DOM range of the length characters at offset in the frame; null if it has no text.
               const rangeOf = (frame, offset, length) => {
@@ -228,6 +235,19 @@ enum ReaderEPUBScript {
                 return null;
               };
 
+              // Page Notes: { id, color: 'rrggbb', at: [chapter, offset] }.
+              let pageNotes = [];
+              const iconSize = 18;
+
+              // Where the icon of a page Note is, in the viewport: in the left margin, centered on
+              // the line of its spot. Null if the chapter isn't there.
+              const pageNoteSpot = ({ at: [index, offset] }) => {
+                const frame = frames()[index];
+                if (!frame) return null;
+                const line = lineBox(frame, offset);
+                return { left: 3, top: frame.getBoundingClientRect().top + line.top + (line.height - iconSize) / 2 };
+              };
+
               // The Note icons sit above the chapters, in the page's own coordinates.
               const notes = document.createElement('div');
               notes.style.cssText = 'position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 1';
@@ -236,7 +256,10 @@ enum ReaderEPUBScript {
                 const icon = click.target.closest('.leaf-note');
                 if (!icon) return;
                 const box = icon.getBoundingClientRect();
-                post({ highlight: icon.dataset.id, x: box.left + box.width / 2, y: box.top + box.height / 2 });
+                post({
+                  [icon.dataset.page ? 'pageNote' : 'highlight']: icon.dataset.id,
+                  x: box.left + box.width / 2, y: box.top + box.height / 2,
+                });
               });
 
               // Puts each Note icon at the end of its Highlight, centered on its top-right corner.
@@ -255,6 +278,58 @@ enum ReaderEPUBScript {
                   icon.style.top = (window.scrollY + frame.top + box.top - 9) + 'px';
                   notes.append(icon);
                 }
+                for (const note of pageNotes) {
+                  const spot = pageNoteSpot(note);
+                  if (!spot) continue;
+                  const icon = document.createElement('div');
+                  icon.className = 'leaf-note';
+                  icon.dataset.id = note.id;
+                  icon.dataset.page = '1';
+                  icon.style.backgroundColor = 'rgb(' + rgb(note.color) + ')';
+                  icon.style.left = (window.scrollX + spot.left) + 'px';
+                  icon.style.top = (window.scrollY + spot.top) + 'px';
+                  notes.append(icon);
+                }
+              };
+
+              const setPageNotes = list => {
+                pageNotes = list;
+                layOutNotes();
+              };
+
+              // Where the icon of a page Note at [chapter, offset] is centered, in the viewport.
+              const notePoint = at => {
+                const spot = pageNoteSpot({ at });
+                return spot && [spot.left + iconSize / 2, spot.top + iconSize / 2];
+              };
+
+              // Where a Note can be added at (x, y) in the viewport: [chapter, offset] of the nearest
+              // character. Null unless the spot is empty: no text, link, Highlight or Note icon, the
+              // margins and the space around the text being empty.
+              const emptySpot = (x, y) => {
+                const hit = document.elementFromPoint(x, y);
+                if (hit && hit.closest('.leaf-note')) return null;
+                const index = frames().findIndex(frame => {
+                  const box = frame.getBoundingClientRect();
+                  return y >= box.top && y < box.bottom;
+                });
+                if (index < 0) return null;
+                const frame = frames()[index], box = frame.getBoundingClientRect(), doc = frame.contentDocument;
+                const fx = x - box.left, fy = y - box.top, inside = fx >= 0 && fx < box.width;
+                if (highlightAt(index, fx, fy)) return null;
+                const element = inside && doc.elementFromPoint(fx, fy);
+                if (element && element.closest('a[href]')) return null;
+                const caret = doc.caretRangeFromPoint(Math.min(Math.max(fx, 0), box.width - 1), fy);
+                if (!caret) return null;
+                const text = textOf(doc);
+                const offset = pointOffset(text, caret.startContainer, caret.startOffset);
+                for (const from of inside ? [offset - 1, offset] : []) {
+                  const range = from >= 0 && from < text.length ? rangeOf(frame, from, 1) : null;
+                  for (const rect of range ? range.getClientRects() : []) {
+                    if (fx >= rect.left && fx <= rect.right && fy >= rect.top && fy <= rect.bottom) return null;
+                  }
+                }
+                return [index, offset];
               };
 
               const setHighlights = list => {
@@ -352,6 +427,9 @@ enum ReaderEPUBScript {
                 reveal,
                 setFindMarks,
                 setHighlights,
+                setPageNotes,
+                notePoint,
+                emptySpot,
                 takeSelection,
                 text: index => textOf(frames()[index].contentDocument).nodes.map(node => node.data).join(''),
                 offset: (index, node, k) => {
@@ -371,7 +449,7 @@ enum ReaderEPUBScript {
               const css = () => style + ' body { zoom: ' + textSize + ' }' + dark() + marks + highlightCss;
               let loaded = 0, ready = false, queued = false;
               const lines = 'linear-gradient(rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.6))';
-              const noteCss = ' .leaf-note { position: absolute; width: 18px; height: 18px; box-sizing: border-box;'
+              const noteCss = ' .leaf-note { position: absolute; width: ' + iconSize + 'px; height: ' + iconSize + 'px; box-sizing: border-box;'
                 + ' border-radius: 4px; border: 1px solid rgba(0, 0, 0, 0.3); cursor: pointer; background-repeat: no-repeat;'
                 + ' background-size: 10px 1.5px; background-image: ' + [lines, lines, lines].join(', ') + ';'
                 + ' background-position: 3px 3.25px, 3px 7.25px, 3px 11.25px }';
@@ -394,6 +472,12 @@ enum ReaderEPUBScript {
                 renderPage();
                 sheets.forEach(sheet => { sheet.textContent = css(); });
               };
+              // A right-click reports where a Note can be added there, if anywhere, before the menu opens.
+              const watchContextMenu = (target, frame) => target.addEventListener('contextmenu', event => {
+                const box = frame ? frame.getBoundingClientRect() : { left: 0, top: 0 };
+                post({ contextSpot: emptySpot(box.left + event.clientX, box.top + event.clientY) });
+              }, true);
+              watchContextMenu(document);
               renderPage();
               window.addEventListener('scroll', () => {
                 if (!ready || queued) return;
@@ -411,6 +495,7 @@ enum ReaderEPUBScript {
                 fit(frame);
                 new ResizeObserver(() => { fit(frame); scheduleNotes(); }).observe(doc.documentElement);
                 doc.addEventListener('selectionchange', selectionChanged);
+                watchContextMenu(doc, frame);
                 doc.addEventListener('click', click => {
                   if (click.target.closest('a[href]') || !doc.getSelection().isCollapsed) return;
                   const hit = highlightAt(frames().indexOf(frame), click.clientX, click.clientY);

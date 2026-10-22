@@ -30,8 +30,9 @@ protocol ReaderDocumentView: AnyObject {
     #endif
 
     /// Where to attach the popover of `note`, in the view's coordinates with
-    /// the origin at the top-left; nil if the note isn't shown.
-    func popoverPoint(of note: PageNote) -> CGPoint?
+    /// the origin at the top-left; nil if the note isn't shown. It may have to ask
+    /// the page, so it waits.
+    func popoverPoint(of note: PageNote) async -> CGPoint?
 }
 
 /// Lets window-level commands (macOS menu) reach the Reader's document view.

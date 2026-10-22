@@ -9,8 +9,9 @@
 //! concurrently each create their own text, and Automerge keeps one of them.
 //!
 //! The root's `page_notes` map holds the Notes on a spot of a page, keyed by ID
-//! likewise: `page_index`, `x` and `y` (the spot in page space), `created` and
-//! `text`, Automerge text. A page Note is its text: emptying it deletes the
+//! likewise: the spot, `created` and `text`, Automerge text. The spot of a PDF
+//! page Note is `page_index`, `x` and `y` (page space); that of an EPUB one is
+//! `epub`, a map of `spine` and `offset` (ADR-0022). A page Note is its text: emptying it deletes the
 //! page Note, and one without text, which only exists between adding it and
 //! typing, isn't listed.
 //!
@@ -27,6 +28,7 @@
 //! quoted text is the fallback of both.
 //!
 
+use crate::progress::Place;
 use crate::state;
 use automerge::{
     AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
@@ -114,11 +116,8 @@ pub struct Highlight {
 pub struct PageNote {
     /// Unique among all page Notes, also across devices.
     pub id: String,
-    /// Zero-based index of the page.
-    pub page_index: u32,
-    /// The spot, in PDF page space.
-    pub x: f64,
-    pub y: f64,
+    /// The spot, in the terms of its Document's Format.
+    pub place: Place,
     /// When it was added, in milliseconds since the Unix epoch.
     pub created: u64,
     /// What the user wrote. Never empty in the Markup.
@@ -272,13 +271,30 @@ pub(crate) fn put_page_note(doc: &mut AutoCommit, note: &PageNote) {
     let entry = doc
         .put_object(&map, note.id.as_str(), ObjType::Map)
         .expect("a map accepts new keys");
-    let fields = [
-        ("page_index", ScalarValue::Uint(u64::from(note.page_index))),
-        ("x", ScalarValue::F64(note.x)),
-        ("y", ScalarValue::F64(note.y)),
-        ("created", ScalarValue::Uint(note.created)),
-    ];
-    for (key, value) in fields {
+    let fields = match note.place {
+        Place::Pdf { page_index, x, y } => vec![
+            ("page_index", ScalarValue::Uint(u64::from(page_index))),
+            ("x", ScalarValue::F64(x)),
+            ("y", ScalarValue::F64(y)),
+        ],
+        Place::Epub {
+            spine_index,
+            offset,
+        } => {
+            let epub = doc
+                .put_object(&entry, "epub", ObjType::Map)
+                .expect("a new map accepts new keys");
+            for (key, value) in [("spine", u64::from(spine_index)), ("offset", offset)] {
+                doc.put(&epub, key, ScalarValue::Uint(value))
+                    .expect("a new map accepts new keys");
+            }
+            vec![]
+        }
+    };
+    for (key, value) in fields
+        .into_iter()
+        .chain([("created", ScalarValue::Uint(note.created))])
+    {
         doc.put(&entry, key, value)
             .expect("a new map accepts new keys");
     }
@@ -288,13 +304,27 @@ pub(crate) fn put_page_note(doc: &mut AutoCommit, note: &PageNote) {
 fn read_page_note(doc: &AutoCommit, entry: &ObjId, id: String) -> Option<PageNote> {
     let field = |name: &str| state::scalar(doc, entry, name);
     Some(PageNote {
-        page_index: u32::try_from(field("page_index")?.as_u64()?).ok()?,
-        x: field("x")?.as_f64()?,
-        y: field("y")?.as_f64()?,
+        place: read_place(doc, entry)?,
         created: field("created")?.as_u64()?,
         text: read_text(doc, entry, "text")?,
         id,
     })
+}
+
+/// The spot of the page Note `entry`, of the Format it was written for.
+fn read_place(doc: &AutoCommit, entry: &ObjId) -> Option<Place> {
+    let field = |map: &ObjId, name: &str| state::scalar(doc, map, name);
+    match entry_of(doc, entry, "epub") {
+        Some(epub) => Some(Place::Epub {
+            spine_index: u32::try_from(field(&epub, "spine")?.as_u64()?).ok()?,
+            offset: field(&epub, "offset")?.as_u64()?,
+        }),
+        None => Some(Place::Pdf {
+            page_index: u32::try_from(field(entry, "page_index")?.as_u64()?).ok()?,
+            x: field(entry, "x")?.as_f64()?,
+            y: field(entry, "y")?.as_f64()?,
+        }),
+    }
 }
 
 fn read_highlight(doc: &AutoCommit, entry: &ObjId, id: String) -> Option<Highlight> {
@@ -869,12 +899,46 @@ mod tests {
     fn page_note(id: &str, created: u64, text: &str) -> PageNote {
         PageNote {
             id: id.to_owned(),
-            page_index: 3,
-            x: 10.5,
-            y: 20.5,
+            place: Place::Pdf {
+                page_index: 3,
+                x: 10.5,
+                y: 20.5,
+            },
             created,
             text: text.to_owned(),
         }
+    }
+
+    fn epub_page_note(id: &str, created: u64, text: &str) -> PageNote {
+        PageNote {
+            place: Place::Epub {
+                spine_index: 2,
+                offset: 40,
+            },
+            ..page_note(id, created, text)
+        }
+    }
+
+    #[test]
+    fn an_epub_page_note_reads_back_with_its_spot_and_alongside_a_pdf_one() {
+        let epub = epub_page_note("e", 5, "in the text");
+        let doc = add_page_note(None, &epub);
+        let doc = add_page_note(Some(&doc), &page_note("p", 6, "on a page"));
+        assert_eq!(
+            read(&doc),
+            only_page_notes(vec![epub, page_note("p", 6, "on a page")])
+        );
+    }
+
+    #[test]
+    fn an_epub_page_note_without_a_complete_spot_is_skipped() {
+        let doc = add_page_note(None, &epub_page_note("e", 5, "x"));
+        let doc = edit(Some(&doc), |doc| {
+            let (_, note) = find(doc, PAGE_NOTES, "e").unwrap();
+            let (_, epub) = doc.get(note, "epub").unwrap().unwrap();
+            doc.delete(&epub, "offset").unwrap();
+        });
+        assert!(read(&doc).page_notes.is_empty());
     }
 
     fn only_page_notes(notes: Vec<PageNote>) -> Markup {

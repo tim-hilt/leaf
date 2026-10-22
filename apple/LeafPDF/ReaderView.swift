@@ -311,7 +311,7 @@ struct ReaderView: View {
     private func addPageNote(at place: Place) {
         Task {
             guard let added = await library.addPageNote(at: place, to: document),
-                let point = handle.view?.popoverPoint(of: added)
+                let point = await handle.view?.popoverPoint(of: added)
             else { return }
             pageNotes.append(added)
             openMarkup = OpenMarkup(target: .pageNote(added.id), point: point, startsEditing: true)

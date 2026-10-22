@@ -4,8 +4,10 @@ import WebKit
 
 @testable import LeafPDF
 
-/// The app's Highlight, not the core's.
+/// The app's Highlight, Place and PageNote, not the core's.
 private typealias Highlight = LeafPDF.Highlight
+private typealias Place = LeafPDF.Place
+private typealias PageNote = LeafPDF.PageNote
 
 @MainActor @Suite struct ReaderEPUBViewTests {
     @Test func opensAndShowsTheFirstChaptersText() async throws {
@@ -813,6 +815,128 @@ private typealias Highlight = LeafPDF.Highlight
         #expect(try await reader.noteIcons().map { $0.color } == ["rgb(255, 235, 60)"])
     }
 
+    // MARK: Page Notes
+
+    private func pageNote(_ id: String, at offset: Int, in spine: Int = 0) -> PageNote {
+        PageNote(id: id, place: .epub(spineIndex: spine, offset: offset), text: "x")
+    }
+
+    /// Chapter 0: a short line, several wrapped lines, then the line `t`.
+    private func bookWithATargetLine() async throws -> EpubBook {
+        let filler = String(repeating: "filler words that wrap onto several lines ", count: 30)
+        return try await importedBook(chapters: [
+            "<p id=\"c\">Call me Ishmael.</p><p>\(filler)</p><p id=\"t\">Target line.</p>"
+        ])
+    }
+
+    @Test func aPageNoteHasItsIconInTheMarginAtTheLineOfItsSpot() async throws {
+        let book = try await bookWithATargetLine()
+        let reader = try await openReader(book: book, onScreen: true)
+
+        reader.pageNotes = [pageNote("n", at: try offset(of: "Target", in: 0, of: book) + 3)]
+        try await eventually { try await !reader.noteIcons().isEmpty }
+
+        let icons = try await reader.noteIcons()
+        #expect(icons.map { $0.id } == ["n"])
+        #expect(icons[0].box.size == CGSize(width: 18, height: 18))
+        #expect(icons[0].box.minX >= 0 && icons[0].box.maxX <= 24)
+        // The default color of page Note icons.
+        #expect(icons[0].color == "rgb(255, 235, 61)")
+        let line = try await reader.elementBox("t")
+        #expect(abs(icons[0].box.midY - line.midY) < 2)
+    }
+
+    @Test func aPageNotesIconFollowsItsLineWhenTheTextReflowsAndKeepsItsSize() async throws {
+        let book = try await bookWithATargetLine()
+        let reader = try await openReader(book: book, onScreen: true)
+        reader.pageNotes = [pageNote("n", at: try offset(of: "Target", in: 0, of: book))]
+        try await eventually { try await !reader.noteIcons().isEmpty }
+        let before = try await reader.noteIcons()[0].box
+
+        reader.textSize = TextSize.zoomedIn(from: reader.textSize)
+        try await reader.settle()
+
+        let icon = try await reader.noteIcons()[0].box
+        let line = try await reader.elementBox("t")
+        #expect(icon.size == CGSize(width: 18, height: 18))
+        #expect(icon.midY > before.midY)
+        #expect(abs(icon.midY - line.midY) < 2)
+    }
+
+    @Test func pageNoteIconsKeepTheirColorInDarkPagesAndFollowTheColorGiven() async throws {
+        let reader = try await openReader(
+            book: bookWithATargetLine(), appearance: .dark(night), onScreen: true)
+
+        reader.pageNoteColor = RGB(0, 1, 0)
+        reader.pageNotes = [pageNote("n", at: 0)]
+        try await eventually { try await !reader.noteIcons().isEmpty }
+
+        #expect(try await reader.noteIcons().map { $0.color } == ["rgb(0, 255, 0)"])
+    }
+
+    @Test func clickingAPageNotesIconReportsItWithItsPoint() async throws {
+        var tapped: [(String, CGPoint)] = []
+        var taps = 0
+        let reader = try await openReader(
+            book: bookWithATargetLine(), onScreen: true, onSingleTap: { taps += 1 },
+            onPageNoteTap: { tapped.append(($0.id, $1)) })
+        reader.pageNotes = [pageNote("n", at: 0)]
+        try await eventually { try await !reader.noteIcons().isEmpty }
+
+        _ = try await reader.evaluate("document.querySelector('.leaf-note').click()")
+        try await eventually { !tapped.isEmpty }
+
+        let icon = try await reader.noteIcons()[0].box
+        #expect(tapped.map(\.0) == ["n"])
+        #expect(abs(tapped[0].1.x - icon.midX) < 2 && abs(tapped[0].1.y - icon.midY) < 2)
+        #expect(taps == 0)
+    }
+
+    @Test func thePopoverOfAPageNoteIsAttachedToItsIcon() async throws {
+        let book = try await bookWithATargetLine()
+        let reader = try await openReader(book: book, onScreen: true)
+        let note = pageNote("n", at: try offset(of: "Target", in: 0, of: book))
+
+        // Before the note is shown, as when it was just added.
+        let point = try #require(await reader.popoverPoint(of: note))
+
+        reader.pageNotes = [note]
+        try await eventually { try await !reader.noteIcons().isEmpty }
+        let icon = try await reader.noteIcons()[0].box
+        #expect(abs(point.x - icon.midX) < 1 && abs(point.y - icon.midY) < 1)
+    }
+
+    @Test func addNoteAtAnEmptySpotReportsTheSpotInTheText() async throws {
+        var reported: [Place] = []
+        let reader = try await openReader(
+            book: bookWithATargetLine(), onScreen: true, onAddNote: { reported.append($0) })
+        let line = try await reader.elementBox("c")
+
+        // To the right of the line's text, and in the margin beside it.
+        reader.addNote(at: CGPoint(x: line.maxX - 5, y: line.midY))
+        try await eventually { reported.count == 1 }
+        reader.addNote(at: CGPoint(x: 5, y: line.midY))
+        try await eventually { reported.count == 2 }
+
+        #expect(reported == [.epub(spineIndex: 0, offset: 16), .epub(spineIndex: 0, offset: 0)])
+    }
+
+    @Test func addNoteOnTextOrAHighlightOrOffTheBookReportsNothing() async throws {
+        var reported: [Place] = []
+        let reader = try await openReader(
+            book: importedBook(chapters: ["<p id=\"c\">Call me Ishmael.</p>"]), onScreen: true,
+            highlights: [highlight("a", from: (0, 8), to: (0, 15), quoting: "Ishmael")],
+            onAddNote: { reported.append($0) })
+        let line = try await reader.elementBox("c")
+
+        reader.addNote(at: CGPoint(x: line.minX + 4, y: line.midY))
+        reader.addNote(at: CGPoint(x: line.minX + 60, y: line.midY))
+        reader.addNote(at: CGPoint(x: line.minX + 4, y: 5000))
+        try await Task.sleep(for: .milliseconds(300))
+
+        #expect(reported.isEmpty)
+    }
+
     @Test func onlyAnEPUBOpensAsABook() async throws {
         let library = try makeLibrary()
         guard case .opened(let pdf) = await library.import(try writePDF(named: "a.pdf", pageCount: 1))
@@ -947,6 +1071,8 @@ private func openReader(
     onSingleTap: @escaping () -> Void = {}, onScroll: @escaping () -> Void = {},
     onHighlight: @escaping (HighlightAnchor) -> Void = { _ in },
     onHighlightTap: @escaping (Highlight, CGPoint) -> Void = { _, _ in },
+    onAddNote: @escaping (Place) -> Void = { _ in },
+    onPageNoteTap: @escaping (PageNote, CGPoint) -> Void = { _, _ in },
     onTextSizeChange: @escaping (CGFloat) -> Void = { _ in },
     onBackChange: @escaping (BackTarget?) -> Void = { _ in }, openExternally: @escaping (URL) -> Void = { _ in }
 ) async throws -> ReaderEPUBView {
@@ -963,7 +1089,8 @@ private func openReader(
                     once = nil
                 },
                 onScroll: onScroll, onHighlight: onHighlight, onHighlightTap: onHighlightTap,
-                onTextSizeChange: onTextSizeChange, onBackChange: onBackChange))
+                onAddNote: onAddNote, onPageNoteTap: onPageNoteTap, onTextSizeChange: onTextSizeChange,
+                onBackChange: onBackChange))
         reader?.openExternally = openExternally
         reader?.frame = CGRect(origin: .zero, size: size)
         if onScreen, let reader { show(reader) }
@@ -1067,7 +1194,19 @@ extension ReaderEPUBView {
         return CGRect(x: box[0], y: box[1], width: box[2], height: box[3])
     }
 
-    /// The Note icons in the page: Highlight ID, box and color.
+    /// The box, in the page's coordinates, of the element `id` of chapter 0.
+    fileprivate func elementBox(_ id: String) async throws -> CGRect {
+        let box = try await evaluate(
+            """
+            (() => { const f = document.querySelector('iframe').getBoundingClientRect(), \
+            r = frame(0).getElementById('\(id)').getBoundingClientRect(); \
+            return [r.left + f.left, r.top + f.top, r.width, r.height].join(','); })()
+            """
+        ).split(separator: ",").compactMap { Double($0) }
+        return CGRect(x: box[0], y: box[1], width: box[2], height: box[3])
+    }
+
+    /// The Note icons in the page: Highlight or page Note ID, box and color.
     fileprivate func noteIcons() async throws -> [(id: String, box: CGRect, color: String)] {
         let icons = try await evaluate(
             """

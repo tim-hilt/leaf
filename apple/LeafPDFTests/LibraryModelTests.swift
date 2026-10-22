@@ -1061,6 +1061,21 @@ import UniformTypeIdentifiers
         #expect(await (try openLibrary()).markup(of: document).pageNotes == [typed])
     }
 
+    @Test func anEPUBPageNoteIsAtItsSpotInTheTextAndSurvivesReopening() async throws {
+        let library = try openLibrary()
+        let source = try writeEPUB(named: "book.epub", chapters: ["<p>One</p>", "<p>Two three</p>"])
+        guard case .opened(let document) = await library.import(source) else { throw ImportFailed() }
+        let place = Place.epub(spineIndex: 1, offset: 4)
+
+        let added = try #require(await library.addPageNote(at: place, to: document))
+        await library.setText("here", of: added, in: document)
+
+        var typed = added
+        typed.text = "here"
+        #expect(added.place == place)
+        #expect(await (try openLibrary()).markup(of: document).pageNotes == [typed])
+    }
+
     @Test func emptyingAPageNoteOrRemovingItLeavesNoPageNote() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)

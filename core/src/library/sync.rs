@@ -1299,6 +1299,43 @@ mod tests {
         }
     }
 
+    fn pdf_spot(page_index: u32, x: f64, y: f64) -> Place {
+        Place::Pdf { page_index, x, y }
+    }
+
+    #[test]
+    fn epub_page_notes_reach_the_other_device_and_removing_one_removes_it_there() {
+        let mut cloud = Cloud::new();
+        let (a, b) = (cloud.device(), cloud.device());
+        let book = crate::epub::fixtures::Book::new("").chapters(&["<p>a</p>", "<p>b</p>"]);
+        let id = a.import("book.epub", &book.bytes()).id;
+        a.sync();
+        b.sync();
+        let spot = Place::Epub {
+            spine_index: 1,
+            offset: 1,
+        };
+
+        let kept = a.library.add_page_note(&id, spot, 1).unwrap().unwrap();
+        a.library.set_page_note_text(&id, &kept.id, "kept").unwrap();
+        let gone = a.library.add_page_note(&id, spot, 2).unwrap().unwrap();
+        a.library.set_page_note_text(&id, &gone.id, "gone").unwrap();
+        settle(&a, &b);
+        let on_b = b.library.markup(&id).unwrap().page_notes;
+        assert_eq!(on_b.len(), 2);
+        assert_eq!(on_b[0].place, spot);
+        assert_eq!(on_b[0].text, "kept");
+
+        b.library.remove_page_note(&id, &gone.id).unwrap();
+        settle(&b, &a);
+
+        for device in [&a, &b] {
+            let notes = device.library.markup(&id).unwrap().page_notes;
+            assert_eq!(notes.len(), 1);
+            assert_eq!(notes[0].id, kept.id);
+        }
+    }
+
     #[test]
     fn epub_highlights_and_their_notes_reach_the_other_device() {
         let mut cloud = Cloud::new();
@@ -1370,7 +1407,7 @@ mod tests {
         let on_b = highlight(&b, &id, "on b").id;
         let note_a = a
             .library
-            .add_page_note(&id, 0, 1.0, 2.0, 1)
+            .add_page_note(&id, pdf_spot(0, 1.0, 2.0), 1)
             .unwrap()
             .unwrap()
             .id;
@@ -1379,7 +1416,7 @@ mod tests {
             .unwrap();
         let note_b = b
             .library
-            .add_page_note(&id, 1, 3.0, 4.0, 2)
+            .add_page_note(&id, pdf_spot(1, 3.0, 4.0), 2)
             .unwrap()
             .unwrap()
             .id;
