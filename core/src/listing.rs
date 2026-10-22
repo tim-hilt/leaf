@@ -28,14 +28,14 @@ pub struct Sort {
 
 /// What a `Listing` orders and searches a Document by.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Item {
-    pub title: String,
-    pub file_name: String,
-    pub author: Option<String>,
+struct Item {
+    title: String,
+    file_name: String,
+    author: Option<String>,
     /// Date Imported, in milliseconds since the Unix epoch.
-    pub imported: u64,
+    imported: u64,
     /// Last Read, in milliseconds since the Unix epoch; none if never opened.
-    pub last_read: Option<u64>,
+    last_read: Option<u64>,
 }
 
 impl From<&Document> for Item {

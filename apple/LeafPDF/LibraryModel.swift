@@ -157,7 +157,8 @@ final class LibraryModel {
         didSet { relist() }
     }
     /// How the Gallery orders its Documents. Remembered on this device (user
-    /// defaults, not synced) and shared by all windows; setting it re-orders at once.
+    /// defaults, not synced) and shared by all windows; setting it re-orders once the
+    /// core has the new listing.
     var sort: LibrarySort {
         didSet {
             guard sort != oldValue else { return }
@@ -166,7 +167,7 @@ final class LibraryModel {
         }
     }
     /// The core's listing of the Documents in `sort` order, kept up to date as
-    /// Titles arrive. Nil until the first one is built.
+    /// Titles arrive. Nil only if the core couldn't list them.
     private var listing: Listing?
     /// Counts `relist` calls, so a listing overtaken by a newer one is dropped.
     @ObservationIgnored private var listings = 0
@@ -241,7 +242,8 @@ final class LibraryModel {
         highlightColors = stored.colors
         defaultHighlightColor = stored.defaultColor
         refresh()
-        relist()
+        // Built at once, so the Gallery opens in order rather than filling in.
+        listing = try? core.listing(sort: sort.core)
         readMissingDetails()
         if let account = credentials.load() {
             let id = newConnection()

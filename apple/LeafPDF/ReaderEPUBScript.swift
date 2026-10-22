@@ -501,16 +501,26 @@ enum ReaderEPUBScript {
                 setTimeout(() => { updating = false; update(); }, 16);
               };
 
-              // Loads chapter i if it isn't, scrolling to it first if it is far from the viewport;
-              // resolves once it is, or no longer wanted. Returns whether it scrolled.
-              const bring = async i => {
-                if (status[i] === 'loaded') return false;
-                const y = window.scrollY, vh = viewport(), top = tops()[i];
-                const near = top + heights[i] > y - vh * loadMargin && top < y + vh * (1 + loadMargin);
-                if (!near) window.scrollTo(0, top);
-                update();
-                await whenLoaded(i);
-                return !near;
+              // Counts go-tos (`scrollToPosition`, `reveal`), so a later one replaces an earlier one.
+              let latest = 0;
+
+              // Loads chapter i for go-to `mine`, scrolling to it first if it is far from the viewport;
+              // resolves once it is loaded, or `mine` was replaced. Returns whether it scrolled. A scroll
+              // event may still report the position from before the scroll (seen on iOS) and so release
+              // the chapter before it loads; then it is brought again, a few times at most.
+              const bring = async (i, mine) => {
+                let moved = false;
+                for (let tries = 0; tries < 3 && status[i] !== 'loaded' && mine === latest; tries++) {
+                  const y = window.scrollY, vh = viewport(), top = tops()[i];
+                  const near = top + heights[i] > y - vh * loadMargin && top < y + vh * (1 + loadMargin);
+                  if (!near) {
+                    window.scrollTo(0, top);
+                    moved = true;
+                  }
+                  update();
+                  await whenLoaded(i);
+                }
+                return moved;
               };
 
               // Scrolls the line holding the character at offset of loaded chapter i to the top.
@@ -521,11 +531,10 @@ enum ReaderEPUBScript {
 
               // Goes to a position, loading its chapter first; a later one replaces it. Returns whether
               // it got there.
-              let latest = 0;
               const scrollToPosition = async ([index, offset]) => {
                 const mine = ++latest;
                 if (!(index >= 0 && index < count)) return false;
-                await bring(index);
+                await bring(index, mine);
                 if (mine !== latest || status[index] !== 'loaded') return false;
                 scrollToLine(index, offset);
                 return true;
@@ -536,7 +545,7 @@ enum ReaderEPUBScript {
               const reveal = async ([index, offset, length]) => {
                 const mine = ++latest;
                 if (!(index >= 0 && index < count)) return false;
-                const moved = await bring(index);
+                const moved = await bring(index, mine);
                 if (mine !== latest || status[index] !== 'loaded') return moved;
                 const frame = frames[index];
                 const range = rangeOf(frame, offset, length);

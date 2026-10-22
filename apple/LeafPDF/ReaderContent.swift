@@ -24,7 +24,12 @@ enum OpenedDocument {
             return (.pdf(pdf), contents)
         case .epub:
             guard let book = await library.epub(of: document) else { return nil }
-            let contents = await Task.detached { TableOfContents(book) }.value
+            let contents = await Task.detached {
+                // Has the core parse every spine item now, off the main thread, so the
+                // Reader's own calls for the text lengths are cheap.
+                _ = book.textLengths()
+                return TableOfContents(book)
+            }.value
             return (.epub(book), contents)
         }
     }
