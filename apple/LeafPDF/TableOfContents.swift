@@ -4,9 +4,9 @@ import PDFKit
 /// The Chapters and Sections of a Document, in reading order, as `Place`s.
 /// Empty when the Document has none. A PDF's outline is one source of entries;
 /// nothing is stored or synced.
-struct TableOfContents {
+struct TableOfContents: Sendable {
     /// A Chapter (top level) or Section (nested under another entry).
-    struct Entry: Identifiable {
+    struct Entry: Identifiable, Sendable {
         /// Unique within a Table of Contents; numbers entries in reading order.
         let id: Int
         let title: String

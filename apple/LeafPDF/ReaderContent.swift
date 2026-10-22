@@ -6,26 +6,26 @@ enum OpenedDocument {
     case pdf(StyledDocument)
     case epub(EpubBook)
 
-    /// Opens `document`'s File, drawn per `appearance` from the start. Nil if it can't be read.
+    /// Opens `document`'s File, drawn per `appearance` from the start, and reads
+    /// its Table of Contents (empty if it has none). The EPUB is opened and the
+    /// Table of Contents built off the main thread. Nil if the File can't be read.
     @MainActor
-    init?(_ document: LibraryDocument, in library: LibraryModel, appearance: PageAppearance) {
+    static func open(
+        _ document: LibraryDocument, in library: LibraryModel, appearance: PageAppearance
+    ) async -> (document: OpenedDocument, contents: TableOfContents)? {
         switch document.format {
         case .pdf:
             // Styled before PDFKit sees it, so it never starts drawing in Light Pages.
             guard let pdf = StyledDocument(url: document.file) else { return nil }
             pdf.appearance = appearance
-            self = .pdf(pdf)
+            // Nothing else uses the PDF until the Reader has it.
+            nonisolated(unsafe) let unshared = pdf
+            let contents = await Task.detached { TableOfContents(unshared) }.value
+            return (.pdf(pdf), contents)
         case .epub:
-            guard let book = library.epub(of: document) else { return nil }
-            self = .epub(book)
-        }
-    }
-
-    /// The Document's Table of Contents; empty if it has none.
-    var contents: TableOfContents {
-        switch self {
-        case .pdf(let pdf): TableOfContents(pdf)
-        case .epub(let book): TableOfContents(book)
+            guard let book = await library.epub(of: document) else { return nil }
+            let contents = await Task.detached { TableOfContents(book) }.value
+            return (.epub(book), contents)
         }
     }
 }

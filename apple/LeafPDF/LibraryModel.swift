@@ -572,9 +572,12 @@ final class LibraryModel {
         documents.removeAll { $0.id == document.id }
     }
 
-    /// EPUB `document`, opened for reading. Nil for a PDF, and for an EPUB the core can't read.
-    func epub(of document: LibraryDocument) -> EpubBook? {
-        (try? core.openEpub(id: document.id)) ?? nil
+    /// EPUB `document`, opened for reading off the main thread. Nil for a PDF, and
+    /// for an EPUB the core can't read.
+    func epub(of document: LibraryDocument) async -> EpubBook? {
+        let core = core
+        let id = document.id
+        return await Task.detached { (try? core.openEpub(id: id)) ?? nil }.value
     }
 
     /// Saves `place` as Reading Progress of `document`, read `lastRead`. The

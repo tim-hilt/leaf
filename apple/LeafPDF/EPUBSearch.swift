@@ -42,9 +42,10 @@ final class EPUBSearch {
         guard !query.text.isEmpty else { return onFinish() }
         running = Task { [text, contents] in
             for index in 0..<text.chunkCount {
-                // Yielding between spine items lets a newer search cancel this one.
-                await Task.yield()
-                let chapter = text.string(ofChunkAt: index) as NSString
+                // Fetched off the main actor: the core may have to parse the spine
+                // item. Awaiting also lets a newer search cancel this one.
+                let chapter = await Task.detached { text.string(ofChunkAt: index) }.value as NSString
+                guard !Task.isCancelled else { return }
                 for range in query.ranges(in: chapter) {
                     guard !Task.isCancelled else { return }
                     onMatch(

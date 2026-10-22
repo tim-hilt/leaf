@@ -994,7 +994,7 @@ private typealias PageNote = LeafPDF.PageNote
         guard case .opened(let pdf) = await library.import(try writePDF(named: "a.pdf", pageCount: 1))
         else { throw ImportFailed() }
 
-        #expect(library.epub(of: pdf) == nil)
+        #expect(await library.epub(of: pdf) == nil)
     }
 }
 
@@ -1098,7 +1098,7 @@ func importedBook(
     let library = try makeLibrary()
     let source = try writeEPUB(
         named: "book.epub", chapters: chapters, manifest: manifest, files: files, doctype: doctype)
-    guard case .opened(let document) = await library.import(source), let book = library.epub(of: document)
+    guard case .opened(let document) = await library.import(source), let book = await library.epub(of: document)
     else { throw ImportFailed() }
     return book
 }
