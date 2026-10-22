@@ -27,6 +27,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::ControlFlow;
 use std::path::Path;
+use std::sync::Arc;
 
 mod entities;
 
@@ -57,10 +58,19 @@ impl std::error::Error for Error {}
 pub struct Epub {
     zip: Zip,
     package: Package,
-    /// The text of each spine item read so far, by index. Readers ask for the
-    /// same items again and again (placing Highlights), so each is inflated and
-    /// parsed once.
-    texts: HashMap<usize, String>,
+    /// The spine items read so far, by index (None: the zip can't read it).
+    /// Readers ask for the same items again and again (placing Highlights), so
+    /// each is inflated and parsed once.
+    items: HashMap<usize, Option<Arc<Scanned>>>,
+}
+
+/// What one `scan` of a spine item yields.
+#[derive(Default)]
+struct Scanned {
+    /// Its text in UTF-16 code units, the unit positions count in (ADR-0022).
+    text: Vec<u16>,
+    /// The offset of the text before each anchor.
+    anchors: HashMap<String, u64>,
 }
 
 impl Epub {
@@ -87,7 +97,7 @@ impl Epub {
         Ok(Self {
             zip,
             package,
-            texts: HashMap::new(),
+            items: HashMap::new(),
         })
     }
 
@@ -150,17 +160,34 @@ impl Epub {
         found
     }
 
+    /// The spine item at `index`, scanned once. None for an index beyond the
+    /// spine, and for an item the zip can't read.
+    fn item(&mut self, index: usize) -> Option<Arc<Scanned>> {
+        if let Some(item) = self.items.get(&index) {
+            return item.clone();
+        }
+        let item = self.package.spine.get(index)?;
+        let item = self.zip.read(item).map(|xhtml| {
+            let (text, anchors) = scan(&xhtml);
+            Arc::new(Scanned {
+                text: text.encode_utf16().collect(),
+                anchors,
+            })
+        });
+        self.items.insert(index, item.clone());
+        item
+    }
+
+    /// The spine item at `index`; empty if the zip can't read it.
+    fn item_or_empty(&mut self, index: usize) -> Arc<Scanned> {
+        self.item(index).unwrap_or_default()
+    }
+
     /// The text of the spine item at `index`, see the module docs: up to where
     /// it breaks if it isn't well-formed. None for an index beyond the spine,
     /// and for an item the zip can't read.
     pub fn text(&mut self, index: usize) -> Option<String> {
-        if let Some(text) = self.texts.get(&index) {
-            return Some(text.clone());
-        }
-        let item = self.package.spine.get(index)?;
-        let text = text_of(&self.zip.read(item)?);
-        self.texts.insert(index, text.clone());
-        Some(text)
+        Some(String::from_utf16_lossy(&self.item(index)?.text))
     }
 
     /// Where the passage `quoted` of a Highlight is, now: from `start` to `end`
@@ -180,40 +207,84 @@ impl Epub {
         if self.passage(start, end).as_ref() == Some(&quoted) {
             return Some((start, end));
         }
-        let texts: Vec<Vec<u16>> = (0..self.package.spine.len())
-            .map(|i| self.units(i).unwrap_or_default())
-            .collect();
-        let mut starts = Vec::with_capacity(texts.len());
-        let mut whole = Vec::new();
-        for text in &texts {
-            starts.push(whole.len());
-            whole.extend_from_slice(text);
-            whole.push(u16::from(b'\n'));
-        }
-        let was = {
-            let index = (start.spine_index as usize).min(texts.len() - 1);
-            let offset = usize::try_from(start.offset).unwrap_or(usize::MAX);
-            starts[index] + offset.min(texts[index].len())
-        };
-        let found = whole
-            .windows(quoted.len())
-            .enumerate()
-            .filter(|(_, window)| *window == quoted)
-            .map(|(at, _)| at)
-            .min_by_key(|at| at.abs_diff(was))?;
-        let position = |at: usize| {
-            let index = starts.partition_point(|&s| s <= at) - 1;
-            EpubPosition {
-                spine_index: index as u32,
-                offset: (at - starts[index]) as u64,
+        let count = self.package.spine.len();
+        let first = (start.spine_index as usize).min(count - 1);
+        let was = usize::try_from(start.offset)
+            .unwrap_or(usize::MAX)
+            .min(self.item_or_empty(first).text.len()) as isize;
+
+        // Positions count from the start of item `first`, each item's text
+        // followed by its `\n` separator. Each direction searches outward, item
+        // by item, until no further item can hold a nearer occurrence. Of two
+        // equally near ones the earlier wins.
+        let mut best: Option<Nearest> = None;
+        let search = |epub: &mut Self, best: &mut Option<Nearest>, index, base: isize| {
+            let item = epub.item_or_empty(index);
+            for offset in 0..=item.text.len() {
+                if unit_at(&item.text, offset) != quoted[0] {
+                    continue;
+                }
+                let position = base + offset as isize;
+                let key = ((position - was).abs(), position);
+                if best.is_none_or(|n| key < n.key) && epub.occurs_at(&quoted, index, offset) {
+                    *best = Some(Nearest { key, index, offset });
+                }
             }
         };
-        Some((position(found), position(found + quoted.len())))
+        let mut base = 0;
+        for index in first..count {
+            if best.is_some_and(|n| base - was >= n.key.0) {
+                break;
+            }
+            search(self, &mut best, index, base);
+            base += self.item_or_empty(index).text.len() as isize + 1;
+        }
+        let mut base = 0;
+        for index in (0..first).rev() {
+            let length = self.item_or_empty(index).text.len() as isize;
+            base -= length + 1;
+            if best.is_some_and(|n| was - (base + length) > n.key.0) {
+                break;
+            }
+            search(self, &mut best, index, base);
+        }
+
+        let Nearest { index, offset, .. } = best?;
+        let (mut end_index, mut end_offset) = (index, offset + quoted.len());
+        while end_index + 1 < count {
+            let length = self.item_or_empty(end_index).text.len() + 1;
+            if end_offset < length {
+                break;
+            }
+            end_offset -= length;
+            end_index += 1;
+        }
+        let position = |spine_index: usize, offset: usize| EpubPosition {
+            spine_index: spine_index as u32,
+            offset: offset as u64,
+        };
+        Some((position(index, offset), position(end_index, end_offset)))
     }
 
-    /// The text of spine item `index` in UTF-16 code units.
-    fn units(&mut self, index: usize) -> Option<Vec<u16>> {
-        Some(self.text(index)?.encode_utf16().collect())
+    /// Whether `quoted` is what the text reads from `offset` in spine item
+    /// `index` on, the spine items' texts joined by `\n`.
+    fn occurs_at(&mut self, quoted: &[u16], mut index: usize, mut offset: usize) -> bool {
+        let mut rest = quoted;
+        while !rest.is_empty() {
+            if index >= self.package.spine.len() {
+                return false;
+            }
+            let item = self.item_or_empty(index);
+            let (now, later) = rest.split_at((item.text.len() + 1 - offset).min(rest.len()));
+            if (offset..)
+                .zip(now)
+                .any(|(at, &unit)| unit_at(&item.text, at) != unit)
+            {
+                return false;
+            }
+            (rest, index, offset) = (later, index + 1, 0);
+        }
+        true
     }
 
     /// The text from `start` to `end`, the spine items' texts joined by `\n`.
@@ -222,14 +293,16 @@ impl Epub {
         let (first, last) = (start.spine_index as usize, end.spine_index as usize);
         let mut passage = Vec::new();
         for index in first..=last {
-            let text = self.units(index)?;
+            let item = self.item(index)?;
             let from = if index == first { start.offset } else { 0 };
             let to = if index == last {
                 end.offset
             } else {
-                text.len() as u64
+                item.text.len() as u64
             };
-            let text = text.get(usize::try_from(from).ok()?..usize::try_from(to).ok()?)?;
+            let text = item
+                .text
+                .get(usize::try_from(from).ok()?..usize::try_from(to).ok()?)?;
             if index != first {
                 passage.push(u16::from(b'\n'));
             }
@@ -250,8 +323,7 @@ impl Epub {
         let Some(xml) = self.zip.read(&source) else {
             return Vec::new();
         };
-        let mut anchors = HashMap::new();
-        self.resolve_outline(parse(&xml), directory_of(&source), &mut anchors)
+        self.resolve_outline(parse(&xml), directory_of(&source))
     }
 
     /// Where the link to `fragment` (an anchor's id, if any) in the file at zip
@@ -260,20 +332,14 @@ impl Epub {
     /// item.
     pub fn locate(&mut self, path: &str, fragment: Option<&str>) -> Option<Place> {
         let index = self.package.spine.iter().position(|item| item == path)?;
-        Some(self.place_of(index, fragment, &mut HashMap::new()))
+        Some(self.place_of(index, fragment))
     }
 
-    /// Where `fragment` is in the spine item `index`; `anchors` caches the
-    /// anchors of the items read so far.
-    fn place_of(
-        &mut self,
-        index: usize,
-        fragment: Option<&str>,
-        anchors: &mut AnchorCache,
-    ) -> Place {
+    /// Where `fragment` is in the spine item `index`.
+    fn place_of(&mut self, index: usize, fragment: Option<&str>) -> Place {
         let offset = fragment.map_or(0, |fragment| {
-            let item = anchors.entry(index).or_insert_with(|| self.anchors(index));
-            item.get(fragment).copied().unwrap_or(0)
+            let item = self.item_or_empty(index);
+            item.anchors.get(fragment).copied().unwrap_or(0)
         });
         Place::Epub {
             spine_index: index as u32,
@@ -281,21 +347,7 @@ impl Epub {
         }
     }
 
-    /// The offset of every anchor in the text of spine item `index`.
-    fn anchors(&mut self, index: usize) -> HashMap<String, u64> {
-        let mut anchors = HashMap::new();
-        if let Some(xhtml) = self.zip.read(&self.package.spine[index]) {
-            scan(&xhtml, Some(&mut anchors));
-        }
-        anchors
-    }
-
-    fn resolve_outline(
-        &mut self,
-        outline: Vec<Outlined>,
-        dir: &str,
-        anchors: &mut AnchorCache,
-    ) -> Vec<ContentsEntry> {
+    fn resolve_outline(&mut self, outline: Vec<Outlined>, dir: &str) -> Vec<ContentsEntry> {
         outline
             .into_iter()
             .map(|item| {
@@ -303,12 +355,12 @@ impl Epub {
                     let path = resolve(dir, &href);
                     let fragment = href.split_once('#').map(|(_, f)| percent_decode(f));
                     let index = self.package.spine.iter().position(|item| *item == path)?;
-                    Some(self.place_of(index, fragment.as_deref(), anchors))
+                    Some(self.place_of(index, fragment.as_deref()))
                 });
                 ContentsEntry {
                     title: item.title.split_whitespace().collect::<Vec<_>>().join(" "),
                     place,
-                    sections: self.resolve_outline(item.sections, dir, anchors),
+                    sections: self.resolve_outline(item.sections, dir),
                 }
             })
             .collect()
@@ -318,16 +370,24 @@ impl Epub {
     /// one the zip can't read.
     pub fn characters(&mut self) -> Vec<u64> {
         (0..self.package.spine.len())
-            .map(|i| {
-                let text = self.text(i);
-                text.map_or(0, |t| t.encode_utf16().count() as u64)
-            })
+            .map(|i| self.item(i).map_or(0, |item| item.text.len() as u64))
             .collect()
     }
 }
 
-/// The anchors of the spine items read so far, by index of the item.
-type AnchorCache = HashMap<usize, HashMap<String, u64>>;
+/// The nearest occurrence of a passage found so far.
+#[derive(Clone, Copy)]
+struct Nearest {
+    /// Its distance from where it was, and its position: ordered, nearest first.
+    key: (isize, isize),
+    index: usize,
+    offset: usize,
+}
+
+/// The unit at `at` of a spine item's text followed by its `\n` separator.
+fn unit_at(text: &[u16], at: usize) -> u16 {
+    text.get(at).copied().unwrap_or(u16::from(b'\n'))
+}
 
 /// Reads the entries of a nav or an NCX.
 type OutlineParser = fn(&[u8]) -> Vec<Outlined>;
@@ -510,15 +570,11 @@ fn encrypts_content(encryption: &[u8]) -> bool {
     encrypted
 }
 
-/// The text of the XHTML document `xhtml`, see the module docs.
-fn text_of(xhtml: &[u8]) -> String {
-    scan(xhtml, None)
-}
-
-/// The text of `xhtml`; with `anchors`, also the offset (in UTF-16 units) of
-/// the text before each element of the body with an `id` or `name`.
-fn scan(xhtml: &[u8], mut anchors: Option<&mut HashMap<String, u64>>) -> String {
-    let (mut in_body, mut text) = (false, String::new());
+/// The text of the XHTML document `xhtml`, see the module docs, and the offset
+/// (in UTF-16 units) of the text before each element of the body with an `id`
+/// or `name`.
+fn scan(xhtml: &[u8]) -> (String, HashMap<String, u64>) {
+    let (mut in_body, mut text, mut anchors) = (false, String::new(), HashMap::new());
     // The units of `text[..counted]`: counted only when an anchor needs them.
     let (mut units, mut counted) = (0u64, 0);
     let _ = read_xml(xhtml, |event| {
@@ -530,9 +586,7 @@ fn scan(xhtml: &[u8], mut anchors: Option<&mut HashMap<String, u64>>) -> String 
             Event::GeneralRef(r) if in_body => text.extend(entity(r)),
             _ => {}
         }
-        if let (true, Event::Start(tag) | Event::Empty(tag), Some(anchors)) =
-            (in_body, event, anchors.as_deref_mut())
-        {
+        if let (true, Event::Start(tag) | Event::Empty(tag)) = (in_body, event) {
             for name in ["id", "name"] {
                 if let Some(anchor) = attribute(tag, name) {
                     units += text[counted..].encode_utf16().count() as u64;
@@ -543,7 +597,7 @@ fn scan(xhtml: &[u8], mut anchors: Option<&mut HashMap<String, u64>>) -> String 
         }
         ControlFlow::Continue(())
     });
-    text
+    (text, anchors)
 }
 
 /// The character an entity or character reference stands for: XML's and
@@ -1343,6 +1397,37 @@ mod tests {
 
     fn good_truncated(zip: &[u8]) -> Vec<u8> {
         zip[..zip.len() - 30].to_vec()
+    }
+
+    fn at(spine_index: u32, offset: u64) -> EpubPosition {
+        EpubPosition {
+            spine_index,
+            offset,
+        }
+    }
+
+    #[test]
+    fn relocate_finds_a_passage_spanning_two_spine_items() {
+        let book = Book::new("").chapters(&["<p>alpha beta</p>", "<p>gamma delta</p>"]);
+        let mut epub = open(&book.bytes()).unwrap();
+        // Joined by `\n`; the stored place is stale.
+        assert_eq!(
+            epub.relocate(at(1, 9), at(1, 9), "beta\ngamma"),
+            Some((at(0, 6), at(1, 5)))
+        );
+        // Not where the item break would have to be.
+        assert_eq!(epub.relocate(at(0, 0), at(0, 1), "beta gamma"), None);
+    }
+
+    #[test]
+    fn relocate_picks_the_occurrence_nearest_to_the_stored_start_on_either_side() {
+        let book = Book::new("").chapters(&["<p>ab</p>", "<p>zzzz</p>", "<p>ab</p>", "<p>ab</p>"]);
+        let mut epub = open(&book.bytes()).unwrap();
+        let mut nearest = |from: EpubPosition| epub.relocate(from, from, "ab");
+        assert_eq!(nearest(at(1, 0)), Some((at(0, 0), at(0, 2))));
+        assert_eq!(nearest(at(1, 4)), Some((at(2, 0), at(2, 2))));
+        // Beyond the book, a start counts as its end.
+        assert_eq!(nearest(at(9, 9)), Some((at(3, 0), at(3, 2))));
     }
 
     #[test]
