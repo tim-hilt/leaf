@@ -497,7 +497,7 @@ enum ReaderEPUBScript {
               window.addEventListener('scroll', () => {
                 if (!ready || queued) return;
                 queued = true;
-                requestAnimationFrame(() => { queued = false; post(position()); });
+                setTimeout(() => { queued = false; post(position()); }, 16);
               });
               document.addEventListener('load', event => {
                 const frame = event.target;
