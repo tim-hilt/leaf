@@ -1413,6 +1413,29 @@ mod tests {
     }
 
     #[test]
+    fn an_epub_opens_to_its_table_of_contents_pointing_into_its_text() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let nav = r#"<html xmlns:epub="x"><body><nav epub:type="toc"><ol><li><a href="text/chapter1.xhtml">Second</a></li></ol></nav></body></html>"#;
+        let book = emma()
+            .manifest(r#"<item id="n" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>"#)
+            .file("OEBPS/nav.xhtml", nav.as_bytes());
+        let document = import_new(&library, &scratch.file("emma.epub", &book.bytes()));
+
+        let contents = library.open_epub(&document.id).unwrap().unwrap().contents();
+
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents[0].title, "Second");
+        assert_eq!(
+            contents[0].place,
+            Some(Place::Epub {
+                spine_index: 1,
+                offset: 0
+            })
+        );
+    }
+
+    #[test]
     fn only_an_epub_in_the_library_opens() {
         let scratch = Scratch::new();
         let library = scratch.library();

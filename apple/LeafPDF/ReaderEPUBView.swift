@@ -14,7 +14,9 @@ import WebKit
 /// view's size changes.
 ///
 /// Files come from the core through `EPUBSchemeHandler`. Web links open in the
-/// browser through `openExternally`; links inside the book do nothing yet.
+/// browser through `openExternally`; links inside the book are Jumps. A Jump goes
+/// to a place and remembers the top of the viewport as the Back place, named by
+/// its Chapter in the Table of Contents (`contents`); only the latest is kept.
 /// `onOpen` is called once every spine item is laid out and the view has scrolled
 /// to its opening place; a tap on text that isn't a link is reported to
 /// `onSingleTap`. The page reports the position at the top of the viewport as it
@@ -28,7 +30,7 @@ import WebKit
 /// the Page Colors instead (`ReaderEPUBScript`). Switching keeps the place, and the view
 /// behind the page has the paper's color from the start, so nothing flashes.
 ///
-/// Not yet there for EPUBs: Jumps, Markup and the find bar, so the
+/// Not yet there for EPUBs: Markup and the find bar, so the
 /// parts of `ReaderDocumentView` for them do nothing.
 final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// Opens a web link outside the Reader.
@@ -40,7 +42,24 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         #endif
     }
 
+    private let book: EpubBook
     private let callbacks: ReaderCallbacks
+
+    /// The Table of Contents, which names the Back place.
+    var contents: TableOfContents
+
+    /// Where Back returns to: the top of the viewport before the latest Jump.
+    /// Nil before any Jump and after Back.
+    private(set) var backPlace: Place? {
+        didSet {
+            guard backPlace != oldValue else { return }
+            callbacks.onBackChange(backPlace.map(contents.backTarget(at:)))
+        }
+    }
+
+    /// The Back place to reopen with, reported once the book is open.
+    private let restoredBackPlace: Place?
+
     /// The position at the top of the viewport, as last reported; nil until opened.
     private var top: Place?
     private var isOpen = false
@@ -63,12 +82,15 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         }
     }
 
-    /// Opens `book` at the place of `state`, else at its start, at `textSize` in
-    /// `appearance`, and registers as the `handle`'s view.
+    /// Opens `book` at the place of `state`, else at its start, with the Back place
+    /// of `state`, at `textSize` in `appearance`, and registers as the `handle`'s view.
     init(
-        book: EpubBook, state: ReaderViewState?, textSize: CGFloat, appearance: PageAppearance,
-        handle: ReaderHandle, callbacks: ReaderCallbacks
+        book: EpubBook, state: ReaderViewState?, contents: TableOfContents, textSize: CGFloat,
+        appearance: PageAppearance, handle: ReaderHandle, callbacks: ReaderCallbacks
     ) {
+        self.book = book
+        self.contents = contents
+        restoredBackPlace = state?.backPlace
         self.callbacks = callbacks
         self.textSize = textSize
         pageTextSize = textSize
@@ -122,6 +144,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
                 if view.isOpen { view.callbacks.onScroll() }
             case let text as String where text == "opened":
                 view.isOpen = true
+                view.backPlace = view.restoredBackPlace
                 view.syncTextSize()
                 view.syncAppearance()
                 view.callbacks.onOpen()
@@ -135,10 +158,29 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     // MARK: ReaderDocumentView
 
     var topOfViewport: Place? { top }
-    var viewState: ReaderViewState? { top.map { ReaderViewState(place: $0) } }
+    var viewState: ReaderViewState? { top.map { ReaderViewState(place: $0, backPlace: backPlace) } }
 
-    func jump(to place: Place) {}
-    func goBack() {}
+    /// Jump: goes to `place`, remembering the top of the viewport for `goBack()` in
+    /// place of any earlier Back place. Does nothing if `place` is already at the top.
+    func jump(to place: Place) {
+        guard let top, !place.isSameSpot(as: top) else { return }
+        backPlace = top
+        go(to: place)
+    }
+
+    /// Back: returns to the Back place and forgets it. Does nothing without one.
+    func goBack() {
+        guard let place = backPlace else { return }
+        backPlace = nil
+        go(to: place)
+    }
+
+    /// Scrolls `place` to the top of the viewport; the page then reports the new position.
+    private func go(to place: Place) {
+        guard isOpen, case .epub(let spineIndex, let offset) = place else { return }
+        let script = "leaf.scrollToPosition([\(spineIndex), \(offset)])"
+        Task { _ = try? await evaluateJavaScript(script, in: nil, contentWorld: .defaultClient) }
+    }
     func zoomIn() { changeTextSize(to: TextSize.zoomedIn(from: textSize)) }
     func zoomOut() { changeTextSize(to: TextSize.zoomedOut(from: textSize)) }
     func zoomToFitWidth() { changeTextSize(to: TextSize.normal) }
@@ -215,18 +257,27 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
 #endif
 
 extension ReaderEPUBView: WKNavigationDelegate {
-    /// Web links go to the browser. Nothing else navigates a frame away from its Chapter.
+    /// Links in the book are Jumps and web links go to the browser. Nothing else
+    /// navigates a frame away from its Chapter.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async
         -> WKNavigationActionPolicy
     {
         guard navigationAction.navigationType == .linkActivated else { return .allow }
-        openWebLink(navigationAction.request.url)
+        follow(navigationAction.request.url)
         return .cancel
     }
 
-    fileprivate func openWebLink(_ url: URL?) {
-        guard let url, let scheme = url.scheme, ["http", "https", "mailto"].contains(scheme) else { return }
-        openExternally(url)
+    /// Follows a link the reader activated: a Jump if it points into the book, else the browser.
+    fileprivate func follow(_ url: URL?) {
+        guard let url, let scheme = url.scheme else { return }
+        if scheme == EPUBSchemeHandler.scheme {
+            let path = String(url.path(percentEncoded: false).dropFirst())
+            if let place = book.locate(path: path, fragment: url.fragment(percentEncoded: false)) {
+                jump(to: Place(place))
+            }
+        } else if ["http", "https", "mailto"].contains(scheme) {
+            openExternally(url)
+        }
     }
 }
 
@@ -236,7 +287,7 @@ extension ReaderEPUBView: WKUIDelegate {
         _ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
         for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        openWebLink(navigationAction.request.url)
+        follow(navigationAction.request.url)
         return nil
     }
 }

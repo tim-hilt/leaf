@@ -6,7 +6,7 @@
 //! domain logic in `leafpdf-core` so it stays testable without bindings.
 
 use leafpdf_core::details::{Format, Size};
-use leafpdf_core::epub;
+use leafpdf_core::epub::{self, ContentsEntry};
 use leafpdf_core::library::Document as CoreDocument;
 use leafpdf_core::library::{ImportError, ImportResult};
 use leafpdf_core::listing::{self, Item, Sort, SortKey};
@@ -74,6 +74,13 @@ impl From<ImportError> for LibraryError {
 pub enum Place {
     Pdf { page_index: u32, x: f64, y: f64 },
     Epub { spine_index: u32, offset: u64 },
+}
+
+#[uniffi::remote(Record)]
+pub struct ContentsEntry {
+    pub title: String,
+    pub place: Option<Place>,
+    pub sections: Vec<ContentsEntry>,
 }
 
 #[uniffi::remote(Record)]
@@ -246,6 +253,17 @@ impl EpubBook {
     /// (ADR-0022); none beyond the spine.
     pub fn text(&self, index: u32) -> Option<String> {
         self.lock().text(index as usize)
+    }
+
+    /// The Table of Contents: Chapters with their nested Sections.
+    pub fn contents(&self) -> Vec<ContentsEntry> {
+        self.lock().contents()
+    }
+
+    /// Where a link to `fragment` in the file at `path` points; none if `path`
+    /// isn't a spine item.
+    pub fn locate(&self, path: String, fragment: Option<String>) -> Option<Place> {
+        self.lock().locate(&path, fragment.as_deref())
     }
 
     /// The file at `path` (a spine item or what it uses), if the EPUB has it.

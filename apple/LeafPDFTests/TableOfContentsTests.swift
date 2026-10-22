@@ -147,6 +147,57 @@ import Testing
         #expect(contents.position(at: .pdf(pageIndex: 0, point: .zero)) == nil)
     }
 
+    // MARK: EPUB
+
+    @MainActor @Test func listsAnEPUBsChaptersAndSectionsWithoutPageNumbers() async throws {
+        let nav = """
+            <html xmlns:epub="x"><body><nav epub:type="toc"><ol>\
+            <li><a href="chapter0.xhtml">Prologue</a></li>\
+            <li><a href="chapter1.xhtml">Part</a><ol>\
+            <li><a href="chapter1.xhtml#s">Section</a></li><li><span>Unlinked</span></li></ol></li>\
+            </ol></nav></body></html>
+            """
+        let book = try await importedBook(
+            chapters: ["<p>One</p>", "<p>Two</p><p id=\"s\">Three</p>"],
+            manifest: #"<item id="n" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>"#,
+            files: ["OEBPS/nav.xhtml": Data(nav.utf8)])
+
+        let contents = TableOfContents(book)
+
+        #expect(contents.chapters.map(\.title) == ["Prologue", "Part"])
+        #expect(contents.chapters[0].place == .epub(spineIndex: 0, offset: 0))
+        let sections = contents.chapters[1].sections
+        #expect(sections.map(\.title) == ["Section", "Unlinked"])
+        #expect(sections[0].place == .epub(spineIndex: 1, offset: 3))
+        #expect(sections[1].place == nil)
+        let all = contents.chapters + sections
+        #expect(all.allSatisfy { $0.pageNumber == nil })
+        #expect(Set(all.map(\.id)).count == 4)
+    }
+
+    @MainActor @Test func anEPUBWithoutATableOfContentsHasAnEmptyOne() async throws {
+        #expect(TableOfContents(try await importedBook(chapters: ["<p>x</p>"])).isEmpty)
+    }
+
+    @Test func theBackCapsuleNamesTheEntryAPlaceIsIn() {
+        func entry(_ id: Int, _ title: String, _ offset: Int, _ sections: [TableOfContents.Entry] = [])
+            -> TableOfContents.Entry
+        {
+            .init(
+                id: id, title: title, pageNumber: nil, place: .epub(spineIndex: 0, offset: offset),
+                sections: sections)
+        }
+        let contents = TableOfContents(chapters: [
+            entry(0, "One", 10, [entry(1, "Opening", 20)]), entry(2, "Two", 100),
+        ])
+
+        #expect(contents.backTarget(at: .epub(spineIndex: 0, offset: 15)) == .chapter("One"))
+        #expect(contents.backTarget(at: .epub(spineIndex: 0, offset: 20)) == .chapter("Opening"))
+        #expect(contents.backTarget(at: .epub(spineIndex: 0, offset: 500)) == .chapter("Two"))
+        // Before the first entry.
+        #expect(contents.backTarget(at: .epub(spineIndex: 0, offset: 5)) == .beginning)
+    }
+
     @Test func currentIgnoresEntriesWithoutATarget() throws {
         let document = try makePDF(named: "Book.pdf", pageCount: 5, outline: outline)
         let untargeted = PDFOutline()

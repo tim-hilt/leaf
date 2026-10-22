@@ -6,6 +6,8 @@ struct ReaderEPUBContent {
     let book: EpubBook
     /// How to open; nil opens at the start.
     let state: ReaderViewState?
+    /// The Table of Contents, which names the Back place.
+    let contents: TableOfContents
     /// The text size to show; see `TextSize`.
     let textSize: CGFloat
     /// The Page Style to show.
@@ -16,12 +18,13 @@ struct ReaderEPUBContent {
     @MainActor
     fileprivate func makeEPUBView() -> ReaderEPUBView {
         ReaderEPUBView(
-            book: book, state: state, textSize: textSize, appearance: appearance, handle: handle,
-            callbacks: callbacks)
+            book: book, state: state, contents: contents, textSize: textSize, appearance: appearance,
+            handle: handle, callbacks: callbacks)
     }
 
     @MainActor
     fileprivate func update(_ view: ReaderEPUBView) {
+        view.contents = contents
         view.textSize = textSize
         view.pageAppearance = appearance
     }

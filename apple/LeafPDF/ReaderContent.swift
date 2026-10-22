@@ -25,7 +25,7 @@ enum OpenedDocument {
     var contents: TableOfContents {
         switch self {
         case .pdf(let pdf): TableOfContents(pdf)
-        case .epub: TableOfContents()
+        case .epub(let book): TableOfContents(book)
         }
     }
 }
@@ -58,8 +58,8 @@ struct ReaderContent: View {
                 callbacks: callbacks, onShowResults: onShowResults)
         case .epub(let book):
             ReaderEPUBContent(
-                book: book, state: state, textSize: textSize, appearance: appearance, handle: handle,
-                callbacks: callbacks)
+                book: book, state: state, contents: contents, textSize: textSize, appearance: appearance,
+                handle: handle, callbacks: callbacks)
         }
     }
 }

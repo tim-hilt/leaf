@@ -1,3 +1,4 @@
+import LeafCore
 import PDFKit
 
 /// The Chapters and Sections of a Document, in reading order, as `Place`s.
@@ -17,6 +18,21 @@ struct TableOfContents {
         /// such an entry is listed but can't be chosen.
         let place: Place?
         let sections: [Entry]
+    }
+
+    /// The entries of `book`'s Table of Contents, which has no page numbers.
+    init(_ book: EpubBook) {
+        var nextID = 0
+        func entries(of stored: [ContentsEntry]) -> [Entry] {
+            stored.map { entry in
+                let id = nextID
+                nextID += 1
+                return Entry(
+                    id: id, title: entry.title, pageNumber: nil, place: entry.place.map(Place.init),
+                    sections: entries(of: entry.sections))
+            }
+        }
+        chapters = entries(of: book.contents())
     }
 
     /// Where a Place is in the Table of Contents.
@@ -70,6 +86,12 @@ struct TableOfContents {
         }
         search(chapters, containing: [])
         return best.map { Position(current: $0.entry, containing: $0.containing) }
+    }
+
+    /// How Back names `place`: by the Chapter or Section it is in, or the beginning
+    /// of the Document before the first one.
+    func backTarget(at place: Place) -> BackTarget {
+        position(at: place).map { .chapter($0.current.title) } ?? .beginning
     }
 
     private static func target(

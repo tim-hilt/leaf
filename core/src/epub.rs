@@ -10,10 +10,14 @@
 //! is its XHTML body's text nodes concatenated in document order, with
 //! entities resolved. Its length is counted in UTF-16 code units, as
 //! JavaScript counts a string.
+//!
+//! The Table of Contents (the EPUB 3 nav, else the EPUB 2 NCX) points into that
+//! text: a link's anchor (`#id`) is the offset of the text before its element.
 
+use crate::progress::Place;
 use miniz_oxide::inflate::decompress_to_vec_with_limit;
 use quick_xml::XmlVersion;
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::{BytesRef, BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::collections::HashMap;
 use std::fmt;
@@ -142,6 +146,82 @@ impl Epub {
         self.zip.read(item).map(|xhtml| text_of(&xhtml))
     }
 
+    /// The Table of Contents: Chapters with their nested Sections, in reading
+    /// order. Empty if the EPUB has none. An entry whose link isn't in the
+    /// spine, or that has none, has no place.
+    pub fn contents(&mut self) -> Vec<ContentsEntry> {
+        let (source, parse): (_, OutlineParser) = match (&self.package.nav, &self.package.ncx) {
+            (Some(nav), _) => (nav.clone(), nav_outline),
+            (None, Some(ncx)) => (ncx.clone(), ncx_outline),
+            (None, None) => return Vec::new(),
+        };
+        let Some(xml) = self.zip.read(&source) else {
+            return Vec::new();
+        };
+        let mut anchors = HashMap::new();
+        self.resolve_outline(parse(&xml), directory_of(&source), &mut anchors)
+    }
+
+    /// Where the link to `fragment` (an anchor's id, if any) in the file at zip
+    /// path `path` points: the offset of the text before the anchor, or the
+    /// start of the item if it has no such anchor. None if `path` isn't a spine
+    /// item.
+    pub fn locate(&mut self, path: &str, fragment: Option<&str>) -> Option<Place> {
+        let index = self.package.spine.iter().position(|item| item == path)?;
+        Some(self.place_of(index, fragment, &mut HashMap::new()))
+    }
+
+    /// Where `fragment` is in the spine item `index`; `anchors` caches the
+    /// anchors of the items read so far.
+    fn place_of(
+        &mut self,
+        index: usize,
+        fragment: Option<&str>,
+        anchors: &mut AnchorCache,
+    ) -> Place {
+        let offset = fragment.map_or(0, |fragment| {
+            let item = anchors.entry(index).or_insert_with(|| self.anchors(index));
+            item.get(fragment).copied().unwrap_or(0)
+        });
+        Place::Epub {
+            spine_index: index as u32,
+            offset,
+        }
+    }
+
+    /// The offset of every anchor in the text of spine item `index`.
+    fn anchors(&mut self, index: usize) -> HashMap<String, u64> {
+        let mut anchors = HashMap::new();
+        if let Some(xhtml) = self.zip.read(&self.package.spine[index]) {
+            scan(&xhtml, Some(&mut anchors));
+        }
+        anchors
+    }
+
+    fn resolve_outline(
+        &mut self,
+        outline: Vec<Outlined>,
+        dir: &str,
+        anchors: &mut AnchorCache,
+    ) -> Vec<ContentsEntry> {
+        outline
+            .into_iter()
+            .map(|item| {
+                let place = item.href.and_then(|href| {
+                    let path = resolve(dir, &href);
+                    let fragment = href.split_once('#').map(|(_, f)| percent_decode(f));
+                    let index = self.package.spine.iter().position(|item| *item == path)?;
+                    Some(self.place_of(index, fragment.as_deref(), anchors))
+                });
+                ContentsEntry {
+                    title: item.title.split_whitespace().collect::<Vec<_>>().join(" "),
+                    place,
+                    sections: self.resolve_outline(item.sections, dir, anchors),
+                }
+            })
+            .collect()
+    }
+
     /// The length of the text of each spine item, in characters, in order; 0 for
     /// one the zip can't read.
     pub fn characters(&mut self) -> Vec<u64> {
@@ -152,6 +232,22 @@ impl Epub {
             })
             .collect()
     }
+}
+
+/// The anchors of the spine items read so far, by index of the item.
+type AnchorCache = HashMap<usize, HashMap<String, u64>>;
+
+/// Reads the entries of a nav or an NCX.
+type OutlineParser = fn(&[u8]) -> Vec<Outlined>;
+
+/// A Chapter or Section of the Table of Contents.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContentsEntry {
+    pub title: String,
+    /// An EPUB place; none for an entry without a link into the book.
+    pub place: Option<Place>,
+    /// The Sections nested under it.
+    pub sections: Vec<ContentsEntry>,
 }
 
 /// A file of an EPUB, as the manifest declares it.
@@ -172,6 +268,10 @@ struct Package {
     spine: Vec<String>,
     /// The media type of every manifest item, by its path in the zip.
     media_types: HashMap<String, String>,
+    /// The path in the zip of the EPUB 3 navigation document.
+    nav: Option<String>,
+    /// The path in the zip of the EPUB 2 NCX.
+    ncx: Option<String>,
 }
 
 /// An `item` of the package's manifest.
@@ -259,7 +359,13 @@ impl Package {
             .find(|i| i.properties.split_whitespace().any(|p| p == "cover-image"))
             .or_else(|| cover_id.and_then(|id| manifest.get(&id)).filter(is_image));
         creators.retain(|creator| !creator.is_empty());
+        let path_of =
+            |is: &dyn Fn(&Item) -> bool| manifest.values().find(|i| is(i)).map(|i| i.path.clone());
+        let nav = path_of(&|i| i.properties.split_whitespace().any(|p| p == "nav"));
+        let ncx = path_of(&|i| i.media_type == "application/x-dtbncx+xml");
         Ok(Self {
+            nav,
+            ncx,
             title: title.filter(|t| !t.is_empty()),
             author: (!creators.is_empty()).then(|| creators.join(", ")),
             cover: declared.map(|item| item.path.clone()),
@@ -312,29 +418,164 @@ fn encrypts_content(encryption: &[u8]) -> bool {
     encrypted
 }
 
-/// The length of the text of the XHTML document `xhtml`, see the module docs.
+/// The text of the XHTML document `xhtml`, see the module docs.
 fn text_of(xhtml: &[u8]) -> String {
+    scan(xhtml, None)
+}
+
+/// The text of `xhtml`; with `anchors`, also the offset (in UTF-16 units) of
+/// the text before each element of the body with an `id` or `name`.
+fn scan(xhtml: &[u8], mut anchors: Option<&mut HashMap<String, u64>>) -> String {
     let (mut in_body, mut text) = (false, String::new());
+    // The units of `text[..counted]`: counted only when an anchor needs them.
+    let (mut units, mut counted) = (0u64, 0);
     let _ = read_xml(xhtml, |event| {
         match event {
             Event::Start(tag) if tag.local_name().as_ref() == "body" => in_body = true,
             Event::End(tag) if tag.local_name().as_ref() == "body" => in_body = false,
             Event::Text(t) if in_body => text.push_str(&t.xml10_content()),
             Event::CData(t) if in_body => text.push_str(&t.xml10_content()),
-            Event::GeneralRef(r) if in_body => match (r.resolve_char_ref(), &**r) {
-                (Ok(Some(c)), _) => text.push(c),
-                (_, "amp") => text.push('&'),
-                (_, "lt") => text.push('<'),
-                (_, "gt") => text.push('>'),
-                (_, "quot") => text.push('"'),
-                (_, "apos") => text.push('\''),
-                _ => {}
-            },
+            Event::GeneralRef(r) if in_body => text.extend(entity(r)),
             _ => {}
+        }
+        if let (true, Event::Start(tag) | Event::Empty(tag), Some(anchors)) =
+            (in_body, event, anchors.as_deref_mut())
+        {
+            for name in ["id", "name"] {
+                if let Some(anchor) = attribute(tag, name) {
+                    units += text[counted..].encode_utf16().count() as u64;
+                    counted = text.len();
+                    anchors.entry(anchor).or_insert(units);
+                }
+            }
         }
         ControlFlow::Continue(())
     });
     text
+}
+
+/// The character an entity or character reference stands for. Entities XML
+/// doesn't define (such as `&nbsp;`) are none.
+fn entity(reference: &BytesRef<'_>) -> Option<char> {
+    match (reference.resolve_char_ref(), &**reference) {
+        (Ok(Some(c)), _) => Some(c),
+        (_, "amp") => Some('&'),
+        (_, "lt") => Some('<'),
+        (_, "gt") => Some('>'),
+        (_, "quot") => Some('"'),
+        (_, "apos") => Some('\''),
+        _ => None,
+    }
+}
+
+/// An entry of a Table of Contents as the nav or NCX gives it.
+#[derive(Default)]
+struct Outlined {
+    title: String,
+    /// As written: relative to the file, with its anchor.
+    href: Option<String>,
+    sections: Vec<Outlined>,
+}
+
+/// Builds the entries of an outline from its nesting: entries are begun and
+/// ended in order, and one ended while another is open becomes its Section.
+#[derive(Default)]
+struct Outline {
+    open: Vec<Outlined>,
+    done: Vec<Outlined>,
+}
+
+impl Outline {
+    fn begin(&mut self) {
+        self.open.push(Outlined::default());
+    }
+
+    /// Adds title text to the innermost open entry.
+    fn text(&mut self, text: &str) {
+        if let Some(entry) = self.open.last_mut() {
+            entry.title.push_str(text);
+        }
+    }
+
+    fn character(&mut self, character: Option<char>) {
+        if let Some(character) = character {
+            self.text(character.encode_utf8(&mut [0; 4]));
+        }
+    }
+
+    /// Gives the innermost open entry its first link, if `href` is one.
+    fn link(&mut self, href: Option<String>) {
+        if let (Some(entry), Some(href)) = (self.open.last_mut(), href) {
+            entry.href.get_or_insert(href);
+        }
+    }
+
+    fn end(&mut self) {
+        let Some(entry) = self.open.pop() else { return };
+        match self.open.last_mut() {
+            Some(parent) => parent.sections.push(entry),
+            None => self.done.push(entry),
+        }
+    }
+}
+
+/// The entries of the `toc` nav of an EPUB 3 navigation document: nested
+/// `ol`/`li` lists of links.
+fn nav_outline(xhtml: &[u8]) -> Vec<Outlined> {
+    let (mut outline, mut in_toc) = (Outline::default(), false);
+    let _ = read_xml(xhtml, |event| {
+        match event {
+            Event::Start(tag) if !in_toc && tag.local_name().as_ref() == "nav" => {
+                in_toc = attribute(tag, "type")
+                    .is_some_and(|t| t.split_whitespace().any(|t| t == "toc"));
+            }
+            Event::End(tag) if in_toc && tag.local_name().as_ref() == "nav" => {
+                return ControlFlow::Break(());
+            }
+            Event::Start(tag) if in_toc => match tag.local_name().as_ref() {
+                "li" => outline.begin(),
+                "a" => outline.link(attribute(tag, "href")),
+                _ => {}
+            },
+            Event::End(tag) if in_toc && tag.local_name().as_ref() == "li" => outline.end(),
+            Event::Text(t) if in_toc => outline.text(&t.xml10_content()),
+            Event::CData(t) if in_toc => outline.text(&t.xml10_content()),
+            Event::GeneralRef(r) if in_toc => outline.character(entity(r)),
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    });
+    outline.done
+}
+
+/// The entries of an EPUB 2 NCX: nested `navPoint`s with a label and a
+/// `content` link.
+fn ncx_outline(xml: &[u8]) -> Vec<Outlined> {
+    let (mut outline, mut in_label) = (Outline::default(), false);
+    let _ = read_xml(xml, |event| {
+        match event {
+            Event::Start(tag) => match tag.local_name().as_ref() {
+                "navPoint" => outline.begin(),
+                "navLabel" => in_label = true,
+                "content" => outline.link(attribute(tag, "src")),
+                _ => {}
+            },
+            Event::Empty(tag) if tag.local_name().as_ref() == "content" => {
+                outline.link(attribute(tag, "src"));
+            }
+            Event::End(tag) => match tag.local_name().as_ref() {
+                "navPoint" => outline.end(),
+                "navLabel" => in_label = false,
+                _ => {}
+            },
+            Event::Text(t) if in_label => outline.text(&t.xml10_content()),
+            Event::CData(t) if in_label => outline.text(&t.xml10_content()),
+            Event::GeneralRef(r) if in_label => outline.character(entity(r)),
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    });
+    outline.done
 }
 
 /// Calls `visit` with each event of the XML in `bytes` until it breaks. Err if
@@ -789,6 +1030,131 @@ mod tests {
         assert!(epub.resource("OEBPS/unlisted.txt").is_none());
         assert!(epub.resource("META-INF/container.xml").is_none());
         assert!(epub.resource("OEBPS/gone.png").is_none());
+    }
+
+    const NAV: &str = r#"<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
+<nav epub:type="landmarks"><ol><li><a href="text/chapter0.xhtml">Landmark</a></li></ol></nav>
+<nav epub:type="toc"><h1>Contents</h1><ol>
+<li><a href="text/chapter0.xhtml">One</a><ol>
+<li><a href="text/chapter0.xhtml#mid">Mid <em>way</em></a></li>
+<li><a href="text/chapter1.xhtml#nowhere">Gone</a></li></ol></li>
+<li><span>Part</span><ol><li><a href="text/chapter1.xhtml">Two</a></li></ol></li>
+<li><a href="https://example.com/">Web</a></li>
+</ol></nav></body></html>"#;
+
+    fn entry(
+        title: &str,
+        spine_index: u32,
+        offset: u64,
+        sections: Vec<ContentsEntry>,
+    ) -> ContentsEntry {
+        let place = Some(Place::Epub {
+            spine_index,
+            offset,
+        });
+        ContentsEntry {
+            title: title.to_owned(),
+            place,
+            sections,
+        }
+    }
+
+    #[test]
+    fn the_contents_are_the_epub3_nav_with_nested_sections_at_text_offsets() {
+        let book = Book::new("")
+            .chapters(&[r#"<p>abc</p><p id="mid">de&amp;f</p>"#, "<p>x</p>"])
+            .manifest(
+                r#"<item id="n" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>"#,
+            )
+            .file("OEBPS/nav.xhtml", NAV.as_bytes());
+        let mut epub = open(&book.bytes()).unwrap();
+
+        // A heading without a link is listed but points nowhere, and so is a web link.
+        let part = ContentsEntry {
+            title: "Part".into(),
+            place: None,
+            sections: vec![entry("Two", 1, 0, vec![])],
+        };
+        let web = ContentsEntry {
+            title: "Web".into(),
+            place: None,
+            sections: vec![],
+        };
+        let one = entry(
+            "One",
+            0,
+            0,
+            vec![entry("Mid way", 0, 3, vec![]), entry("Gone", 1, 0, vec![])],
+        );
+        assert_eq!(epub.contents(), [one, part, web]);
+    }
+
+    #[test]
+    fn without_a_nav_the_contents_are_the_epub2_ncx() {
+        let ncx = r#"<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><docTitle><text>Book</text></docTitle><navMap>
+<navPoint id="a"><navLabel><text>One</text></navLabel><content src="text/chapter0.xhtml"/>
+  <navPoint id="b"><navLabel><text> Mid
+  way </text></navLabel><content src="text/chapter1.xhtml#mid"/>
+    <navPoint id="c"><navLabel><text>Deep</text></navLabel><content src="text/chapter1.xhtml#deep"/></navPoint>
+  </navPoint></navPoint>
+<navPoint id="d"><navLabel><text>Two</text></navLabel><content src="text/chapter1.xhtml"/></navPoint>
+</navMap></ncx>"#;
+        let book = Book::new("")
+            .chapters(&[
+                "<p>abc</p>",
+                r#"<p>ab<b id="mid">c</b><i/>d<a name="deep"/>ef</p>"#,
+            ])
+            .manifest(r#"<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>"#)
+            .file("OEBPS/toc.ncx", ncx.as_bytes());
+        let mut epub = open(&book.bytes()).unwrap();
+
+        let deep = entry("Deep", 1, 4, vec![]);
+        let one = entry("One", 0, 0, vec![entry("Mid way", 1, 2, vec![deep])]);
+        assert_eq!(epub.contents(), [one, entry("Two", 1, 0, vec![])]);
+    }
+
+    #[test]
+    fn the_nav_wins_over_the_ncx_and_a_book_without_either_has_no_contents() {
+        let nav = r#"<html xmlns:epub="x"><body><nav epub:type="toc"><ol><li><a href="text/chapter0.xhtml">Nav</a></li></ol></nav></body></html>"#;
+        let ncx = r#"<ncx><navMap><navPoint><navLabel><text>Ncx</text></navLabel><content src="text/chapter0.xhtml"/></navPoint></navMap></ncx>"#;
+        let book = Book::new("")
+            .manifest(r#"<item id="n" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>"#)
+            .file("OEBPS/nav.xhtml", nav.as_bytes())
+            .file("OEBPS/toc.ncx", ncx.as_bytes());
+        let mut both = open(&book.bytes()).unwrap();
+        assert_eq!(both.contents(), [entry("Nav", 0, 0, vec![])]);
+
+        assert!(open(&Book::new("").bytes()).unwrap().contents().is_empty());
+    }
+
+    #[test]
+    fn locate_finds_the_text_offset_of_an_anchor_in_a_spine_item() {
+        let book =
+            Book::new("").chapters(&[r#"<p id="a">ab</p><p>c<span id="b"/>d</p>"#, "<p>x</p>"]);
+        let mut epub = open(&book.bytes()).unwrap();
+        let at = |spine_index, offset| {
+            Some(Place::Epub {
+                spine_index,
+                offset,
+            })
+        };
+
+        assert_eq!(
+            epub.locate("OEBPS/text/chapter0.xhtml", Some("b")),
+            at(0, 3)
+        );
+        assert_eq!(
+            epub.locate("OEBPS/text/chapter0.xhtml", Some("a")),
+            at(0, 0)
+        );
+        // An unknown anchor, or none, is the start of the item.
+        assert_eq!(
+            epub.locate("OEBPS/text/chapter0.xhtml", Some("zzz")),
+            at(0, 0)
+        );
+        assert_eq!(epub.locate("OEBPS/text/chapter1.xhtml", None), at(1, 0));
+        // Not a spine item.
+        assert_eq!(epub.locate("OEBPS/content.opf", None), None);
     }
 
     const OPF: &str = r#"<package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="x"><dc:title>Deflated</dc:title></metadata>

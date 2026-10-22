@@ -268,6 +268,99 @@ import WebKit
         #expect(abs(try #require(Double(top))) < 2)
     }
 
+    // MARK: Jumps and Back
+
+    /// A book of three chapters whose Table of Contents names the first two and a Section in the second.
+    private func navigableBook(links: String = "") async throws -> EpubBook {
+        let nav = """
+            <html xmlns:epub="x"><body><nav epub:type="toc"><ol>\
+            <li><a href="chapter0.xhtml">Start</a></li>\
+            <li><a href="chapter1.xhtml">Middle</a><ol><li><a href="chapter1.xhtml#deep">Deep</a></li></ol></li>\
+            </ol></nav></body></html>
+            """
+        return try await importedBook(
+            chapters: [
+                links + paragraphs(20), paragraphs(10) + "<p id=\"deep\">Deep target</p>" + paragraphs(50),
+                paragraphs(5),
+            ],
+            manifest: #"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>"#,
+            files: ["OEBPS/nav.xhtml": Data(nav.utf8)])
+    }
+
+    /// Waits until `condition` holds, for up to two seconds.
+    private func eventually(_ condition: () -> Bool) async throws {
+        for _ in 0..<40 where !condition() { try await Task.sleep(for: .milliseconds(50)) }
+    }
+
+    @Test func aJumpScrollsThereAndBackReturns() async throws {
+        let book = try await importedBook(chapters: [paragraphs(20), paragraphs(60)])
+        let reader = try await openReader(book: book, onScreen: true)
+        let start = try #require(reader.topOfViewport)
+        let target = Place.epub(spineIndex: 1, offset: try offset(of: "Paragraph 30 ", in: 1, of: book))
+
+        reader.jump(to: target)
+        try await eventually { reader.topOfViewport == target }
+        #expect(reader.topOfViewport == target)
+        #expect(reader.backPlace == start)
+
+        reader.back()
+        try await eventually { reader.topOfViewport == start }
+        #expect(reader.topOfViewport == start)
+        #expect(reader.backPlace == nil)
+    }
+
+    @Test func aJumpToTheCurrentPlaceRecordsNothing() async throws {
+        let reader = try await openReader(book: importedBook(chapters: [paragraphs(5)]), onScreen: true)
+
+        reader.jump(to: try #require(reader.topOfViewport))
+
+        #expect(reader.backPlace == nil)
+    }
+
+    @Test func anInternalLinkJumpsToItsAnchorAndBackReturns() async throws {
+        let book = try await navigableBook(links: #"<p><a id="go" href="chapter1.xhtml#deep">Deep</a></p>"#)
+        let reader = try await openReader(book: book, onScreen: true, openExternally: { _ in })
+        let start = try #require(reader.topOfViewport)
+
+        _ = try await reader.evaluate("frame(0).getElementById('go').click()")
+        try await eventually { reader.topOfViewport?.isSameSpot(as: start) == false }
+
+        #expect(reader.topOfViewport == .epub(spineIndex: 1, offset: try offset(of: "Deep target", in: 1, of: book)))
+        #expect(reader.backPlace == start)
+        reader.back()
+        try await eventually { reader.topOfViewport == start }
+        #expect(reader.topOfViewport == start)
+    }
+
+    @Test func theBackCapsuleNamesTheChapterOfTheBackPlace() async throws {
+        let book = try await navigableBook()
+        var reported: [BackTarget?] = []
+        let reader = try await openReader(
+            book: book, onScreen: true, contents: TableOfContents(book), onBackChange: { reported.append($0) })
+
+        reader.jump(to: .epub(spineIndex: 1, offset: 0))
+        try await eventually { reader.topOfViewport == .epub(spineIndex: 1, offset: 0) }
+        reader.jump(to: .epub(spineIndex: 2, offset: 0))
+        reader.back()
+
+        #expect(reported == [.chapter("Start"), .chapter("Middle"), nil])
+    }
+
+    @Test func theBackPlaceSurvivesReopeningAndIsReportedAgain() async throws {
+        let book = try await navigableBook()
+        let first = try await openReader(book: book, onScreen: true, contents: TableOfContents(book))
+        first.jump(to: .epub(spineIndex: 1, offset: 0))
+        try await eventually { first.topOfViewport == .epub(spineIndex: 1, offset: 0) }
+        let state = try #require(first.viewState)
+        var reported: [BackTarget?] = []
+
+        let second = try await openReader(
+            book: book, state: state, contents: TableOfContents(book), onBackChange: { reported.append($0) })
+
+        #expect(second.backPlace == .epub(spineIndex: 0, offset: 0))
+        #expect(reported == [.chapter("Start")])
+    }
+
     // MARK: The core's text
 
     @Test func offsetsInTheDOMEqualTheCoresOffsets() async throws {
@@ -367,7 +460,8 @@ import WebKit
 
         @Test func theBackgroundIsPaperFromTheFirstFrame() async throws {
             let reader = ReaderEPUBView(
-                book: try await book(), state: nil, textSize: TextSize.normal, appearance: .dark(night),
+                book: try await book(), state: nil, contents: TableOfContents(), textSize: TextSize.normal,
+                appearance: .dark(night),
                 handle: ReaderHandle(), callbacks: ReaderCallbacks())
             reader.frame = CGRect(x: 0, y: 0, width: 400, height: 800)
             show(reader)
@@ -381,10 +475,10 @@ import WebKit
 private let night = PageColors(
     paper: RGB(16 / 255, 32 / 255, 48 / 255), ink: RGB(224 / 255, 208 / 255, 160 / 255))
 
-private struct ImportFailed: Error {}
+struct ImportFailed: Error {}
 
 @MainActor
-private func makeLibrary() throws -> LibraryModel {
+func makeLibrary() throws -> LibraryModel {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     let defaults = try #require(UserDefaults(suiteName: root.lastPathComponent))
     return try LibraryModel(
@@ -395,7 +489,7 @@ private func makeLibrary() throws -> LibraryModel {
 
 /// An EPUB of `chapters`, imported.
 @MainActor
-private func importedBook(
+func importedBook(
     chapters: [String], manifest: String = "", files: [String: Data] = [:]
 ) async throws -> EpubBook {
     let library = try makeLibrary()
@@ -422,22 +516,23 @@ private func openReader(
 private func openReader(
     book: EpubBook, state: ReaderViewState? = nil, size: CGSize = CGSize(width: 400, height: 800),
     textSize: CGFloat = TextSize.normal, appearance: PageAppearance = .light, onScreen: Bool = false,
-    onSingleTap: @escaping () -> Void = {}, onScroll: @escaping () -> Void = {},
-    onTextSizeChange: @escaping (CGFloat) -> Void = { _ in },
-    openExternally: @escaping (URL) -> Void = { _ in }
+    contents: TableOfContents = TableOfContents(), onSingleTap: @escaping () -> Void = {},
+    onScroll: @escaping () -> Void = {}, onTextSizeChange: @escaping (CGFloat) -> Void = { _ in },
+    onBackChange: @escaping (BackTarget?) -> Void = { _ in }, openExternally: @escaping (URL) -> Void = { _ in }
 ) async throws -> ReaderEPUBView {
     var reader: ReaderEPUBView?
     await withCheckedContinuation { opened in
         var once: CheckedContinuation<Void, Never>? = opened
         reader = ReaderEPUBView(
-            book: book, state: state, textSize: textSize, appearance: appearance, handle: ReaderHandle(),
+            book: book, state: state, contents: contents, textSize: textSize, appearance: appearance,
+            handle: ReaderHandle(),
             callbacks: ReaderCallbacks(
                 onSingleTap: onSingleTap,
                 onOpen: {
                     once?.resume()
                     once = nil
                 },
-                onScroll: onScroll, onTextSizeChange: onTextSizeChange))
+                onScroll: onScroll, onTextSizeChange: onTextSizeChange, onBackChange: onBackChange))
         reader?.openExternally = openExternally
         reader?.frame = CGRect(origin: .zero, size: size)
         if onScreen, let reader { show(reader) }
@@ -466,6 +561,9 @@ private func show(_ reader: ReaderEPUBView) {
 }
 
 extension ReaderEPUBView {
+    /// Back, as the Reader asks for it; `WKWebView` has a `goBack()` of its own.
+    fileprivate func back() { (self as any ReaderDocumentView).goBack() }
+
     /// The result of the JavaScript `script`, as text. `frame(i)` is the document of chapter `i`.
     fileprivate func evaluate(_ script: String) async throws -> String {
         let value = try await evaluateJavaScript(

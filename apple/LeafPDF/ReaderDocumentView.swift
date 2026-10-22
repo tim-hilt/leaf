@@ -66,12 +66,21 @@ struct ReaderCallbacks {
     var onBackChange: (BackTarget?) -> Void = { _ in }
 }
 
-/// How the Back capsule names the place it returns to: "Back to p. 42".
+/// How the Back capsule names the place it returns to: "Back to p. 42", or
+/// "Back to <Chapter>" where there are no page numbers.
 struct BackTarget: Equatable {
     /// As shown after "Back to ".
     let name: String
     /// As VoiceOver reads it after "Back to ".
     let spokenName: String
+
+    /// The Chapter or Section called `title`, in a Format without page numbers.
+    static func chapter(_ title: String) -> BackTarget {
+        BackTarget(name: title, spokenName: title)
+    }
+
+    /// The beginning of a Document, before its first Chapter.
+    static let beginning = BackTarget(name: "the beginning", spokenName: "the beginning")
 
     /// The page with printed page number `number`.
     static func page(_ number: String) -> BackTarget {
