@@ -20,7 +20,6 @@ export default function (pi: ExtensionAPI) {
 				markdown: true,
 				icon: "https://upload.wikimedia.org/wikipedia/commons/8/81/Pi_logo.png",
 			};
-			ctx.ui.notify(JSON.stringify(payload));
 
 			await fetch("https://ntfy.sh", {
 				method: "POST",
