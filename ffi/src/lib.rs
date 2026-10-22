@@ -270,6 +270,12 @@ impl EpubBook {
         self.0.text(index as usize)
     }
 
+    /// The length of each spine item's text in UTF-16 units, in spine order:
+    /// the counts positions are measured in (ADR-0022), 0 for an unreadable item.
+    pub fn text_lengths(&self) -> Vec<u64> {
+        self.0.characters()
+    }
+
     /// The Table of Contents: Chapters with their nested Sections.
     pub fn contents(&self) -> Vec<ContentsEntry> {
         self.0.contents()

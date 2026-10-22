@@ -1778,6 +1778,24 @@ mod tests {
     }
 
     #[test]
+    fn an_opened_epubs_lengths_equal_its_stored_character_counts() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let bytes = emma()
+            .chapters(&["<p>Hello</p>", "<p>Gr\u{fc}\u{df}e \u{1f600}</p>"])
+            .bytes();
+        let document = import_new(&library, &scratch.file("book.epub", &bytes));
+
+        let epub = library.open_epub(&document.id).unwrap().unwrap();
+
+        let Some(Size::Characters(stored)) = document.details.map(|d| d.size) else {
+            panic!("an EPUB is sized in characters");
+        };
+        assert_eq!(epub.characters(), stored);
+        assert_eq!(stored, [5, 8]);
+    }
+
+    #[test]
     fn details_are_kept_as_stored() {
         let scratch = Scratch::new();
         let library = scratch.library();
