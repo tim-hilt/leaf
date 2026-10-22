@@ -72,17 +72,29 @@ impl fmt::Debug for WebDavStorage {
     }
 }
 
+/// The platform's TLS: the Security framework and the Device's trust store on
+/// Apple (ADR-0023), rustls with the bundled public roots elsewhere.
+fn tls_config() -> ureq::tls::TlsConfig {
+    #[cfg(target_vendor = "apple")]
+    return ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::NativeTls)
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build();
+    #[cfg(not(target_vendor = "apple"))]
+    ureq::tls::TlsConfig::default()
+}
+
 impl WebDavStorage {
     /// Connects to the WebDAV server at `url` and checks the details. Creates
     /// the `LeafPDF` folder inside `url` if it's missing; uses it if not.
     pub fn connect(url: &str, username: &str, password: &str) -> Result<Self, ConnectError> {
-        Self::connect_with(url, username, password, ureq::tls::TlsConfig::default())
+        Self::connect_with(url, username, password, tls_config())
     }
 
     /// The storage of a server that was connected before, e.g. at the last
     /// launch. Contacts nobody, so it works offline; errors show on use.
     pub fn resume(url: &str, username: &str, password: &str) -> Result<Self, ConnectError> {
-        Self::new(url, username, password, ureq::tls::TlsConfig::default())
+        Self::new(url, username, password, tls_config())
     }
 
     fn connect_with(
@@ -447,29 +459,32 @@ mod tests {
     use std::process::{Child, Command, Stdio};
     use std::thread::sleep;
 
-    const CERT: &str = include_str!("../testdata/localhost.crt");
-    const KEY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/localhost.key");
     const USER: &str = "reader";
     const PASSWORD: &str = "s3cret";
 
-    /// An `rclone serve` process on localhost with the test certificate, serving
-    /// a directory. None when rclone isn't installed, so tests skip.
+    /// An `rclone serve` process on localhost with a fresh self-signed
+    /// certificate, serving a directory. None when rclone or openssl isn't
+    /// installed, so tests skip. The certificate is short-lived because Apple's
+    /// TLS refuses long validity periods.
     struct Rclone {
         child: Child,
         url: String,
+        cert: String,
         dir: Scratch,
         _certs: Scratch,
     }
 
     impl Rclone {
         fn start(protocol: &str) -> Option<Self> {
-            let installed = Command::new("rclone")
-                .arg("version")
-                .stdout(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success());
-            if !installed {
-                eprintln!("skipped: rclone is not installed");
+            let installed = |tool: &str, arg: &str| {
+                Command::new(tool)
+                    .arg(arg)
+                    .stdout(Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success())
+            };
+            if !installed("rclone", "version") || !installed("openssl", "version") {
+                eprintln!("skipped: rclone or openssl is not installed");
                 return None;
             }
             let port = TcpListener::bind("127.0.0.1:0")
@@ -480,7 +495,21 @@ mod tests {
             let dir = Scratch::new("webdav-served");
             let certs = Scratch::new("webdav-certs");
             let cert = certs.0.join("localhost.crt");
-            fs::write(&cert, CERT).unwrap();
+            let key = certs.0.join("localhost.key");
+            let made = Command::new("openssl")
+                .args(["req", "-x509", "-newkey", "ec", "-pkeyopt"])
+                .args(["ec_paramgen_curve:prime256v1", "-nodes", "-days", "30"])
+                .args(["-subj", "/CN=localhost"])
+                .args(["-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"])
+                .args(["-addext", "extendedKeyUsage=serverAuth"])
+                .arg("-keyout")
+                .arg(&key)
+                .arg("-out")
+                .arg(&cert)
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(made.success(), "openssl could not make a certificate");
             let child = Command::new("rclone")
                 .args(["serve", protocol])
                 .arg(&dir.0)
@@ -488,7 +517,8 @@ mod tests {
                 .args(["--user", USER, "--pass", PASSWORD])
                 .arg("--cert")
                 .arg(&cert)
-                .args(["--key", KEY])
+                .arg("--key")
+                .arg(&key)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -496,6 +526,7 @@ mod tests {
             let server = Self {
                 child,
                 url: format!("https://127.0.0.1:{port}"),
+                cert: fs::read_to_string(&cert).unwrap(),
                 dir,
                 _certs: certs,
             };
@@ -517,7 +548,8 @@ mod tests {
         }
 
         fn connect_as(&self, user: &str, pass: &str) -> Result<WebDavStorage, ConnectError> {
-            WebDavStorage::connect_with(&self.url, user, pass, trusting_the_test_certificate())
+            let tls = trusting(&self.cert);
+            WebDavStorage::connect_with(&self.url, user, pass, tls)
         }
 
         fn stop(&mut self) {
@@ -532,12 +564,15 @@ mod tests {
         }
     }
 
-    fn trusting_the_test_certificate() -> ureq::tls::TlsConfig {
-        let der = pem_to_der(CERT);
+    fn trusting(cert: &str) -> ureq::tls::TlsConfig {
+        let der = pem_to_der(cert);
         let roots = ureq::tls::RootCerts::new_with_certs(&[
             ureq::tls::Certificate::from_der(&der).to_owned()
         ]);
-        ureq::tls::TlsConfig::builder().root_certs(roots).build()
+        ureq::tls::TlsConfig::builder()
+            .provider(tls_config().provider())
+            .root_certs(roots)
+            .build()
     }
 
     /// The DER bytes of the one certificate in `pem`.
@@ -718,8 +753,7 @@ mod tests {
 
         let url = format!("{}/my%20files/", server.url);
         let storage =
-            WebDavStorage::connect_with(&url, USER, PASSWORD, trusting_the_test_certificate())
-                .unwrap();
+            WebDavStorage::connect_with(&url, USER, PASSWORD, trusting(&server.cert)).unwrap();
         storage.put("blob", &mut &b"x"[..]).unwrap();
 
         assert!(server.dir.0.join("my files/LeafPDF/blob").is_file());
