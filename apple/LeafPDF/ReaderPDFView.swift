@@ -151,8 +151,18 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
     /// The matches of the Document Search that is going on, for the results list.
     private(set) var results = SearchResults()
 
-    /// The native find bar over Document Search.
-    private(set) lazy var find = DocumentFind(view: self, results: results)
+    /// The matches of the Document Search, marked in the pages.
+    private(set) lazy var matches = PDFMatches(view: self, results: results)
+
+    /// The native find bar over Document Search. PDFView lays out inside its own
+    /// scroll view, which hosts the bar on macOS.
+    #if os(iOS)
+        private(set) lazy var find = DocumentFind(view: self, matches: matches)
+    #else
+        private(set) lazy var find = DocumentFind(view: self, matches: matches) { [weak self] in
+            self?.documentView?.enclosingScrollView
+        }
+    #endif
 
     /// Shows the find bar; matches are revealed and marked as they are found.
     func presentFind() { find.present() }

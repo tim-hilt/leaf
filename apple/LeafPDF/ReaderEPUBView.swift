@@ -76,7 +76,12 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     private(set) lazy var matches = EPUBMatches(view: self, results: results)
 
     /// The native find bar over Document Search.
-    private(set) lazy var find = EPUBFind(view: self, matches: matches, results: results)
+    #if os(iOS)
+        private(set) lazy var find = DocumentFind(view: self, matches: matches)
+    #else
+        /// The view hosts the bar itself, and reports it showing and hiding.
+        private(set) lazy var find = DocumentFind(view: self, matches: matches) { [weak self] in self }
+    #endif
 
     #if os(macOS)
         /// The find bar the text finder hands over; it sits at the top of the view, and

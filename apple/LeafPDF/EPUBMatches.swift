@@ -1,23 +1,14 @@
 import Foundation
 
-/// The matches of the Document Search going on in a `ReaderEPUBView`, whichever
-/// find bar drives it: runs `EPUBSearch`, fills the results list (`SearchResults`),
-/// and keeps the matches marked in the text, the current one apart, and the
-/// current one in view. The find bar's adapter (`EPUBFind`) asks it to search,
-/// to clear and to make a match current; choosing a match in the list makes it
-/// current too, unless the adapter takes that over. Runs on the main actor.
-///
-/// Matches are numbered as in `SearchResults`, from 0 in reading order.
+/// `DocumentMatches` in a `ReaderEPUBView`: runs `EPUBSearch`, marks the matches
+/// in the text, the current one apart, and shows the current one.
 @MainActor
-final class EPUBMatches {
+final class EPUBMatches: DocumentMatches {
     private weak var view: ReaderEPUBView?
-    private let results: SearchResults
+    let results: SearchResults
     private let search: EPUBSearch
-    /// The book's text, which the matches are positions in.
     let text: ChunkedText
-    private(set) var matches: [EPUBSearch.Match] = []
-    /// Called, once per turn of the main loop at most, after matches arrived or
-    /// the current one changed, for the bar to update its count.
+    private var matches: [EPUBSearch.Match] = []
     var didChange: () -> Void = {}
     private var isRefreshScheduled = false
 
@@ -29,9 +20,7 @@ final class EPUBMatches {
         results.onChoose = { [weak self] in self?.makeCurrent($0) }
     }
 
-    /// Replaces the matches with those of `query`, as they are found. `onMatch`
-    /// is called with the number of each new match.
-    func search(_ query: DocumentSearch.Query, onMatch: @escaping @MainActor (Int) -> Void = { _ in }) {
+    func search(_ query: DocumentSearch.Query, onMatch: @escaping @MainActor (Int) -> Void) {
         clear()
         search.search(
             query,
@@ -44,7 +33,6 @@ final class EPUBMatches {
             onFinish: {})
     }
 
-    /// Forgets every match, and unmarks them.
     func clear() {
         search.cancel()
         matches = []
@@ -53,13 +41,22 @@ final class EPUBMatches {
         didChange()
     }
 
-    /// Makes match `number` the current one and shows it.
     func makeCurrent(_ number: Int) {
         guard matches.indices.contains(number) else { return }
         results.current = number
         view?.reveal(matches[number])
         refreshSoon()
     }
+
+    func range(ofMatch number: Int) -> NSRange {
+        let match = matches[number]
+        return NSRange(
+            location: text.range(ofChunkAt: match.spineIndex).location + match.range.location,
+            length: match.range.length)
+    }
+
+    func beginSession() { view?.beginSearchSession() }
+    func endSession() { view?.endSearchSession() }
 
     /// Matches stream in one by one; the page takes all marks at once, and the
     /// bar its count, so both are updated together at the end of the turn.

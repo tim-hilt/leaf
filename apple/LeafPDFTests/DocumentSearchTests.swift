@@ -218,11 +218,11 @@ import Testing
     }
 #endif
 
-// MARK: Document text, for clients that search the text themselves
+// MARK: PDF text, for clients that search the text themselves
 
-@MainActor @Suite struct DocumentTextTests {
+@MainActor @Suite struct PDFChunkedTextTests {
     @Test func joinsThePagesTextEndToEnd() throws {
-        let text = DocumentText(try makePDF(named: "Fruit.pdf", pageCount: 3, pageTexts: ["apple", "", "banana"]))
+        let text = ChunkedText(try makePDF(named: "Fruit.pdf", pageCount: 3, pageTexts: ["apple", "", "banana"]))
         let first = text.chunk(at: 0)
         let last = text.chunk(at: text.length - 1)
 
@@ -235,7 +235,7 @@ import Testing
 
     @Test func aRangeIsTheSelectionOnItsPage() throws {
         let document = try makePDF(named: "Fruit.pdf", pageCount: 2, pageTexts: ["apple", "pie, banana"])
-        let text = DocumentText(document)
+        let text = ChunkedText(document)
         let second = text.chunk(at: text.length - 1).range
         let range = NSRange(location: second.location + 5, length: 6)
 
@@ -248,7 +248,7 @@ import Testing
 
     @Test func aDocumentWithoutTextIsEmpty() throws {
         let document = try makePDF(named: "Scan.pdf", pageCount: 2)
-        let text = DocumentText(document)
+        let text = ChunkedText(document)
         #expect(text.length == 0)
         #expect(document.selection(for: NSRange(location: 0, length: 1), in: text) == nil)
     }

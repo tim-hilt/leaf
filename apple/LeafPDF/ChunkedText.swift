@@ -3,7 +3,7 @@ import PDFKit
 
 /// A Document's text as one string: its chunks of text (a PDF's pages, an EPUB's
 /// spine items) end to end. It is what a client that searches the text itself
-/// (the macOS find bar) sees. A match never spans chunks, so each chunk is its
+/// (the macOS find bar, Document Search) sees. A match never spans chunks, so each chunk is its
 /// own search chunk. Only the lengths are kept: a chunk's string is fetched
 /// when asked for, so an EPUB's text lives in the core alone. Immutable, so a
 /// search may read it from any thread.
@@ -36,6 +36,12 @@ struct ChunkedText: Sendable {
     /// lengths from the core, each item's text fetched from it on demand.
     init(_ book: EpubBook) {
         self.init(lengths: book.textLengths().map(Int.init), fetch: { book.text(index: UInt32($0)) ?? "" })
+    }
+
+    /// The text of every page of `document`, a chunk per page. Reads them all, so
+    /// build it once per Document. Without a Document, the text is empty.
+    init(_ document: PDFDocument?) {
+        self.init((0..<(document?.pageCount ?? 0)).map { document?.page(at: $0)?.string ?? "" })
     }
 
     var chunkCount: Int { lengths.count }
@@ -76,36 +82,11 @@ struct ChunkedText: Sendable {
     }
 }
 
-/// The text of a PDF: a chunk per page.
-struct DocumentText: Sendable {
-    private let text: ChunkedText
-    /// Total length of the text, in UTF-16 units.
-    var length: Int { text.length }
-
-    /// Reads the text of every page, so build it once per Document. Without a
-    /// Document, the text is empty.
-    init(_ document: PDFDocument?) {
-        text = ChunkedText((0..<(document?.pageCount ?? 0)).map { document?.page(at: $0)?.string ?? "" })
-    }
-
-    /// The text of the page holding the character at `index`, and where it sits
-    /// in the whole text. `index` must be below `length`.
-    func chunk(at index: Int) -> (string: String, range: NSRange) { text.chunk(at: index) }
-
-    /// Where the text of the page at `index` sits in the whole text.
-    func range(ofPageAt index: Int) -> NSRange { text.range(ofChunkAt: index) }
-
-    /// The page holding `range`, which lies within one page, and `range` as it
-    /// is on that page, as PDFKit sees it; nil if it is empty or outside the text.
-    func onPage(_ range: NSRange) -> (pageIndex: Int, range: NSRange)? {
-        text.inChunk(range).map { ($0.chunkIndex, $0.range) }
-    }
-}
-
 extension PDFDocument {
-    /// The text of `text` at `range` as PDFKit selects it; nil if `range` is empty or outside it.
-    func selection(for range: NSRange, in text: DocumentText) -> PDFSelection? {
-        guard let (index, onPage) = text.onPage(range) else { return nil }
+    /// The text at `range` of `text`, which has a chunk per page of this Document, as
+    /// PDFKit selects it; nil if `range` is empty or outside it.
+    func selection(for range: NSRange, in text: ChunkedText) -> PDFSelection? {
+        guard let (index, onPage) = text.inChunk(range) else { return nil }
         return page(at: index)?.selection(for: onPage)
     }
 }
