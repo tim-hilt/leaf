@@ -31,6 +31,7 @@ use crate::chunks::Cursor;
 use crate::details::{self, Details, Format, Size};
 use crate::epub::{self, Epub};
 use crate::library_doc::{Import, LibraryDoc};
+use crate::listing::{Listing, Sort};
 use crate::markup::{self, Anchor, Highlight, Markup, PageNote, Rgb};
 use crate::preferences::{self, HighlightColor, HighlightColors};
 use crate::progress::{self, Place, ReadingProgress};
@@ -486,6 +487,11 @@ impl Library {
         };
         // Documents without a File (`None`) are skipped.
         Ok(per_chunk.into_iter().flatten().flatten().collect())
+    }
+
+    /// The Documents in the order of `sort`, ready for Library Search.
+    pub fn listing(&self, sort: Sort) -> io::Result<Listing> {
+        Ok(Listing::new(&self.documents()?, sort))
     }
 
     /// The Documents the Library document lists, in no order.
@@ -1854,6 +1860,37 @@ mod tests {
         assert_eq!(library.documents().unwrap()[0].details, Some(moby.clone()));
         let reopened = scratch.library();
         assert_eq!(reopened.documents().unwrap()[0].details, Some(moby));
+    }
+
+    #[test]
+    fn the_listing_orders_and_searches_the_documents_by_id() {
+        use crate::listing::SortKey;
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let mut ids = vec![];
+        for (n, title) in ["Zebra", "apple 10", "apple 2"].into_iter().enumerate() {
+            let source = scratch.file("s.pdf", format!("%PDF-{n}").as_bytes());
+            let document = import_new(&library, &source);
+            let titled = details(Some(title), None, 1);
+            library.set_details(&document.id, &titled).unwrap();
+            ids.push(document.id);
+            sleep(Duration::from_millis(2));
+        }
+        let sort = |key, reversed| Sort { key, reversed };
+        let by = |key, reversed, search: &str| -> Vec<String> {
+            let listing = library.listing(sort(key, reversed)).unwrap();
+            listing
+                .matching(search)
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        };
+        let [zebra, ten, two] = [&ids[0], &ids[1], &ids[2]].map(String::as_str);
+
+        assert_eq!(by(SortKey::DateImported, false, ""), [two, ten, zebra]);
+        assert_eq!(by(SortKey::Title, false, ""), [two, ten, zebra]);
+        assert_eq!(by(SortKey::Title, true, ""), [zebra, ten, two]);
+        assert_eq!(by(SortKey::Title, false, "APPLE 1"), [ten]);
     }
 
     #[test]

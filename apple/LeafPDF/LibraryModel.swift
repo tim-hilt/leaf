@@ -55,13 +55,6 @@ struct LibraryDocument: Identifiable, Hashable {
             .epub(title: title, author: author) { [id] in (try? core.epubCover(id: id)) ?? nil }
         }
     }
-
-    /// What the Gallery's `Listing` needs of this Document. Last Read only if `withLastRead`.
-    fileprivate func listingItem(withLastRead: Bool) -> Item {
-        Item(
-            title: title, fileName: fileName, author: author, imported: stored.imported,
-            lastRead: withLastRead ? progress?.lastRead : nil)
-    }
 }
 
 /// Why a File isn't Imported at all; nothing was copied.
@@ -161,7 +154,7 @@ extension Date {
 final class LibraryModel {
     /// Every Document, newest Import first.
     private(set) var documents: [LibraryDocument] = [] {
-        didSet { relistIfItemsDiffer() }
+        didSet { relist() }
     }
     /// How the Gallery orders its Documents. Remembered on this device (user
     /// defaults, not synced) and shared by all windows; setting it re-orders at once.
@@ -172,10 +165,13 @@ final class LibraryModel {
             relist()
         }
     }
-    /// `documents` in `sort` order, kept up to date as Titles arrive.
-    private var listing = Listing(items: [], sort: LibrarySort.standard.core)
-    /// The items `listing` was built from.
-    @ObservationIgnored private var listedItems: [Item] = []
+    /// The core's listing of the Documents in `sort` order, kept up to date as
+    /// Titles arrive. Nil until the first one is built.
+    private var listing: Listing?
+    /// Counts `relist` calls, so a listing overtaken by a newer one is dropped.
+    @ObservationIgnored private var listings = 0
+    /// The latest `relist`.
+    @ObservationIgnored private var relisting: Task<Void, Never>?
     /// The Highlight Colors to choose from: the built-in ones, yellow first, then
     /// the Custom Colors in the order added. Kept in the Library's Preferences.
     private(set) var highlightColors: [HighlightColor]
@@ -245,6 +241,7 @@ final class LibraryModel {
         highlightColors = stored.colors.map(HighlightColor.init)
         defaultHighlightColor = HighlightColor(stored.defaultColor)
         refresh()
+        relist()
         readMissingDetails()
         if let account = credentials.load() {
             let id = newConnection()
@@ -406,7 +403,10 @@ final class LibraryModel {
     /// A Document moves to its place (or into the results) when its Title and
     /// Author arrive.
     func visibleDocuments(matching searchText: String) -> [LibraryDocument] {
-        listing.matching(search: searchText).map { documents[Int($0)] }
+        guard let listing else { return [] }
+        let byID = Dictionary(documents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // A Document Removed since the listing was built is skipped.
+        return listing.matching(search: searchText).compactMap { byID[$0] }
     }
 
     /// The saved Cover of `document`, loaded and decoded off the main thread,
@@ -506,6 +506,7 @@ final class LibraryModel {
                 // The newest Import.
                 documents.insert(document, at: 0)
             }
+            await relisting?.value
             return isNew ? .opened(document) : .duplicate(document)
         } catch LibraryError.Failed(let message) {
             return .failed(message)
@@ -592,6 +593,7 @@ final class LibraryModel {
                 try? $0.saveProgress(id: id, progress: progress)
                 return try? $0.document(id: id)
             })
+        await relisting?.value
     }
 
     /// The Highlights and page Notes of `document`, each oldest first, read at
@@ -754,20 +756,19 @@ final class LibraryModel {
         }
     }
 
-    /// One item per Document; Last Read only when sorted by it.
-    private func items() -> [Item] {
-        let byLastRead = sort.key == .recentlyRead
-        return documents.map { $0.listingItem(withLastRead: byLastRead) }
-    }
-
+    /// Asks the core for a new listing off the main thread, which replaces
+    /// `listing` unless a newer request overtook it. The core lists what it
+    /// has stored, which is at least as new as `documents`.
     private func relist() {
-        listedItems = items()
-        listing = Listing(items: listedItems, sort: sort.core)
-    }
-
-    /// Saving Reading Progress changes a Document often; it orders nothing unless sorted by it.
-    private func relistIfItemsDiffer() {
-        if items() != listedItems { relist() }
+        listings += 1
+        let current = listings
+        let core = core
+        let sort = sort.core
+        relisting = Task { [weak self] in
+            let built = await Task.detached(priority: .userInitiated) { try? core.listing(sort: sort) }.value
+            guard let self, current == listings, let built else { return }
+            listing = built
+        }
     }
 
     /// Reloads `documents` from the core. If the listing fails, `documents`
@@ -783,6 +784,7 @@ final class LibraryModel {
         let stored = await Task.detached(priority: .userInitiated) { try? core.documents() }.value
         guard reload == reloads else { return }
         apply(stored)
+        await relisting?.value
     }
 
     private func apply(_ stored: [LeafCore.Document]?) {

@@ -9,7 +9,7 @@ use leafpdf_core::details::{Format, Size};
 use leafpdf_core::epub::{self, ContentsEntry};
 use leafpdf_core::library::Document as CoreDocument;
 use leafpdf_core::library::{ImportError, ImportResult};
-use leafpdf_core::listing::{self, Item, Sort, SortKey};
+use leafpdf_core::listing::{self, Sort, SortKey};
 use leafpdf_core::markup::{
     Anchor, EpubPosition, Highlight, Markup, PageNote, PageRects, Rect, Rgb,
 };
@@ -174,15 +174,6 @@ pub struct Markup {
     pub page_notes: Vec<PageNote>,
 }
 
-#[uniffi::remote(Record)]
-pub struct Item {
-    pub title: String,
-    pub file_name: String,
-    pub author: Option<String>,
-    pub imported: u64,
-    pub last_read: Option<u64>,
-}
-
 #[uniffi::remote(Enum)]
 pub enum Format {
     Pdf,
@@ -320,24 +311,17 @@ impl EpubBook {
     }
 }
 
-/// Documents in the order of a `Sort`, ready for Library Search, built from
-/// one `Item` per Document, see `leafpdf_core::listing::Listing`.
+/// The Library's Documents in the order of a `Sort`, ready for Library Search,
+/// see `leafpdf_core::listing::Listing`.
 #[derive(uniffi::Object)]
 pub struct Listing(listing::Listing);
 
 #[uniffi::export]
 impl Listing {
-    #[uniffi::constructor]
-    pub fn new(items: &[Item], sort: Sort) -> Arc<Self> {
-        Arc::new(Self(listing::Listing::new(items, sort)))
-    }
-
-    /// The positions in the items of those matching `search`, in order.
-    pub fn matching(&self, search: &str) -> Vec<u32> {
+    /// The IDs of the Documents matching `search`, in order.
+    pub fn matching(&self, search: &str) -> Vec<String> {
         let found = self.0.matching(search).into_iter();
-        found
-            .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
-            .collect()
+        found.map(str::to_owned).collect()
     }
 }
 
@@ -678,6 +662,11 @@ impl Library {
         Ok(self.core.documents()?.into_iter().map(Into::into).collect())
     }
 
+    /// The Documents in the order of `sort`, ready for Library Search.
+    pub fn listing(&self, sort: Sort) -> Result<Arc<Listing>, LibraryError> {
+        Ok(Arc::new(Listing(self.core.listing(sort)?)))
+    }
+
     pub fn document(&self, id: String) -> Result<Option<Document>, LibraryError> {
         Ok(self.core.document(&id)?.map(Into::into))
     }
@@ -721,31 +710,43 @@ mod tests {
         fn transfer_progress(&self, _: u64, _: u64) {}
     }
 
-    fn item(title: &str, file_name: &str, author: Option<&str>, imported: u64) -> Item {
-        Item {
-            title: title.into(),
-            file_name: file_name.into(),
-            author: author.map(Into::into),
-            imported,
-            last_read: None,
-        }
-    }
-
     #[test]
-    fn a_listing_from_items_orders_and_searches() {
-        let items = [
-            item("Zebra", "z.pdf", None, 1),
-            item("apple 10", "a10.pdf", Some("Émile Zola"), 2),
-            item("apple 2", "a2.pdf", None, 3),
+    fn the_library_lists_its_documents_by_id_in_order_and_searches_them() {
+        let dir = std::env::temp_dir().join(format!("leafpdf-ffi-listing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let library = Library::open(dir.join("library").display().to_string()).unwrap();
+        let mut ids = vec![];
+        let books = [
+            ("Zebra", None),
+            ("apple 10", Some("Émile Zola")),
+            ("apple 2", None),
         ];
-        let positions = |key, reversed, search: &str| {
-            Listing::new(&items, Sort { key, reversed }).matching(search)
+        for (n, (title, author)) in books.into_iter().enumerate() {
+            let source = dir.join(format!("{n}.pdf"));
+            std::fs::write(&source, format!("%PDF-{n}")).unwrap();
+            let path = source.display().to_string();
+            let Ok(ImportResult::Imported(document)) = library.import(path, Arc::new(NoProgress))
+            else {
+                panic!("import")
+            };
+            let (title, author) = (Some(title.to_owned()), author.map(str::to_owned));
+            library
+                .set_details(document.id.clone(), title, author, 1)
+                .unwrap();
+            ids.push(document.id);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let listed = |key, reversed, search: &str| {
+            let listing = library.listing(Sort { key, reversed }).unwrap();
+            listing.matching(search)
         };
-        assert_eq!(positions(SortKey::DateImported, false, ""), [2, 1, 0]);
-        assert_eq!(positions(SortKey::Title, false, ""), [2, 1, 0]);
-        assert_eq!(positions(SortKey::Title, true, ""), [0, 1, 2]);
-        assert_eq!(positions(SortKey::Title, false, "emile"), [1]);
-        assert_eq!(positions(SortKey::Title, false, "A2.PDF"), [2]);
+        let [zebra, ten, two] = [&ids[0], &ids[1], &ids[2]].map(String::as_str);
+        assert_eq!(listed(SortKey::DateImported, false, ""), [two, ten, zebra]);
+        assert_eq!(listed(SortKey::Title, false, ""), [two, ten, zebra]);
+        assert_eq!(listed(SortKey::Title, true, ""), [zebra, ten, two]);
+        assert_eq!(listed(SortKey::Title, false, "emile"), [ten]);
+        assert_eq!(listed(SortKey::Title, false, "2.PDF"), [two]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     struct NoProgress;

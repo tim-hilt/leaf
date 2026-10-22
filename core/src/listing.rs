@@ -26,7 +26,7 @@ pub struct Sort {
     pub reversed: bool,
 }
 
-/// What a `Listing` knows of a Document.
+/// What a `Listing` orders and searches a Document by.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub title: String,
@@ -54,18 +54,22 @@ impl From<&Document> for Item {
 /// Documents in the order of a `Sort`, ready for Library Search. Built once
 /// per change of the Documents or the Sort; each search is then cheap.
 pub struct Listing {
-    /// Positions in the items, in Sort order.
+    /// The Documents' IDs, in the order they were given.
+    ids: Vec<String>,
+    /// Positions in `ids`, in Sort order.
     order: Vec<usize>,
-    /// Each item's Title, file name and Author, `fold`ed and joined by a NUL,
-    /// so a search never matches across two of them.
+    /// Each Document's Title, file name and Author, `fold`ed and joined by a
+    /// NUL, so a search never matches across two of them.
     searched: Vec<String>,
 }
 
 impl Listing {
-    /// `items` in `sort` order. Items the Sort can't tell apart (same Title,
-    /// same Last Read) keep Date Imported order, newest first, and then their
-    /// order in `items`.
-    pub fn new(items: &[Item], sort: Sort) -> Self {
+    /// `documents` in `sort` order. Documents the Sort can't tell apart (same
+    /// Title, same Last Read) keep Date Imported order, newest first, and then
+    /// their order in `documents`.
+    pub fn new(documents: &[Document], sort: Sort) -> Self {
+        let items: Vec<Item> = documents.iter().map(Item::from).collect();
+        let items = items.as_slice();
         let flip = |mut order: Vec<usize>| {
             if sort.reversed {
                 order.reverse();
@@ -99,17 +103,23 @@ impl Listing {
                 [&item.title, &item.file_name, author].map(fold).join("\0")
             })
             .collect();
-        Self { order, searched }
+        let ids = documents.iter().map(|d| d.id.clone()).collect();
+        Self {
+            ids,
+            order,
+            searched,
+        }
     }
 
-    /// The positions in `items` of the Documents whose Title, file name or
-    /// Author contains `search`, ignoring case and accents, in this Listing's
-    /// order. A blank `search` matches every Document.
-    pub fn matching(&self, search: &str) -> Vec<usize> {
+    /// The IDs of the Documents whose Title, file name or Author contains
+    /// `search`, ignoring case and accents, in this Listing's order. A blank
+    /// `search` matches every Document.
+    pub fn matching(&self, search: &str) -> Vec<&str> {
         let search = fold(search.trim());
         let order = self.order.iter().copied();
         order
             .filter(|&i| self.searched[i].contains(&search))
+            .map(|i| self.ids[i].as_str())
             .collect()
     }
 }
@@ -161,20 +171,31 @@ fn number(chars: &mut Peekable<impl Iterator<Item = char>>) -> (usize, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::details::{Details, Size};
+    use crate::progress::ReadingProgress;
 
-    fn item(title: &str, imported: u64, last_read: Option<u64>) -> Item {
-        Item {
-            title: title.to_owned(),
-            file_name: format!("{imported}.pdf"),
-            author: None,
+    /// A Document with `title`, whose ID is its `imported` date.
+    fn item(title: &str, imported: u64, last_read: Option<u64>) -> Document {
+        Document {
+            id: imported.to_string(),
+            path: format!("/library/{imported}/{imported}.pdf").into(),
             imported,
-            last_read,
+            progress: last_read.map(|at| ReadingProgress::pdf(0, 0.0, 0.0, at)),
+            details: Some(Details {
+                title: Some(title.to_owned()),
+                author: None,
+                size: Size::Pages(1),
+            }),
         }
+    }
+
+    fn author(document: &mut Document, author: &str) {
+        document.details.as_mut().unwrap().author = Some(author.to_owned());
     }
 
     /// "Zebra", "résumé 10", "Resume 2", "apple", newest Import first; "apple"
     /// was read at 100, "Zebra" at 200, "Resume 2" at 300.
-    fn shelf() -> Vec<Item> {
+    fn shelf() -> Vec<Document> {
         vec![
             item("apple", 1, Some(100)),
             item("Zebra", 4, Some(200)),
@@ -183,10 +204,10 @@ mod tests {
         ]
     }
 
-    fn titles<'a>(items: &'a [Item], key: SortKey, reversed: bool, search: &str) -> Vec<&'a str> {
-        let listing = Listing::new(items, Sort { key, reversed });
-        let found = listing.matching(search);
-        found.into_iter().map(|i| items[i].title.as_str()).collect()
+    fn titles(documents: &[Document], key: SortKey, reversed: bool, search: &str) -> Vec<String> {
+        let listing = Listing::new(documents, Sort { key, reversed });
+        let by_id = |id: &str| documents.iter().find(|d| d.id == id).unwrap().title();
+        listing.matching(search).into_iter().map(by_id).collect()
     }
 
     #[test]
@@ -227,7 +248,7 @@ mod tests {
             item("Same", 2, None),
         ];
         let listing = Listing::new(&items, sort(SortKey::Title));
-        assert_eq!(listing.matching(""), [1, 2, 0]);
+        assert_eq!(listing.matching(""), ["3", "2", "1"]);
     }
 
     #[test]
@@ -248,14 +269,14 @@ mod tests {
     #[test]
     fn search_matches_parts_of_the_title_the_file_name_and_the_author() {
         let mut items = vec![item("Moby-Dick", 1, None), item("Walden", 2, None)];
-        items[0].author = Some("Herman Melville".to_owned());
-        items[1].file_name = "scan0042.pdf".to_owned();
+        author(&mut items[0], "Herman Melville");
+        items[1].path = "/library/2/scan0042.pdf".into();
         let listing = Listing::new(&items, sort(SortKey::Title));
 
-        assert_eq!(listing.matching("oby"), [0]);
-        assert_eq!(listing.matching("can004"), [1]);
-        assert_eq!(listing.matching("melv"), [0]);
-        assert_eq!(listing.matching("xyz"), Vec::<usize>::new());
+        assert_eq!(listing.matching("oby"), ["1"]);
+        assert_eq!(listing.matching("can004"), ["2"]);
+        assert_eq!(listing.matching("melv"), ["1"]);
+        assert!(listing.matching("xyz").is_empty());
     }
 
     #[test]
@@ -275,11 +296,11 @@ mod tests {
     #[test]
     fn search_never_matches_across_fields() {
         let mut items = vec![item("Moby", 1, None)];
-        items[0].author = Some("Dick".to_owned());
-        items[0].file_name = "x.pdf".to_owned();
+        author(&mut items[0], "Dick");
+        items[0].path = "/library/1/x.pdf".into();
         let listing = Listing::new(&items, sort(SortKey::Title));
-        assert_eq!(listing.matching("mobydick"), Vec::<usize>::new());
-        assert_eq!(listing.matching("moby dick"), Vec::<usize>::new());
+        assert!(listing.matching("mobydick").is_empty());
+        assert!(listing.matching("moby dick").is_empty());
     }
 
     #[test]

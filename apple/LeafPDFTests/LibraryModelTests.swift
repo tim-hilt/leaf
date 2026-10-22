@@ -599,7 +599,7 @@ import UniformTypeIdentifiers
 
         library.sort.isReversed = true
 
-        #expect(library.visibleDocuments(matching: "").map(\.title) == ["apple", "Resume 2", "résumé 10", "Zebra"])
+        try await expectListed(["apple", "Resume 2", "résumé 10", "Zebra"], in: library)
     }
 
     @Test func sortsByTitleLikeFinder() async throws {
@@ -607,7 +607,7 @@ import UniformTypeIdentifiers
 
         library.sort.key = .title
 
-        #expect(library.visibleDocuments(matching: "").map(\.title) == ["apple", "Resume 2", "résumé 10", "Zebra"])
+        try await expectListed(["apple", "Resume 2", "résumé 10", "Zebra"], in: library)
     }
 
     @Test func reversingTitleListsZToA() async throws {
@@ -615,7 +615,7 @@ import UniformTypeIdentifiers
 
         library.sort = LibrarySort(key: .title, isReversed: true)
 
-        #expect(library.visibleDocuments(matching: "").map(\.title) == ["Zebra", "résumé 10", "Resume 2", "apple"])
+        try await expectListed(["Zebra", "résumé 10", "Resume 2", "apple"], in: library)
     }
 
     @Test func aDocumentWhoseTitleArrivesLaterMovesToItsPlace() async throws {
@@ -623,10 +623,9 @@ import UniformTypeIdentifiers
         try importWithoutDetails(try writePDF(named: "mmm.pdf", metadataTitle: "Mike"))
         let library = try openLibrary()
         library.sort.key = .title
-        // Still by file name: the background pass can't publish before the next suspension.
-        #expect(library.visibleDocuments(matching: "").map(\.title) == ["mmm", "zzz"])
 
-        try await waitUntil { library.visibleDocuments(matching: "").map(\.title) == ["Alpha", "Mike"] }
+        // Listed by file name until the background pass reads the Titles.
+        try await expectListed(["Alpha", "Mike"], in: library)
     }
 
     @Test func theSortChoiceIsRememberedOnThisDevice() throws {
@@ -817,7 +816,7 @@ import UniformTypeIdentifiers
 
         #expect(library.visibleDocuments(matching: "austen").map(\.title) == ["Emma"])
         library.sort.key = .title
-        #expect(library.visibleDocuments(matching: "").map(\.title) == ["Emma", "Moby-Dick"])
+        try await expectListed(["Emma", "Moby-Dick"], in: library)
     }
 
     @Test func removingAnEPUBDeletesItsCover() async throws {
@@ -859,7 +858,7 @@ import UniformTypeIdentifiers
         #expect(library.visibleDocuments(matching: "resume").map(\.title) == ["résumé 10", "Resume 2"])
 
         library.sort.key = .title
-        #expect(library.visibleDocuments(matching: "resume").map(\.title) == ["Resume 2", "résumé 10"])
+        try await expectListed(["Resume 2", "résumé 10"], matching: "resume", in: library)
     }
 
     @Test func noMatchesShowNothingAndABlankSearchShowsEverything() async throws {
@@ -1269,7 +1268,7 @@ import UniformTypeIdentifiers
 
         library.sort.key = .recentlyRead
 
-        #expect(library.visibleDocuments(matching: "").map(\.title) == ["Resume 2", "Zebra", "apple", "résumé 10"])
+        try await expectListed(["Resume 2", "Zebra", "apple", "résumé 10"], in: library)
     }
 
     @Test func reversingRecentlyReadFlipsOnlyTheOpenedDocuments() async throws {
@@ -1277,7 +1276,7 @@ import UniformTypeIdentifiers
 
         library.sort = LibrarySort(key: .recentlyRead, isReversed: true)
 
-        #expect(library.visibleDocuments(matching: "").map(\.title) == ["apple", "Zebra", "Resume 2", "résumé 10"])
+        try await expectListed(["apple", "Zebra", "Resume 2", "résumé 10"], in: library)
     }
 
     @Test func neverOpenedDocumentsFollowInDateImportedOrderInBothDirections() async throws {
@@ -1285,10 +1284,10 @@ import UniformTypeIdentifiers
         let newestFirst = library.visibleDocuments(matching: "").map(\.title)
 
         library.sort = LibrarySort(key: .recentlyRead, isReversed: false)
-        #expect(library.visibleDocuments(matching: "").map(\.title) == newestFirst)
+        try await expectListed(newestFirst, in: library)
 
         library.sort = LibrarySort(key: .recentlyRead, isReversed: true)
-        #expect(library.visibleDocuments(matching: "").map(\.title) == newestFirst)
+        try await expectListed(newestFirst, in: library)
     }
 
     @Test func openingADocumentMovesItToTheTopOfRecentlyRead() async throws {
@@ -1305,8 +1304,8 @@ import UniformTypeIdentifiers
         let library = try await libraryForRecentlyRead()
         library.sort.key = .recentlyRead
 
-        #expect(library.visibleDocuments(matching: "resume").map(\.title) == ["Resume 2", "résumé 10"])
-        #expect(library.visibleDocuments(matching: "e").map(\.title) == ["Resume 2", "Zebra", "apple", "résumé 10"])
+        try await expectListed(["Resume 2", "résumé 10"], matching: "resume", in: library)
+        try await expectListed(["Resume 2", "Zebra", "apple", "résumé 10"], matching: "e", in: library)
     }
 
     @Test func theRecentlyReadChoiceIsRememberedOnThisDevice() throws {
@@ -1387,6 +1386,14 @@ import UniformTypeIdentifiers
         await library.saveProgress(Place.pdf(pageIndex: 1, point: .zero), of: document, at: lastRead)
 
         #expect(library.documents.first?.accessibilityLabel == "\(document.title), 50 % read")
+    }
+
+    /// Waits for the core's listing, which the model asks for off the main
+    /// thread after a Sort change, to show `titles` for Library Search `search`.
+    private func expectListed(
+        _ titles: [String], matching search: String = "", in library: LibraryModel
+    ) async throws {
+        try await waitUntil { library.visibleDocuments(matching: search).map(\.title) == titles }
     }
 
     /// Waits up to 10 s for `condition`, which the background pass makes true.
