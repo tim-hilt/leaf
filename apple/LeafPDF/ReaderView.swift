@@ -176,32 +176,34 @@ struct ReaderView: View {
         }
     #endif
 
+    private var inputs: ReaderInputs {
+        ReaderInputs(
+            appearance: settings.pageAppearance(systemScheme: colorScheme), highlights: highlights,
+            pageNotes: pageNotes, pageNoteColor: library.highlightColors[0].tint,
+            handle: handle, results: results,
+            state: tabs.viewState(of: document.id) ?? document.place.map { ReaderViewState(place: $0) },
+            contents: contents ?? TableOfContents(), textSize: settings.epubTextSize,
+            callbacks: ReaderCallbacks(
+                onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
+                onHighlight: highlight,
+                onHighlightTap: { openMarkup = OpenMarkup(target: .highlight($0.id), point: $1) },
+                onAddNote: addPageNote,
+                onPageNoteTap: { openMarkup = OpenMarkup(target: .pageNote($0.id), point: $1) },
+                onTextSizeChange: { settings.epubTextSize = $0 }, onBackChange: { backTarget = $0 }),
+            onShowResults: { isShowingResults = true })
+    }
+
     private var pages: some View {
         Group {
             if let opened {
-                ReaderContent(
-                    document: opened, appearance: settings.pageAppearance(systemScheme: colorScheme),
-                    highlights: highlights,
-                    pageNotes: pageNotes, pageNoteColor: library.highlightColors[0].tint,
-                    handle: handle, results: results,
-                    state: tabs.viewState(of: document.id) ?? document.place.map { ReaderViewState(place: $0) },
-                    contents: contents ?? TableOfContents(), textSize: settings.epubTextSize,
-                    callbacks: ReaderCallbacks(
-                        onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
-                        onHighlight: highlight,
-                        onHighlightTap: { openMarkup = OpenMarkup(target: .highlight($0.id), point: $1) },
-                        onAddNote: addPageNote,
-                        onPageNoteTap: { openMarkup = OpenMarkup(target: .pageNote($0.id), point: $1) },
-                        onTextSizeChange: { settings.epubTextSize = $0 }, onBackChange: { backTarget = $0 }),
-                    onShowResults: { isShowingResults = true }
-                )
-                #if os(iOS)
-                    // Under the bars and the home indicator, so Immersive Mode changes
-                    // only the safe area, not the frame, and the pages stay put. Without
-                    // the bottom, the window's background would strip over the bottom
-                    // safe area, whatever the Theme.
-                    .ignoresSafeArea(.container, edges: [.top, .bottom])
-                #endif
+                ReaderContent(document: opened, inputs: inputs)
+                    #if os(iOS)
+                        // Under the bars and the home indicator, so Immersive Mode changes
+                        // only the safe area, not the frame, and the pages stay put. Without
+                        // the bottom, the window's background would strip over the bottom
+                        // safe area, whatever the Theme.
+                        .ignoresSafeArea(.container, edges: [.top, .bottom])
+                    #endif
             } else {
                 // While loading, never the system background showing through.
                 Color(settings.pageAppearance(systemScheme: colorScheme).paper)

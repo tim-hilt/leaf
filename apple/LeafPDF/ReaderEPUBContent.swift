@@ -4,44 +4,30 @@ import SwiftUI
 /// `ReaderEPUBView` in SwiftUI: an EPUB as one vertical, continuously scrolling column.
 struct ReaderEPUBContent {
     let book: EpubBook
-    /// How to open; nil opens at the start.
-    let state: ReaderViewState?
-    /// The Table of Contents, which names the Back place.
-    let contents: TableOfContents
-    /// The text size to show; see `TextSize`.
-    let textSize: CGFloat
-    /// The Page Style to show.
-    let appearance: PageAppearance
-    let highlights: [Highlight]
-    let pageNotes: [PageNote]
-    let pageNoteColor: RGB
-    let handle: ReaderHandle
-    let results: SearchResults
-    let callbacks: ReaderCallbacks
-    /// Called when the reader asks for the list of matches in the find bar (iOS only).
-    let onShowResults: () -> Void
+    let inputs: ReaderInputs
 
     @MainActor
     fileprivate func makeEPUBView() -> ReaderEPUBView {
         let view = ReaderEPUBView(
-            book: book, state: state, contents: contents, textSize: textSize, appearance: appearance,
-            highlights: highlights, handle: handle, results: results, callbacks: callbacks)
-        view.pageNotes = pageNotes
-        view.pageNoteColor = pageNoteColor
+            book: book, state: inputs.state, contents: inputs.contents, textSize: inputs.textSize,
+            appearance: inputs.appearance, highlights: inputs.highlights, handle: inputs.handle,
+            results: inputs.results, callbacks: inputs.callbacks)
+        view.pageNotes = inputs.pageNotes
+        view.pageNoteColor = inputs.pageNoteColor
         #if os(iOS)
-            view.find.onShowResults = onShowResults
+            view.find.onShowResults = inputs.onShowResults
         #endif
         return view
     }
 
     @MainActor
     fileprivate func update(_ view: ReaderEPUBView) {
-        view.contents = contents
-        view.textSize = textSize
-        view.pageAppearance = appearance
-        view.highlights = highlights
-        view.pageNotes = pageNotes
-        view.pageNoteColor = pageNoteColor
+        view.contents = inputs.contents
+        view.textSize = inputs.textSize
+        view.pageAppearance = inputs.appearance
+        view.highlights = inputs.highlights
+        view.pageNotes = inputs.pageNotes
+        view.pageNoteColor = inputs.pageNoteColor
     }
 }
 

@@ -30,10 +30,10 @@ enum OpenedDocument {
     }
 }
 
-/// The view that shows an `OpenedDocument`, picking the document view of its
-/// Format. It reports through `handle` and `callbacks`; see `ReaderDocumentView`.
-struct ReaderContent: View {
-    let document: OpenedDocument
+/// Everything the Reader hands a document view, whatever its Format. It reports
+/// through `handle` and `callbacks`; see `ReaderDocumentView`.
+struct ReaderInputs {
+    /// The Page Style to show.
     let appearance: PageAppearance
     let highlights: [Highlight]
     let pageNotes: [PageNote]
@@ -42,25 +42,24 @@ struct ReaderContent: View {
     let results: SearchResults
     /// How to open; nil opens at the start.
     let state: ReaderViewState?
+    /// The Table of Contents, which names the Back place.
     let contents: TableOfContents
     /// The text size of EPUBs; see `TextSize`.
     let textSize: CGFloat
     let callbacks: ReaderCallbacks
     /// Called when the reader asks for the list of matches in the find bar (iOS only).
     let onShowResults: () -> Void
+}
+
+/// The view that shows an `OpenedDocument`, picking the document view of its Format.
+struct ReaderContent: View {
+    let document: OpenedDocument
+    let inputs: ReaderInputs
 
     var body: some View {
         switch document {
-        case .pdf(let pdf):
-            ReaderPDFContent(
-                document: pdf, appearance: appearance, highlights: highlights, pageNotes: pageNotes,
-                pageNoteColor: pageNoteColor, handle: handle, results: results, state: state, contents: contents,
-                callbacks: callbacks, onShowResults: onShowResults)
-        case .epub(let book):
-            ReaderEPUBContent(
-                book: book, state: state, contents: contents, textSize: textSize, appearance: appearance,
-                highlights: highlights, pageNotes: pageNotes, pageNoteColor: pageNoteColor, handle: handle,
-                results: results, callbacks: callbacks, onShowResults: onShowResults)
+        case .pdf(let pdf): ReaderPDFContent(document: pdf, inputs: inputs)
+        case .epub(let book): ReaderEPUBContent(book: book, inputs: inputs)
         }
     }
 }

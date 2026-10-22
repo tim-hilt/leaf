@@ -7,34 +7,24 @@ import SwiftUI
 /// `ReaderPDFView` for zooming, keeping your place, taps and scrolling.
 struct ReaderPDFContent {
     let document: StyledDocument
-    let appearance: PageAppearance
-    let highlights: [Highlight]
-    let pageNotes: [PageNote]
-    let pageNoteColor: RGB
-    let handle: ReaderHandle
-    let results: SearchResults
-    let state: ReaderViewState?
-    let contents: TableOfContents
-    let callbacks: ReaderCallbacks
-    /// Called when the reader asks for the list of matches in the find bar (iOS only).
-    let onShowResults: () -> Void
+    let inputs: ReaderInputs
 
     @MainActor
     fileprivate func makePDFView() -> PDFView {
-        let view = ReaderPDFView(handle: handle, results: results)
+        let view = ReaderPDFView(handle: inputs.handle, results: inputs.results)
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
         view.autoScales = true
-        if let state { view.open(from: state) }
+        if let state = inputs.state { view.open(from: state) }
         view.document = document
-        view.pageAppearance = appearance
-        view.highlights = highlights
-        view.pageNotes = pageNotes
-        view.pageNoteColor = pageNoteColor
-        view.contents = contents
-        view.callbacks = callbacks
+        view.pageAppearance = inputs.appearance
+        view.highlights = inputs.highlights
+        view.pageNotes = inputs.pageNotes
+        view.pageNoteColor = inputs.pageNoteColor
+        view.contents = inputs.contents
+        view.callbacks = inputs.callbacks
         #if os(iOS)
-            view.find.onShowResults = onShowResults
+            view.find.onShowResults = inputs.onShowResults
         #endif
         return view
     }
@@ -42,10 +32,10 @@ struct ReaderPDFContent {
     @MainActor
     fileprivate func update(_ view: PDFView) {
         guard let reader = view as? ReaderPDFView else { return }
-        reader.pageAppearance = appearance
-        reader.highlights = highlights
-        reader.pageNotes = pageNotes
-        reader.pageNoteColor = pageNoteColor
+        reader.pageAppearance = inputs.appearance
+        reader.highlights = inputs.highlights
+        reader.pageNotes = inputs.pageNotes
+        reader.pageNoteColor = inputs.pageNoteColor
     }
 }
 

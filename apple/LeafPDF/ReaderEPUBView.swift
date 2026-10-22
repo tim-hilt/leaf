@@ -126,20 +126,20 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         }
     #endif
 
-    /// Where the current Document Search session started; nil outside a session.
-    private var searchStart: Place?
-
     /// The Table of Contents, which names the Back place.
     var contents: TableOfContents
 
-    /// Where Back returns to: the top of the viewport before the latest Jump.
-    /// Nil before any Jump and after Back.
-    private(set) var backPlace: Place? {
+    /// Back and Document Search session places; changes are reported as `onBackChange`.
+    private var history = JumpHistory() {
         didSet {
-            guard backPlace != oldValue else { return }
+            guard history.backPlace != oldValue.backPlace else { return }
             callbacks.onBackChange(backPlace.map(contents.backTarget(at:)))
         }
     }
+
+    /// Where Back returns to: the top of the viewport before the latest Jump.
+    /// Nil before any Jump and after Back.
+    var backPlace: Place? { history.backPlace }
 
     /// The Back place to reopen with, reported once the book is open.
     private let restoredBackPlace: Place?
@@ -273,7 +273,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
                 if view.isOpen { view.callbacks.onScroll() }
             case let text as String where text == "opened":
                 view.isOpen = true
-                view.backPlace = view.restoredBackPlace
+                view.history = JumpHistory(backPlace: view.restoredBackPlace)
                 view.syncTextSize()
                 view.syncAppearance()
                 view.syncHighlights()
@@ -308,15 +308,13 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// Jump: goes to `place`, remembering the top of the viewport for `goBack()` in
     /// place of any earlier Back place. Does nothing if `place` is already at the top.
     func jump(to place: Place) {
-        guard let top, !place.isSameSpot(as: top) else { return }
-        backPlace = top
+        guard history.jump(to: place, from: top) else { return }
         go(to: place)
     }
 
     /// Back: returns to the Back place and forgets it. Does nothing without one.
     func goBack() {
-        guard let place = backPlace else { return }
-        backPlace = nil
+        guard let place = history.goBack() else { return }
         go(to: place)
     }
 
@@ -352,11 +350,11 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// `endSearchSession()`, every `reveal` that moves the text makes the top of
     /// the viewport the Back place, so the session is one Jump: Back returns to
     /// where the search started, also after an earlier Back.
-    func beginSearchSession() { searchStart = top }
+    func beginSearchSession() { history.beginSearchSession(at: top) }
 
     /// Ends the Document Search session, called when the find bar closes. The
     /// Back place it recorded stays.
-    func endSearchSession() { searchStart = nil }
+    func endSearchSession() { history.endSearchSession() }
 
     /// Marks `matches` in the text, the one at `current` apart; no matches clears the marks.
     func markMatches(_ matches: [EPUBSearch.Match], current: Int?) {
@@ -373,7 +371,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         let script = "return await leaf.reveal([\(match.spineIndex), \(match.range.location), \(match.range.length)])"
         Task {
             let moved = try? await callAsyncJavaScript(script, in: nil, contentWorld: .defaultClient) as? Bool
-            if moved == true, let searchStart { backPlace = searchStart }
+            if moved == true { history.didReveal() }
         }
     }
 

@@ -139,15 +139,18 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
     /// in Chapters and Sections. The owner sets it before searching; empty until then.
     var contents = TableOfContents()
 
-    /// Where Back returns to: the top of the viewport before the latest Jump.
-    /// Nil before any Jump and after Back.
-    private(set) var backPlace: Place? {
+    /// Back and Document Search session places; changes are reported as `onBackChange`.
+    private var history = JumpHistory() {
         didSet {
-            guard backPlace != oldValue else { return }
+            guard history.backPlace != oldValue.backPlace else { return }
             callbacks.onBackChange(
                 backPlace?.pdfPosition.flatMap { document?.printedPageNumber(at: $0.pageIndex) }.map(BackTarget.page))
         }
     }
+
+    /// Where Back returns to: the top of the viewport before the latest Jump.
+    /// Nil before any Jump and after Back.
+    var backPlace: Place? { history.backPlace }
 
     /// The matches of the Document Search that is going on, for the results list.
     private(set) var results = SearchResults()
@@ -253,31 +256,26 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
     /// in place of any earlier Back place. Does nothing if `place` is already
     /// at the top.
     func jump(to place: Place) {
-        guard let top = topOfViewport, !place.isSameSpot(as: top) else { return }
-        backPlace = top
+        guard history.jump(to: place, from: topOfViewport) else { return }
         go(to: place)
     }
 
     /// Back: returns to the Back place at the current zoom and forgets it.
     /// Does nothing without one.
     func goBack() {
-        guard let place = backPlace else { return }
-        backPlace = nil
+        guard let place = history.goBack() else { return }
         go(to: place)
     }
-
-    /// Where the current Document Search session started; nil outside a session.
-    private var searchStart: Place?
 
     /// Starts a Document Search session, called when the find bar opens. Until
     /// `endSearchSession()`, every `reveal` that moves the view makes the
     /// current top of the viewport the Back place, so the session is one Jump:
     /// Back returns to where the search started, also after an earlier Back.
-    func beginSearchSession() { searchStart = topOfViewport }
+    func beginSearchSession() { history.beginSearchSession(at: topOfViewport) }
 
     /// Ends the Document Search session, called when the find bar closes. The
     /// Back place it recorded stays.
-    func endSearchSession() { searchStart = nil }
+    func endSearchSession() { history.endSearchSession() }
 
     /// Scrolls a Document Search match into view, a third of the way down the
     /// viewport; does nothing if it is already fully in view. Within a search
@@ -292,7 +290,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
         let fitsAcross = viewportRect.minX <= viewRect.minX && viewRect.maxX <= viewportRect.maxX
         let x = fitsAcross ? top.point.x : rect.minX - 20 / scaleFactor
         let y = rect.maxY + viewportRect.height / 3 / scaleFactor
-        if let searchStart { backPlace = searchStart }
+        history.didReveal()
         go(to: Place.pdf(pageIndex: document.index(for: page), point: CGPoint(x: x, y: y)))
     }
 
@@ -478,7 +476,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
                 openingState = nil
                 scaleFactor = range.clamped(range.fitToWidth * state.zoom)
                 go(to: state.place)
-                backPlace = state.backPlace
+                history = JumpHistory(backPlace: state.backPlace)
             }
             observeScrolling()
             callbacks.onOpen()
