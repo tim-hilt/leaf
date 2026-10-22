@@ -6,7 +6,9 @@
 //! temporary name and then moved into place, so a half-written blob is never
 //! visible under its final name.
 
+use crate::percent::decode;
 use crate::storage::{Blob, Storage, check_name, unique_name};
+use base64::prelude::{BASE64_STANDARD, Engine};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::HashSet;
@@ -403,50 +405,12 @@ fn encode(part: &str) -> String {
     out
 }
 
-/// Reverses percent-encoding; invalid escapes stay as they are.
-fn decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let escaped = (bytes[i] == b'%')
-            .then(|| bytes.get(i + 1..i + 3))
-            .flatten()
-            .and_then(|hex| std::str::from_utf8(hex).ok())
-            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
-        match escaped {
-            Some(byte) => {
-                out.push(byte);
-                i += 3;
-            }
-            None => {
-                out.push(bytes[i]);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// The `Authorization` header value for Basic auth (RFC 7617).
 fn basic_auth(username: &str, password: &str) -> String {
-    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let input = format!("{username}:{password}");
-    let mut out = String::from("Basic ");
-    for group in input.as_bytes().chunks(3) {
-        let n = group
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
-        for i in 0..4 {
-            if i <= group.len() {
-                out.push(DIGITS[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
+    format!(
+        "Basic {}",
+        BASE64_STANDARD.encode(format!("{username}:{password}"))
+    )
 }
 
 #[cfg(test)]
@@ -654,7 +618,6 @@ mod tests {
     #[test]
     fn names_are_percent_encoded_in_urls() {
         assert_eq!(encode("a b/ü"), "a%20b%2F%C3%BC");
-        assert_eq!(decode("a%20b%2f%C3%BC%zz%"), "a b/ü%zz%");
     }
 
     #[test]

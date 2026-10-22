@@ -556,7 +556,7 @@ import UniformTypeIdentifiers
         #expect(savedCovers().isEmpty)
     }
 
-    @Test func aRunningImportShowsTheTitleAndProgressUntilItFinishes() async throws {
+    @Test func aRunningImportShowsTheFileNameAndProgressUntilItFinishes() async throws {
         let library = try openLibrary()
         let source = try writePDF(named: "big.pdf", metadataTitle: "Big One", paddedTo: 64_000_000)
         #expect(library.runningImport == nil)
@@ -571,7 +571,7 @@ import UniformTypeIdentifiers
         await importing.value
 
         #expect(!seen.isEmpty)
-        #expect(seen.last?.title == "Big One")
+        #expect(seen.first?.title == "big")
         #expect(seen.allSatisfy { (0...1).contains($0.fraction) })
         #expect(zip(seen, seen.dropFirst()).allSatisfy { $0.fraction <= $1.fraction })
         #expect(library.runningImport == nil)

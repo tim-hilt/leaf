@@ -469,7 +469,6 @@ final class LibraryModel {
         case .failure(let rejection): return .rejected(rejection)
         case .success(let pdf): read = pdf
         }
-        if let read { runningImport?.title = read.title }
 
         let core = core
         let path = url.path
@@ -500,6 +499,7 @@ final class LibraryModel {
                 return .failed("The imported file couldn't be opened.")
             }
             let document = LibraryDocument(listed)
+            runningImport?.title = document.title
             if let index = documents.firstIndex(where: { $0.id == id }) {
                 documents[index] = document
             } else {
@@ -729,8 +729,6 @@ final class LibraryModel {
     /// What Import reads from a PDF it opened to check the File.
     /// An EPUB is checked by the core, which reads its details and Cover itself.
     private struct ReadPDF: Sendable {
-        /// What the progress modal shows.
-        let title: String
         let details: PDFDetails
         let cover: CGImage?
     }
@@ -749,7 +747,7 @@ final class LibraryModel {
         case .pdf:
             guard let pdf = PDFDocument(url: url) else { return .failure(.unreadable) }
             guard !pdf.isLocked else { return .failure(.locked) }
-            return .success(ReadPDF(title: pdf.title, details: pdf.details, cover: covers.render(pdf)))
+            return .success(ReadPDF(details: pdf.details, cover: covers.render(pdf)))
         }
     }
 

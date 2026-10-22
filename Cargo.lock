@@ -524,6 +524,8 @@ name = "leafpdf-core"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "base64",
+ "hex",
  "libc",
  "miniz_oxide",
  "quick-xml",

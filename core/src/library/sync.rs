@@ -1726,7 +1726,7 @@ mod tests {
         // Stored the way an older LeafPDF did: every write by a random actor.
         let home = cloud.dir.join("legacy");
         let root = home.join("library");
-        let id = hex(&Sha256::digest(b"legacy bytes"));
+        let id = hex::encode(Sha256::digest(b"legacy bytes"));
         fs::create_dir_all(root.join(&id)).unwrap();
         fs::write(root.join(&id).join("Old.pdf"), b"legacy bytes").unwrap();
         let mut state = state::update(None, &ActorId::random(), |doc| {
@@ -1919,7 +1919,7 @@ mod tests {
     fn importing_a_file_whose_state_arrived_before_its_download_still_imports() {
         let mut cloud = Cloud::new();
         let b = cloud.device();
-        let id = hex(&Sha256::digest(pdf(b"shared document")));
+        let id = hex::encode(Sha256::digest(pdf(b"shared document")));
         // What a sync leaves when it got the state of a Document, not its File.
         let state_only = b.home.join("library").join(&id);
         fs::create_dir_all(&state_only).unwrap();

@@ -29,6 +29,7 @@
 
 use crate::chunks::Cursor;
 use crate::details::{self, Details, Format, Size};
+use crate::doc_cache::DocCache;
 use crate::epub::{self, Epub};
 use crate::library_doc::{Import, LibraryDoc};
 use crate::listing::{Listing, Sort};
@@ -200,19 +201,11 @@ pub struct Library {
     markup_changes: Mutex<Vec<String>>,
     /// The Reading Progress of each Document read so far, by ID, see
     /// `progress_of`. Changed under `writing`, along with the file.
-    progress: Mutex<HashMap<String, KnownProgress>>,
+    progress: DocCache<ReadingProgress>,
     /// The details of each Document read so far, by ID, see `details_of`.
     /// Changed under `writing` by `set_details`, the only writer of the file.
-    details: Mutex<HashMap<String, KnownDetails>>,
+    details: DocCache<Details>,
 }
-
-/// A Document's Reading Progress, and the Imports it was read for: when they
-/// change, e.g. at a Re-Import, it is read again.
-type KnownProgress = (Vec<String>, Option<ReadingProgress>);
-
-/// A Document's details, and the Imports they were read for: a Re-Import
-/// starts without details.
-type KnownDetails = (Vec<String>, Option<Details>);
 
 /// The cursors of the documents `sync` exchanges.
 #[derive(Debug, Default)]
@@ -271,8 +264,8 @@ impl Library {
             writing: Mutex::new(()),
             sync_changes: AtomicU64::new(0),
             markup_changes: Mutex::new(Vec::new()),
-            progress: Mutex::default(),
-            details: Mutex::default(),
+            progress: DocCache::new(),
+            details: DocCache::new(),
         };
         library.reconcile()?;
         Ok(library)
@@ -558,8 +551,8 @@ impl Library {
         if written.is_ok() {
             // As stored, i.e. normalized. Kept for the Imports the write was
             // for: should a re-Import have overtaken it, the file is read again.
-            let known = (entry.imports, details::decode(&bytes));
-            self.known_details().insert(id.to_owned(), known);
+            self.details
+                .set(id, &entry.imports, details::decode(&bytes));
         }
         // The folder may be gone: the Document was Removed.
         ignore_not_found(written)
@@ -567,27 +560,11 @@ impl Library {
 
     /// The details of the Document of `entry`. Read once, then kept in memory.
     fn details_of(&self, entry: &Entry) -> Option<Details> {
-        if let Some((imports, known)) = self.known_details().get(&entry.id)
-            && *imports == entry.imports
-        {
-            return known.clone();
-        }
-        let read = fs::read(self.root.join(&entry.id).join(DETAILS))
-            .ok()
-            .and_then(|bytes| details::decode(&bytes));
-        let mut known = self.known_details();
-        match known.get(&entry.id) {
-            // Set meanwhile.
-            Some((imports, set)) if *imports == entry.imports => set.clone(),
-            _ => {
-                known.insert(entry.id.clone(), (entry.imports.clone(), read.clone()));
-                read
-            }
-        }
-    }
-
-    fn known_details(&self) -> MutexGuard<'_, HashMap<String, KnownDetails>> {
-        self.details.lock().unwrap_or_else(PoisonError::into_inner)
+        self.details.get_or_read(&entry.id, &entry.imports, || {
+            fs::read(self.root.join(&entry.id).join(DETAILS))
+                .ok()
+                .and_then(|bytes| details::decode(&bytes))
+        })
     }
 
     /// The Document of `entry`, if its File is stored.
@@ -640,8 +617,8 @@ impl Library {
             .join(&entry.id)
             .join(progress_name(&entry.imports[0]));
         write_atomically(&self.staging(), &path, &progress::encode(progress))?;
-        let known = (entry.imports.clone(), Some(*progress));
-        self.known_progress().insert(entry.id.clone(), known);
+        self.progress
+            .set(&entry.id, &entry.imports, Some(*progress));
         Ok(())
     }
 
@@ -649,36 +626,19 @@ impl Library {
     /// its Imports, or else the newest an older version kept in their states.
     /// Read once, then kept in memory.
     fn progress_of(&self, entry: &Entry) -> Option<ReadingProgress> {
-        if let Some((imports, known)) = self.known_progress().get(&entry.id)
-            && *imports == entry.imports
-        {
-            return *known;
-        }
-        let folder = self.root.join(&entry.id);
-        let newest = |found: Vec<ReadingProgress>| found.into_iter().max_by_key(|p| p.last_read);
-        let saved = entry
-            .imports
-            .iter()
-            .filter_map(|i| fs::read(folder.join(progress_name(i))).ok())
-            .filter_map(|bytes| progress::decode(&bytes))
-            .collect();
-        let read = newest(saved).or_else(|| {
-            let states = self.read_states(&entry.id, &entry.imports);
-            progress::read_all(states.iter().map(Vec::as_slice))
-        });
-        let mut known = self.known_progress();
-        match known.get(&entry.id) {
-            // Saved meanwhile.
-            Some((imports, saved)) if *imports == entry.imports => *saved,
-            _ => {
-                known.insert(entry.id.clone(), (entry.imports.clone(), read));
-                read
-            }
-        }
-    }
-
-    fn known_progress(&self) -> MutexGuard<'_, HashMap<String, KnownProgress>> {
-        self.progress.lock().unwrap_or_else(PoisonError::into_inner)
+        self.progress.get_or_read(&entry.id, &entry.imports, || {
+            let folder = self.root.join(&entry.id);
+            let saved = entry
+                .imports
+                .iter()
+                .filter_map(|i| fs::read(folder.join(progress_name(i))).ok())
+                .filter_map(|bytes| progress::decode(&bytes))
+                .max_by_key(|p| p.last_read);
+            saved.or_else(|| {
+                let states = self.read_states(&entry.id, &entry.imports);
+                progress::read_all(states.iter().map(Vec::as_slice))
+            })
+        })
     }
 
     /// The Markup of Document `id`: empty if it has none, or the Document isn't
@@ -1117,12 +1077,7 @@ fn stream_hashed(
         progress(copied, total);
     }
     flush_ordered(&output)?;
-    Ok(hex(&hasher.finalize()))
-}
-
-/// `bytes` as lowercase hex, e.g. a SHA-256 digest as a Document's id.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Renames the File in the Document folder `folder` to `name`, if it has

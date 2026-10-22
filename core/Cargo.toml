@@ -7,6 +7,9 @@ publish.workspace = true
 
 [dependencies]
 automerge = "0.12.0"
+# Already in the tree through ureq and automerge: Basic auth and hex.
+base64 = "0.23"
+hex = "0.4"
 # Inflate only: reads the zip of an EPUB. Already in the tree through flate2.
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 quick-xml = "0.42.0"

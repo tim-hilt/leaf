@@ -17,6 +17,7 @@
 //! text: a link's anchor (`#id`) is the offset of the text before its element.
 
 use crate::markup::EpubPosition;
+use crate::percent::decode as percent_decode;
 use crate::progress::Place;
 use miniz_oxide::inflate::decompress_to_vec_with_limit;
 use quick_xml::XmlVersion;
@@ -771,29 +772,6 @@ fn resolve(dir: &str, href: &str) -> String {
         }
     }
     parts.join("/")
-}
-
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let escaped = bytes.get(i + 1..i + 3).and_then(|hex| {
-            let hex = std::str::from_utf8(hex).ok()?;
-            u8::from_str_radix(hex, 16).ok()
-        });
-        match (bytes[i], escaped) {
-            (b'%', Some(byte)) => {
-                decoded.push(byte);
-                i += 3;
-            }
-            (byte, _) => {
-                decoded.push(byte);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 /// The entries of a zip file, read one at a time. Only what EPUBs use: stored

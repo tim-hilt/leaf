@@ -15,8 +15,9 @@ path = "src/bin/uniffi-bindgen.rs"
 required-features = ["cli"]
 
 [features]
-cli = ["uniffi/cli"]
+# What the bindings generator needs; the shipped library has neither.
+cli = ["uniffi/cli", "uniffi/cargo-metadata"]
 
 [dependencies]
 leafpdf-core = { path = "../core" }
-uniffi = "0.32"
+uniffi = { version = "0.32", default-features = false }
