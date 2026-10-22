@@ -1,5 +1,9 @@
 # LeafPDF
 
+<p align="center">
+  <img src="docs/images/light-dark-pages.png" alt="LeafPDF showing the same page with light and dark pages" width="400">
+</p>
+
 ## Setup
 
 Requires macOS on Apple silicon.
