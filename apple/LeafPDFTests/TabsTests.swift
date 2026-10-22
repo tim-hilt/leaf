@@ -1,4 +1,5 @@
 import Foundation
+import LeafCore
 import Testing
 
 @testable import LeafPDF

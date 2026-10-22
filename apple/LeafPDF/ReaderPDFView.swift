@@ -1,3 +1,4 @@
+import LeafCore
 import PDFKit
 
 /// A `PDFView` zoomable from fit-to-width to 5× (`ZoomRange`) that keeps
@@ -299,31 +300,31 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
 
     /// The selection as an anchor: its line rectangles per page in page space,
     /// and its text. Nil without a selection, or one without text.
-    var selectionAnchor: HighlightAnchor? {
+    var selectionPassage: (anchor: Anchor, quotedText: String)? {
         guard let document, let selection = currentSelection, let text = selection.string, !text.isEmpty
         else { return nil }
-        var pages: [HighlightAnchor.Page] = []
+        var pages: [PageRects] = []
         for line in selection.selectionsByLine() {
             for page in line.pages {
                 let index = document.index(for: page)
                 let rect = line.bounds(for: page)
                 guard index != NSNotFound, !rect.isEmpty else { continue }
-                if let last = pages.last, last.pageIndex == index {
-                    pages[pages.count - 1] = .init(pageIndex: index, rects: last.rects + [rect])
+                if let last = pages.last, last.page == index {
+                    pages[pages.count - 1] = .init(pageIndex: index, rects: last.cgRects + [rect])
                 } else {
                     pages.append(.init(pageIndex: index, rects: [rect]))
                 }
             }
         }
-        return pages.isEmpty ? nil : HighlightAnchor(pages: pages, quotedText: text)
+        return pages.isEmpty ? nil : (.pdf(pages), text)
     }
 
     /// Highlights the selection: reports its anchor to `onHighlight` and clears
     /// the selection. Does nothing without one.
     func highlightSelection() {
-        guard let anchor = selectionAnchor else { return }
+        guard let passage = selectionPassage else { return }
         clearSelection()
-        callbacks.onHighlight(anchor)
+        callbacks.onHighlight(passage.anchor, passage.quotedText)
     }
 
     /// The Highlight at `point`, in the view's coordinates: the newest one
@@ -333,7 +334,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
         let index = document.index(for: page)
         let spot = convert(point, to: page)
         return highlights.last { highlight in
-            highlight.anchor.pages.contains { $0.pageIndex == index && $0.rects.contains { $0.contains(spot) } }
+            highlight.anchor.pages.contains { $0.page == index && $0.cgRects.contains { $0.contains(spot) } }
         }
     }
 
@@ -341,8 +342,8 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
     /// end of its last rectangle, centred on its top-right corner so it covers
     /// little text, at the same size on screen at any zoom. Nil without a Note.
     func noteIconRect(of highlight: Highlight) -> CGRect? {
-        guard highlight.note != nil, let last = highlight.anchor.pages.last, let rect = last.rects.last,
-            let page = document?.page(at: last.pageIndex)
+        guard highlight.note != nil, let last = highlight.anchor.pages.last, let rect = last.cgRects.last,
+            let page = document?.page(at: last.page)
         else { return nil }
         return noteIconRect(around: convert(CGPoint(x: rect.maxX, y: rect.maxY), from: page))
     }
@@ -410,7 +411,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
     /// Every Note icon, in the view's coordinates, in its color; also those
     /// scrolled out of view.
     var noteIconsToDraw: [(rect: CGRect, color: RGB)] {
-        highlights.compactMap { h in noteIconRect(of: h).map { ($0, h.color) } }
+        highlights.compactMap { h in noteIconRect(of: h).map { ($0, h.tint) } }
             + pageNotes.compactMap { n in noteIconRect(of: n).map { ($0, pageNoteColor) } }
     }
 
@@ -670,7 +671,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
         /// Adds "Highlight" to the edit menu of a selection.
         override func buildMenu(with builder: any UIMenuBuilder) {
             super.buildMenu(with: builder)
-            guard builder.system == .context, selectionAnchor != nil else { return }
+            guard builder.system == .context, selectionPassage != nil else { return }
             let highlight = UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { [weak self] _ in
                 self?.highlightSelection()
             }
@@ -809,7 +810,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
         override func menu(for event: NSEvent) -> NSMenu? {
             guard let menu = super.menu(for: event) else { return nil }
             let point = convert(event.locationInWindow, from: nil)
-            if selectionAnchor != nil {
+            if selectionPassage != nil {
                 insert("Highlight", #selector(highlightFromMenu), into: menu)
             } else if isEmptySpot(at: point) {
                 insert("Add Note", #selector(addNoteFromMenu), into: menu).representedObject = NSValue(point: point)
@@ -893,8 +894,8 @@ extension Highlight {
     /// What is drawn into the pages: everything but the Note.
     fileprivate struct Look: Equatable {
         let id: String
-        let anchor: HighlightAnchor
-        let color: RGB
+        let anchor: Anchor
+        let color: Rgb
     }
 
     fileprivate var look: Look { Look(id: id, anchor: anchor, color: color) }

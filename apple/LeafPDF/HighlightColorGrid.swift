@@ -1,3 +1,4 @@
+import LeafCore
 import SwiftUI
 
 /// A wrapping row of Highlight Color circles, the one equal to `selected` checked,
@@ -11,13 +12,13 @@ struct HighlightColorGrid<Trailing: View>: View {
 
     var body: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 36), spacing: 12)], spacing: 12) {
-            ForEach(colors) { entry in
-                let isSelected = entry.color == selected
+            ForEach(colors, id: \.id) { entry in
+                let isSelected = entry.tint == selected
                 Button {
                     onSelect(entry)
                 } label: {
                     Circle()
-                        .fill(Color(entry.color))
+                        .fill(Color(entry.tint))
                         .frame(width: 32, height: 32)
                         .overlay {
                             if isSelected { Image(systemName: "checkmark").foregroundStyle(.black.opacity(0.7)) }

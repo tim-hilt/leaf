@@ -946,14 +946,13 @@ import UniformTypeIdentifiers
 
     // MARK: Markup
 
-    let anchor = HighlightAnchor(
-        pages: [
-            .init(pageIndex: 2, rects: [CGRect(x: 72, y: 700.5, width: 200, height: 12)]),
-            .init(
-                pageIndex: 3,
-                rects: [CGRect(x: 72, y: 720, width: 100, height: 12), CGRect(x: 72, y: 706, width: 40, height: 12)]),
-        ],
-        quotedText: "the passage")
+    let anchor = Anchor.pdf([
+        PageRects(pageIndex: 2, rects: [CGRect(x: 72, y: 700.5, width: 200, height: 12)]),
+        PageRects(
+            pageIndex: 3,
+            rects: [CGRect(x: 72, y: 720, width: 100, height: 12), CGRect(x: 72, y: 706, width: 40, height: 12)]),
+    ])
+    let quote = "the passage"
 
     @Test func aNeverHighlightedDocumentHasNoHighlights() async throws {
         let library = try openLibrary()
@@ -966,17 +965,17 @@ import UniformTypeIdentifiers
         let library = try openLibrary()
         let document = try await importDocument(into: library)
 
-        let added = try #require(await library.addHighlight(anchor, to: document))
+        let added = try #require(await library.addHighlight(anchor, quotedText: quote, to: document))
 
-        #expect(added.anchor == anchor)
-        #expect(added.color == library.defaultHighlightColor.color)
+        #expect(added.anchor == anchor && added.quotedText == quote)
+        #expect(added.color == library.defaultHighlightColor.rgb)
         #expect(await library.markup(of: document).highlights == [added])
     }
 
     @Test func highlightsSurviveReopeningTheLibrary() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let added = try #require(await library.addHighlight(anchor, to: document))
+        let added = try #require(await library.addHighlight(anchor, quotedText: quote, to: document))
 
         let reopened = try openLibrary()
 
@@ -987,13 +986,12 @@ import UniformTypeIdentifiers
         let library = try openLibrary()
         let source = try writeEPUB(named: "book.epub", chapters: ["<p>Call me Ishmael</p>", "<p>Some years</p>"])
         guard case .opened(let document) = await library.import(source) else { throw ImportFailed() }
-        let span = HighlightAnchor.Span(
-            start: .init(spineIndex: 0, offset: 8), end: .init(spineIndex: 1, offset: 4))
-        let epubAnchor = HighlightAnchor(location: .epub(span), quotedText: "Ishmael\nSome")
+        let epubAnchor = Anchor.epub(
+            start: EpubPosition(spineIndex: 0, offset: 8), end: EpubPosition(spineIndex: 1, offset: 4))
 
-        let added = try #require(await library.addHighlight(epubAnchor, to: document))
+        let added = try #require(await library.addHighlight(epubAnchor, quotedText: "Ishmael\nSome", to: document))
 
-        #expect(added.anchor == epubAnchor)
+        #expect(added.anchor == epubAnchor && added.quotedText == "Ishmael\nSome")
         #expect(await library.markup(of: document).highlights == [added])
         #expect(await (try openLibrary()).markup(of: document).highlights == [added])
     }
@@ -1001,8 +999,10 @@ import UniformTypeIdentifiers
     @Test func highlightsKeepTheOrderTheyWereAddedIn() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let first = try #require(await library.addHighlight(anchor, to: document, at: Date(timeIntervalSince1970: 1)))
-        let second = try #require(await library.addHighlight(anchor, to: document, at: Date(timeIntervalSince1970: 2)))
+        let first = try #require(
+            await library.addHighlight(anchor, quotedText: quote, to: document, at: Date(timeIntervalSince1970: 1)))
+        let second = try #require(
+            await library.addHighlight(anchor, quotedText: quote, to: document, at: Date(timeIntervalSince1970: 2)))
 
         #expect(first.id != second.id)
         #expect(await library.markup(of: document).highlights == [first, second])
@@ -1013,7 +1013,7 @@ import UniformTypeIdentifiers
         let document = try await importDocument(into: library)
         library.remove(document)
 
-        #expect(await library.addHighlight(anchor, to: document) == nil)
+        #expect(await library.addHighlight(anchor, quotedText: quote, to: document) == nil)
         #expect(await library.markup(of: document).highlights == [])
     }
 
@@ -1021,7 +1021,7 @@ import UniformTypeIdentifiers
         let library = try openLibrary()
         let source = try writePDF(named: "a.pdf")
         guard case .opened(let document) = await library.import(source) else { throw ImportFailed() }
-        _ = await library.addHighlight(anchor, to: document)
+        _ = await library.addHighlight(anchor, quotedText: quote, to: document)
 
         library.remove(document)
         _ = await library.import(source)
@@ -1032,13 +1032,13 @@ import UniformTypeIdentifiers
     @Test func aRecoloredHighlightKeepsItsColorAfterReopeningTheLibrary() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let added = try #require(await library.addHighlight(anchor, to: document))
-        let green = library.highlightColors[1].color
+        let added = try #require(await library.addHighlight(anchor, quotedText: quote, to: document))
+        let green = library.highlightColors[1].tint
 
         await library.setHighlightColor(green, of: added, in: document)
 
         var recolored = added
-        recolored.color = green
+        recolored.color = Rgb(green)
         #expect(await library.markup(of: document).highlights == [recolored])
         #expect(await (try openLibrary()).markup(of: document).highlights == [recolored])
     }
@@ -1046,7 +1046,7 @@ import UniformTypeIdentifiers
     @Test func aHighlightsNoteSurvivesReopeningTheLibraryAndEmptyingItRemovesIt() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let added = try #require(await library.addHighlight(anchor, to: document))
+        let added = try #require(await library.addHighlight(anchor, quotedText: quote, to: document))
 
         await library.setNote("my thought", of: added, in: document)
 
@@ -1124,8 +1124,8 @@ import UniformTypeIdentifiers
     @Test func aRemovedHighlightIsGoneAfterReopeningTheLibrary() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let first = try #require(await library.addHighlight(anchor, to: document))
-        let second = try #require(await library.addHighlight(anchor, to: document))
+        let first = try #require(await library.addHighlight(anchor, quotedText: quote, to: document))
+        let second = try #require(await library.addHighlight(anchor, quotedText: quote, to: document))
 
         await library.removeHighlight(first, from: document)
 
@@ -1136,10 +1136,10 @@ import UniformTypeIdentifiers
     @Test func recoloringAndRemovingInARemovedDocumentDoNothing() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        let added = try #require(await library.addHighlight(anchor, to: document))
+        let added = try #require(await library.addHighlight(anchor, quotedText: quote, to: document))
         library.remove(document)
 
-        await library.setHighlightColor(library.highlightColors[1].color, of: added, in: document)
+        await library.setHighlightColor(library.highlightColors[1].tint, of: added, in: document)
         await library.removeHighlight(added, from: document)
 
         #expect(await library.markup(of: document).highlights == [])
@@ -1210,11 +1210,11 @@ import UniformTypeIdentifiers
         let document = try await importDocument(into: library)
         let teal = try #require(await library.addCustomColor(RGB(0, 0.5, 0.5)))
         await library.setDefaultHighlightColor(teal)
-        _ = await library.addHighlight(anchor, to: document)
+        _ = await library.addHighlight(anchor, quotedText: quote, to: document)
 
         await library.removeCustomColor(teal)
 
-        #expect(await library.markup(of: document).highlights.map(\.color) == [teal.color])
+        #expect(await library.markup(of: document).highlights.map(\.color) == [teal.rgb])
     }
 
     @Test func aColorThatIsNoLongerInThePaletteShowsAsAnExtraCircleAtTheEnd() throws {
@@ -1223,8 +1223,8 @@ import UniformTypeIdentifiers
 
         let shown = library.highlightColors.including(gone)
 
-        #expect(shown.count == 7 && shown.last?.color == gone)
-        #expect(library.highlightColors.including(library.highlightColors[2].color) == library.highlightColors)
+        #expect(shown.count == 7 && shown.last?.rgb == Rgb(gone))
+        #expect(library.highlightColors.including(library.highlightColors[2].tint) == library.highlightColors)
     }
 
     @Test func newHighlightsGetTheDefaultHighlightColor() async throws {
@@ -1233,10 +1233,10 @@ import UniformTypeIdentifiers
         let green = library.highlightColors[1]
         await library.setDefaultHighlightColor(green)
 
-        let added = try #require(await library.addHighlight(anchor, to: document))
+        let added = try #require(await library.addHighlight(anchor, quotedText: quote, to: document))
 
-        #expect(added.color == green.color)
-        #expect(await library.markup(of: document).highlights.map(\.color) == [green.color])
+        #expect(added.color == green.rgb)
+        #expect(await library.markup(of: document).highlights.map(\.color) == [green.rgb])
     }
 
     @Test func highlightsDoNotDisturbReadingProgress() async throws {
@@ -1244,7 +1244,7 @@ import UniformTypeIdentifiers
         let document = try await importDocument(into: library)
         await library.saveProgress(place, of: document, at: lastRead)
 
-        _ = await library.addHighlight(anchor, to: document)
+        _ = await library.addHighlight(anchor, quotedText: quote, to: document)
 
         #expect(try openLibrary().documents.first?.place == place)
     }

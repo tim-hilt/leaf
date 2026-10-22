@@ -1,4 +1,5 @@
 import Foundation
+import LeafCore
 
 /// Document Search in an EPUB: finds text in the core's text of the spine items,
 /// so each match is a position (ADR-0022): a spine item and a UTF-16 range in its

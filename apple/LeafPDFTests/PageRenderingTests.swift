@@ -1,3 +1,4 @@
+import LeafCore
 import PDFKit
 import Testing
 
@@ -92,9 +93,8 @@ import Testing
     /// bit of paper above it, on the page's first line: x 10…20, y 20…40.
     func highlightedDocument(in appearance: PageAppearance) throws -> StyledDocument {
         let document = try document(in: appearance)
-        let anchor = HighlightAnchor(
-            pages: [.init(pageIndex: 0, rects: [CGRect(x: 10, y: 20, width: 10, height: 20)])], quotedText: "x")
-        document.highlights = [Highlight(id: "a", anchor: anchor, color: RGB.sampleYellow)]
+        let anchor = Anchor.pdf([PageRects(pageIndex: 0, rects: [CGRect(x: 10, y: 20, width: 10, height: 20)])])
+        document.highlights = [Highlight(id: "a", anchor: anchor, quotedText: "x")]
         return document
     }
 
@@ -126,9 +126,8 @@ import Testing
 
     @Test func aHighlightOnAnotherPageDoesNotShowHere() throws {
         let document = try document(in: .light)
-        let anchor = HighlightAnchor(
-            pages: [.init(pageIndex: 1, rects: [CGRect(x: 10, y: 20, width: 10, height: 20)])], quotedText: "x")
-        document.highlights = [Highlight(id: "a", anchor: anchor, color: RGB.sampleYellow)]
+        let anchor = Anchor.pdf([PageRects(pageIndex: 1, rects: [CGRect(x: 10, y: 20, width: 10, height: 20)])])
+        document.highlights = [Highlight(id: "a", anchor: anchor, quotedText: "x")]
         let image = try #require(document.page(at: 0)?.image(pixelWidth: 612))
         #expect(image.pixel(x: 15, y: 792 - 35).isClose(to: RGB(1, 1, 1)))
     }

@@ -234,7 +234,7 @@ extension LibraryModelTests {
         let onB = try #require(b.documents.first)
         let before = b.markupRevision(of: onB)
 
-        _ = try #require(await a.addHighlight(anchor, to: onA))
+        _ = try #require(await a.addHighlight(anchor, quotedText: quote, to: onA))
         await a.saveProgress(place, of: onA, at: lastRead)
         var bars: [FileTransfer] = []
         for _ in 0..<500 where b.markupRevision(of: onB) == before || b.documents.first?.place == nil {
@@ -342,7 +342,7 @@ extension LibraryModelTests {
         let before = b.markupRevision(of: onB)
 
         let onA = try #require(a.documents.first)
-        let added = try #require(await a.addHighlight(anchor, to: onA))
+        let added = try #require(await a.addHighlight(anchor, quotedText: quote, to: onA))
 
         #expect(try await eventually { b.markupRevision(of: onB) > before })
         #expect(await b.markup(of: onB).highlights == [added])
@@ -353,7 +353,7 @@ extension LibraryModelTests {
         let (a, b, _) = try await twoDevicesWithADocument()
         let onA = try #require(a.documents.first)
         let onB = try #require(b.documents.first)
-        let highlight = try #require(await a.addHighlight(anchor, to: onA))
+        let highlight = try #require(await a.addHighlight(anchor, quotedText: quote, to: onA))
         await a.setNote("worth a note", of: highlight, in: onA)
         let pageNote = try #require(await a.addPageNote(at: place, to: onA))
         await a.setText("page note", of: pageNote, in: onA)

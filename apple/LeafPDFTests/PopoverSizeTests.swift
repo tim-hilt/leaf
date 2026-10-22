@@ -1,3 +1,4 @@
+import LeafCore
 import SwiftUI
 import Testing
 
@@ -6,11 +7,11 @@ import Testing
 /// A popover is sized to its content's ideal size. That height must be the
 /// height the content has at that width, or the popover has empty space.
 @MainActor @Suite struct PopoverSizeTests {
-    let colors = (0..<8).map { HighlightColor(id: "\($0)", color: RGB(Double($0) / 8, 0, 0), isCustom: false) }
+    let colors = (0..<8).map { HighlightColor(id: "\($0)", rgb: Rgb(RGB(Double($0) / 8, 0, 0)), isCustom: false) }
 
     @Test func highlightPopoverIsAsTallAsItsContent() {
         let popover = HighlightPopover(
-            colors: colors, color: colors[0].color, note: "A note", onColor: { _ in }, onNote: { _ in },
+            colors: colors, color: colors[0].tint, note: "A note", onColor: { _ in }, onNote: { _ in },
             onRemove: {})
         expectFitted(popover)
     }

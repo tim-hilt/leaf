@@ -1,3 +1,4 @@
+import LeafCore
 import SwiftUI
 
 /// The Settings: Theme, Highlight Colors (the Default Highlight Color) and Cloud Backing.
@@ -21,7 +22,7 @@ struct SettingsView: View {
             }
             Section("Highlight Colors") {
                 HighlightColorGrid(
-                    colors: library.highlightColors, selected: library.defaultHighlightColor.color,
+                    colors: library.highlightColors, selected: library.defaultHighlightColor.tint,
                     onSelect: { color in Task { await library.setDefaultHighlightColor(color) } },
                     onRemove: { color in Task { await library.removeCustomColor(color) } },
                     trailing: { AddCustomColorButton { color in Task { await library.addCustomColor(color) } } })

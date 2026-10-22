@@ -1,3 +1,4 @@
+import LeafCore
 import SwiftUI
 
 /// What a Highlight's popover offers: its color among the Highlight Colors, the
@@ -14,7 +15,7 @@ struct HighlightPopover: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            HighlightColorGrid(colors: colors.including(color), selected: color, onSelect: { onColor($0.color) })
+            HighlightColorGrid(colors: colors.including(color), selected: color, onSelect: { onColor($0.tint) })
             NoteEditor(note: note, onNote: onNote)
             Button("Remove Highlight", systemImage: "trash", role: .destructive, action: onRemove)
         }

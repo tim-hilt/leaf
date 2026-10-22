@@ -1,3 +1,4 @@
+import LeafCore
 import SwiftUI
 
 /// Opens a Document's File and shows its pages in a single continuously
@@ -181,7 +182,7 @@ struct ReaderView: View {
                 ReaderContent(
                     document: opened, appearance: settings.pageAppearance(systemScheme: colorScheme),
                     highlights: highlights,
-                    pageNotes: pageNotes, pageNoteColor: library.highlightColors[0].color,
+                    pageNotes: pageNotes, pageNoteColor: library.highlightColors[0].tint,
                     handle: handle, results: results,
                     state: tabs.viewState(of: document.id) ?? document.place.map { ReaderViewState(place: $0) },
                     contents: contents ?? TableOfContents(), textSize: settings.epubTextSize,
@@ -232,7 +233,7 @@ struct ReaderView: View {
         case .highlight(let id):
             if let highlight = highlights.first(where: { $0.id == id }) {
                 HighlightPopover(
-                    colors: library.highlightColors, color: highlight.color, note: highlight.note,
+                    colors: library.highlightColors, color: highlight.tint, note: highlight.note,
                     onColor: { recolor(highlight, to: $0) }, onNote: { setNote($0, of: highlight) },
                     onRemove: { remove(highlight) }
                 )
@@ -276,9 +277,9 @@ struct ReaderView: View {
     }
 
     /// Adds a Highlight over `anchor`; it shows once the Library has stored it.
-    private func highlight(_ anchor: HighlightAnchor) {
+    private func highlight(_ anchor: LeafCore.Anchor, quotedText: String) {
         Task {
-            guard let added = await library.addHighlight(anchor, to: document)
+            guard let added = await library.addHighlight(anchor, quotedText: quotedText, to: document)
             else { return }
             highlights.append(added)
         }
@@ -287,7 +288,7 @@ struct ReaderView: View {
     /// Recolors `highlight`; it shows at once, and the Library stores it.
     private func recolor(_ highlight: Highlight, to color: RGB) {
         guard let index = highlights.firstIndex(where: { $0.id == highlight.id }) else { return }
-        highlights[index].color = color
+        highlights[index].color = Rgb(color)
         Task { await library.setHighlightColor(color, of: highlight, in: document) }
     }
 

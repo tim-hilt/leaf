@@ -1,3 +1,4 @@
+import LeafCore
 import PDFKit
 
 /// Document Search: finds text in a Document with PDFKit's asynchronous find,

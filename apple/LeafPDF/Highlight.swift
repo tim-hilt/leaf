@@ -2,86 +2,65 @@ import CoreGraphics
 import Foundation
 import LeafCore
 
-/// Where a Highlight is, in the terms of its Document's Format: for a PDF,
-/// rectangles per page in PDF page space, in page order (ADR-0003); for an EPUB,
-/// the characters from one position up to another in the core's text (ADR-0022).
-/// The whole quoted passage is the fallback of both.
-struct HighlightAnchor: Equatable {
-    struct Page: Equatable {
-        let pageIndex: Int
-        /// Usually one per line of text.
-        let rects: [CGRect]
-    }
+// The core's records are the app's Highlights, page Notes and colors; this adds
+// what Swift needs on top. `RGB` stays the UI's color; the two conversions between
+// it and the core's byte color live at the end of this file.
 
-    /// A character of an EPUB's text: a spine item and a UTF-16 offset into its text.
-    struct Position: Equatable {
-        let spineIndex: Int
-        let offset: Int
-    }
-
-    /// The characters from `start` up to, not including, `end`; they may be in different spine items.
-    struct Span: Equatable {
-        let start: Position
-        let end: Position
-    }
-
-    enum Location: Equatable {
-        case pdf(pages: [Page])
-        case epub(Span)
-    }
-
-    let location: Location
-    /// The whole passage; for an EPUB the spine items' texts are joined by a line feed.
-    let quotedText: String
-
-    init(location: Location, quotedText: String) {
-        self.location = location
-        self.quotedText = quotedText
-    }
-
-    init(pages: [Page], quotedText: String) {
-        self.init(location: .pdf(pages: pages), quotedText: quotedText)
-    }
-
-    /// The pages of a PDF anchor; none for another kind.
-    var pages: [Page] {
-        guard case .pdf(let pages) = location else { return [] }
+extension Anchor {
+    /// The pages of a PDF anchor, in page order; none for another kind.
+    var pages: [PageRects] {
+        guard case .pdf(let pages) = self else { return [] }
         return pages
     }
 }
 
-/// A passage of a Document's text marked in a color.
-struct Highlight: Identifiable, Equatable {
-    let id: String
-    let anchor: HighlightAnchor
-    var color: RGB
-    /// What the reader wrote about the passage; nil if nothing, never empty.
-    var note: String?
+extension PageRects {
+    /// Usually one rectangle per line of text, in PDF page space.
+    init(pageIndex: Int, rects: [CGRect]) {
+        self.init(pageIndex: UInt32(pageIndex), rects: rects.map(Rect.init))
+    }
+
+    var page: Int { Int(pageIndex) }
+    var cgRects: [CGRect] { rects.map(\.cgRect) }
 }
 
-/// A color to highlight in: a built-in one, or a Custom Color of the user.
-/// The id identifies it: a built-in color's name, or a Custom Color's ID.
-struct HighlightColor: Identifiable, Equatable, Sendable {
-    let id: String
-    let color: RGB
-    let isCustom: Bool
+extension Rect {
+    init(_ rect: CGRect) {
+        self.init(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height)
+    }
 
-    /// What names the color to VoiceOver.
-    var name: String { isCustom ? "Custom Color" : id }
+    var cgRect: CGRect { CGRect(x: x, y: y, width: width, height: height) }
+}
+
+extension EpubPosition {
+    /// A character of an EPUB's text: a spine item and a UTF-16 offset into its text.
+    init(spineIndex: Int, offset: Int) {
+        self.init(spineIndex: UInt32(spineIndex), offset: UInt64(offset))
+    }
+
+    var spine: Int { Int(spineIndex) }
+    var utf16Offset: Int { Int(clamping: offset) }
+}
+
+extension Highlight {
+    /// The color as the UI draws it.
+    var tint: RGB { RGB(color) }
 }
 
 extension HighlightColor {
-    init(_ stored: LeafCore.HighlightColor) {
-        self.init(id: stored.id, color: RGB(stored.rgb), isCustom: stored.isCustom)
-    }
+    /// The color as the UI draws it.
+    var tint: RGB { RGB(rgb) }
+
+    /// What names the color to VoiceOver.
+    var name: String { isCustom ? "Custom Color" : id }
 }
 
 extension [HighlightColor] {
     /// These colors, and a last one in `color` unless one is already: a Highlight
     /// keeps its color when its Custom Color is removed, so it still shows.
     func including(_ color: RGB) -> [HighlightColor] {
-        contains { $0.color == color }
-            ? self : self + [HighlightColor(id: "Removed Color", color: color, isCustom: true)]
+        contains { $0.tint == color }
+            ? self : self + [HighlightColor(id: "Removed Color", rgb: Rgb(color), isCustom: true)]
     }
 }
 
@@ -92,5 +71,14 @@ extension RGB {
         return String(format: "%02x%02x%02x", byte(r), byte(g), byte(b))
     }
 
+    /// The UI color of the core's byte color.
     init(_ stored: Rgb) { self.init(Double(stored.r) / 255, Double(stored.g) / 255, Double(stored.b) / 255) }
+}
+
+extension Rgb {
+    /// The core's byte color of the UI color.
+    init(_ color: RGB) {
+        let byte = { (value: Double) in UInt8((min(max(value, 0), 1) * 255).rounded()) }
+        self.init(r: byte(color.r), g: byte(color.g), b: byte(color.b))
+    }
 }

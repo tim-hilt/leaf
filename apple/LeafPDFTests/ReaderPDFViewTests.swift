@@ -1,3 +1,4 @@
+import LeafCore
 import PDFKit
 import Testing
 
@@ -320,51 +321,55 @@ import Testing
         let reader = try readerWithText()
         try select(reader, from: 6, to: 9)  // "beta"
 
-        let anchor = try #require(reader.selectionAnchor)
+        let passage = try #require(reader.selectionPassage)
 
-        #expect(anchor.quotedText == "beta")
-        #expect(anchor.pages.map(\.pageIndex) == [0])
-        let rect = try #require(anchor.pages.first?.rects.first)
+        #expect(passage.quotedText == "beta")
+        #expect(passage.anchor.pages.map(\.page) == [0])
+        let rect = try #require(passage.anchor.pages.first?.cgRects.first)
         // The first line of text, at the top of the page inside a one-inch margin, to the right of "Alpha ".
         #expect(rect.minX > 72 + 20 && rect.maxX < 72 + 100)
         #expect(rect.minY > 690 && rect.maxY < 725)
-        #expect(anchor.pages.first?.rects.count == 1)
+        #expect(passage.anchor.pages.first?.rects.count == 1)
     }
 
     @Test func aSelectionAcrossAPageBreakIsOneAnchorWithRectsOnBothPages() throws {
         let reader = try readerWithText()
         try select(reader, from: 11, to: 4, onPage: 1)  // "gamma" … "Delta"
 
-        let anchor = try #require(reader.selectionAnchor)
+        let passage = try #require(reader.selectionPassage)
 
-        #expect(anchor.pages.map(\.pageIndex) == [0, 1])
-        #expect(anchor.pages.allSatisfy { !$0.rects.isEmpty })
-        #expect(anchor.quotedText.hasPrefix("gamma"))
-        #expect(anchor.quotedText.hasSuffix("Delta"))
+        #expect(passage.anchor.pages.map(\.page) == [0, 1])
+        #expect(passage.anchor.pages.allSatisfy { !$0.rects.isEmpty })
+        #expect(passage.quotedText.hasPrefix("gamma"))
+        #expect(passage.quotedText.hasSuffix("Delta"))
     }
 
     @Test func withoutASelectionThereIsNoAnchor() throws {
         let reader = try readerWithText()
-        #expect(reader.selectionAnchor == nil)
+        #expect(reader.selectionPassage == nil)
     }
 
     @Test func highlightingTheSelectionReportsItsAnchorAndClearsTheSelection() throws {
         let reader = try readerWithText()
-        var reported: [HighlightAnchor] = []
-        reader.callbacks.onHighlight = { reported.append($0) }
+        var reported: [Anchor] = []
+        var quoted: [String] = []
+        reader.callbacks.onHighlight = {
+            reported.append($0)
+            quoted.append($1)
+        }
         try select(reader, from: 6, to: 9)
-        let anchor = try #require(reader.selectionAnchor)
+        let passage = try #require(reader.selectionPassage)
 
         reader.highlightSelection()
 
-        #expect(reported == [anchor])
+        #expect(reported == [passage.anchor] && quoted == [passage.quotedText])
         #expect(reader.currentSelection == nil)
     }
 
     @Test func highlightingWithoutASelectionDoesNothing() throws {
         let reader = try readerWithText()
         var reported = 0
-        reader.callbacks.onHighlight = { _ in reported += 1 }
+        reader.callbacks.onHighlight = { _, _ in reported += 1 }
 
         reader.highlightSelection()
 
@@ -426,9 +431,7 @@ import Testing
 
     /// A Highlight on page 1 over `rect` (page space).
     func marked(_ id: String, _ rect: CGRect, onPage pageIndex: Int = 0) -> Highlight {
-        Highlight(
-            id: id, anchor: HighlightAnchor(pages: [.init(pageIndex: pageIndex, rects: [rect])], quotedText: id),
-            color: RGB.sampleYellow)
+        Highlight(id: id, anchor: .pdf([PageRects(pageIndex: pageIndex, rects: [rect])]), quotedText: id)
     }
 
     /// The centre of `rect` on page `pageIndex` + 1, in the view's coordinates.
@@ -494,12 +497,11 @@ import Testing
 
     @Test func theNoteIconIsAtTheEndOfTheLastPageOfAHighlightAcrossAPageBreak() throws {
         let reader = try readerWithText()
-        let anchor = HighlightAnchor(
-            pages: [
-                .init(pageIndex: 0, rects: [CGRect(x: 100, y: 100, width: 80, height: 20)]),
-                .init(pageIndex: 1, rects: [CGRect(x: 72, y: 690, width: 50, height: 20)]),
-            ], quotedText: "a")
-        let highlight = Highlight(id: "a", anchor: anchor, color: .sampleYellow, note: "a thought")
+        let anchor = Anchor.pdf([
+            PageRects(pageIndex: 0, rects: [CGRect(x: 100, y: 100, width: 80, height: 20)]),
+            PageRects(pageIndex: 1, rects: [CGRect(x: 72, y: 690, width: 50, height: 20)]),
+        ])
+        let highlight = Highlight(id: "a", anchor: anchor, quotedText: "a", note: "a thought")
         reader.highlights = [highlight]
 
         let icon = try #require(reader.noteIconRect(of: highlight))

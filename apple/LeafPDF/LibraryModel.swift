@@ -34,7 +34,7 @@ struct LibraryDocument: Identifiable, Hashable {
     /// The name the File had when it was Imported.
     var fileName: String { file.lastPathComponent }
     /// Where the user left off, to reopen the Document there.
-    var place: Place? { progress.map { Place($0.place) } }
+    var place: Place? { progress?.place }
     /// When the Reader last showed the Document; nil if never.
     var lastRead: Date? { progress.map { Date(milliseconds: $0.lastRead) } }
 
@@ -238,8 +238,8 @@ final class LibraryModel {
         self.inbox = inbox
         sort = LibrarySort(from: defaults)
         let stored = core.highlightColors()
-        highlightColors = stored.colors.map(HighlightColor.init)
-        defaultHighlightColor = HighlightColor(stored.defaultColor)
+        highlightColors = stored.colors
+        defaultHighlightColor = stored.defaultColor
         refresh()
         relist()
         readMissingDetails()
@@ -391,8 +391,8 @@ final class LibraryModel {
     /// already queued, as Sync may have changed them.
     private func reloadHighlightColors() async {
         let stored = await inStateOrder { $0.highlightColors() }
-        let all = stored.colors.map(HighlightColor.init)
-        let defaultColor = HighlightColor(stored.defaultColor)
+        let all = stored.colors
+        let defaultColor = stored.defaultColor
         if highlightColors != all { highlightColors = all }
         if defaultHighlightColor != defaultColor { defaultHighlightColor = defaultColor }
     }
@@ -586,7 +586,7 @@ final class LibraryModel {
     /// with the Document updated in every window. Does nothing for a Document
     /// that was Removed. A failed write is ignored: the next save replaces it.
     func saveProgress(_ place: Place, of document: LibraryDocument, at lastRead: Date = .now) async {
-        let progress = ReadingProgress(place: place.stored, lastRead: lastRead.millisecondsSince1970)
+        let progress = ReadingProgress(place: place, lastRead: lastRead.millisecondsSince1970)
         let id = document.id
         update(
             await inStateOrder {
@@ -601,7 +601,7 @@ final class LibraryModel {
     func markup(of document: LibraryDocument) async -> (highlights: [Highlight], pageNotes: [PageNote]) {
         let id = document.id
         let markup = await inStateOrder { try? $0.markup(id: id) }
-        return (markup?.highlights.map(Highlight.init) ?? [], markup?.pageNotes.map(PageNote.init) ?? [])
+        return (markup?.highlights ?? [], markup?.pageNotes ?? [])
     }
 
     /// Adds a Highlight over `anchor` in the Default Highlight Color to `document`,
@@ -609,17 +609,16 @@ final class LibraryModel {
     /// returns the stored Highlight when it has. Nil for a Document that was
     /// Removed, or if the write failed.
     func addHighlight(
-        _ anchor: HighlightAnchor, to document: LibraryDocument, at created: Date = .now
+        _ anchor: Anchor, quotedText: String, to document: LibraryDocument, at created: Date = .now
     ) async -> Highlight? {
         let id = document.id
-        let stored = anchor.stored
-        let rgb = Rgb(defaultHighlightColor.color)
+        let rgb = defaultHighlightColor.rgb
         let milliseconds = created.millisecondsSince1970
         let added = await inStateOrder {
             try? $0.addHighlight(
-                id: id, anchor: stored, quotedText: anchor.quotedText, color: rgb, created: milliseconds)
+                id: id, anchor: anchor, quotedText: quotedText, color: rgb, created: milliseconds)
         }
-        return added.map(Highlight.init)
+        return added
     }
 
     /// Sets the color of `highlight` of `document`. The core writes off the
@@ -656,10 +655,9 @@ final class LibraryModel {
     /// text (`setText`). Nil for a Document that was Removed, or if the write failed.
     func addPageNote(at place: Place, to document: LibraryDocument, at created: Date = .now) async -> PageNote? {
         let id = document.id
-        let spot = place.stored
         let milliseconds = created.millisecondsSince1970
-        let stored = await inStateOrder { try? $0.addPageNote(id: id, place: spot, created: milliseconds) }
-        return stored.map(PageNote.init)
+        let stored = await inStateOrder { try? $0.addPageNote(id: id, place: place, created: milliseconds) }
+        return stored
     }
 
     /// Sets the text of `note` of `document` to `text`; empty removes the page
@@ -698,9 +696,8 @@ final class LibraryModel {
         let milliseconds = added.millisecondsSince1970
         guard let stored = await inStateOrder({ try? $0.addCustomColor(rgb: rgb, added: milliseconds) })
         else { return nil }
-        let custom = HighlightColor(stored)
-        highlightColors.append(custom)
-        return custom
+        highlightColors.append(stored)
+        return stored
     }
 
     /// Removes the Custom Color `color`. It goes at once; Highlights keep their
@@ -859,76 +856,7 @@ extension LeafCore.Library {
     }
 }
 
-extension Highlight {
-    fileprivate init(_ stored: LeafCore.Highlight) {
-        self.init(
-            id: stored.id,
-            anchor: HighlightAnchor(stored.anchor, quotedText: stored.quotedText), color: RGB(stored.color),
-            note: stored.note)
-    }
-}
-
-extension HighlightAnchor {
-    fileprivate init(_ stored: LeafCore.Anchor, quotedText: String) {
-        switch stored {
-        case .pdf(let pages):
-            self.init(
-                pages: pages.map { page in
-                    .init(
-                        pageIndex: Int(page.pageIndex),
-                        rects: page.rects.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) })
-                },
-                quotedText: quotedText)
-        case .epub(let start, let end):
-            self.init(location: .epub(Span(start: Position(start), end: Position(end))), quotedText: quotedText)
-        }
-    }
-
-    /// This anchor as the core stores it.
-    fileprivate var stored: LeafCore.Anchor {
-        switch location {
-        case .pdf(let pages):
-            .pdf(
-                pages.map { page in
-                    PageRects(
-                        pageIndex: UInt32(page.pageIndex),
-                        rects: page.rects.map { Rect(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height) })
-                })
-        case .epub(let span):
-            .epub(start: span.start.stored, end: span.end.stored)
-        }
-    }
-}
-
-extension HighlightAnchor.Position {
-    init(_ stored: EpubPosition) {
-        self.init(spineIndex: Int(stored.spineIndex), offset: Int(clamping: stored.offset))
-    }
-
-    /// This position as the core stores it.
-    var stored: EpubPosition {
-        EpubPosition(spineIndex: UInt32(spineIndex), offset: UInt64(offset))
-    }
-}
-
-extension PageNote {
-    fileprivate init(_ stored: LeafCore.PageNote) {
-        self.init(id: stored.id, place: Place(stored.place), text: stored.text)
-    }
-}
-
-extension Rgb {
-    fileprivate init(_ color: RGB) {
-        self.init(r: color.r.byte, g: color.g.byte, b: color.b.byte)
-    }
-}
-
 extension Date {
     /// This time as the core takes it: whole milliseconds since the Unix epoch, none before.
     fileprivate var millisecondsSince1970: UInt64 { UInt64(max(0, timeIntervalSince1970 * 1000).rounded()) }
-}
-
-extension Double {
-    /// A color component from 0 to 1 as a byte.
-    fileprivate var byte: UInt8 { UInt8((min(max(self, 0), 1) * 255).rounded()) }
 }

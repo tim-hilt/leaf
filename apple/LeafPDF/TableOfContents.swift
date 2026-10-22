@@ -28,7 +28,7 @@ struct TableOfContents: Sendable {
                 let id = nextID
                 nextID += 1
                 return Entry(
-                    id: id, title: entry.title, pageNumber: nil, place: entry.place.map(Place.init),
+                    id: id, title: entry.title, pageNumber: nil, place: entry.place,
                     sections: entries(of: entry.sections))
             }
         }

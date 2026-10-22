@@ -1,4 +1,5 @@
 #if os(iOS)
+    import LeafCore
     import PDFKit
     import Testing
 
@@ -157,9 +158,7 @@
         }
 
         func highlight() -> Highlight {
-            Highlight(
-                id: "a", anchor: HighlightAnchor(pages: [.init(pageIndex: 0, rects: [marked])], quotedText: "a"),
-                color: .sampleYellow)
+            Highlight(id: "a", anchor: .pdf([PageRects(pageIndex: 0, rects: [marked])]), quotedText: "a")
         }
 
         func centre(of rect: CGRect, in reader: ReaderPDFView) -> CGPoint {

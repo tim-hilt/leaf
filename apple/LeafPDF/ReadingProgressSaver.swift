@@ -1,4 +1,5 @@
 import Foundation
+import LeafCore
 
 /// Saves the Reading Progress of the Document in a Reader: the Place at the
 /// top of the viewport, with the current time as Last Read. Saving is cheap

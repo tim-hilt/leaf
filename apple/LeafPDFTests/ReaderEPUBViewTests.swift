@@ -8,11 +8,6 @@ import WebKit
     import UIKit.UIGestureRecognizerSubclass
 #endif
 
-/// The app's Highlight, Place and PageNote, not the core's.
-private typealias Highlight = LeafPDF.Highlight
-private typealias Place = LeafPDF.Place
-private typealias PageNote = LeafPDF.PageNote
-
 @MainActor @Suite struct ReaderEPUBViewTests {
     @Test func opensAndShowsTheFirstChaptersText() async throws {
         let reader = try await openReader(chapters: ["<p>First chapter text</p>", "<p>Second</p>"])
@@ -628,15 +623,23 @@ private typealias PageNote = LeafPDF.PageNote
 
     // MARK: Highlights
 
+    /// What `onHighlight` reports.
+    private struct Passage: Equatable {
+        let anchor: Anchor
+        let quotedText: String
+    }
+
     /// An EPUB Highlight of the characters from `start` to `end` (spine index, offset).
     private func highlight(
         _ id: String, from start: (Int, Int), to end: (Int, Int), quoting quoted: String,
         color: RGB = .sampleYellow, note: String? = nil
     ) -> Highlight {
-        let span = HighlightAnchor.Span(
-            start: .init(spineIndex: start.0, offset: start.1), end: .init(spineIndex: end.0, offset: end.1))
-        return Highlight(
-            id: id, anchor: HighlightAnchor(location: .epub(span), quotedText: quoted), color: color, note: note)
+        Highlight(
+            id: id,
+            anchor: .epub(
+                start: EpubPosition(spineIndex: start.0, offset: start.1),
+                end: EpubPosition(spineIndex: end.0, offset: end.1)),
+            quotedText: quoted, color: color, note: note)
     }
 
     private let yellow = "leaf-hl-ffeb3c"
@@ -665,10 +668,10 @@ private typealias PageNote = LeafPDF.PageNote
     }
 
     @Test func highlightingTheSelectionReportsItsPositionsAndQuotedText() async throws {
-        var reported: [HighlightAnchor] = []
+        var reported: [Passage] = []
         let reader = try await openReader(
             chapters: ["<p id=\"p\">Call me <b id=\"b\">Ishmael</b>. Some years ago</p>"],
-            onHighlight: { reported.append($0) })
+            onHighlight: { reported.append(Passage(anchor: $0, quotedText: $1)) })
 
         try await select(
             in: reader, from: "frame(0).getElementById('b').firstChild", 2,
@@ -676,17 +679,18 @@ private typealias PageNote = LeafPDF.PageNote
         reader.highlightSelection()
         try await eventually { !reported.isEmpty }
 
-        let span = HighlightAnchor.Span(
-            start: .init(spineIndex: 0, offset: 10), end: .init(spineIndex: 0, offset: 21))
-        #expect(reported == [HighlightAnchor(location: .epub(span), quotedText: "hmael. Some")])
+        let anchor = Anchor.epub(
+            start: EpubPosition(spineIndex: 0, offset: 10), end: EpubPosition(spineIndex: 0, offset: 21))
+        #expect(reported == [Passage(anchor: anchor, quotedText: "hmael. Some")])
         // The selection is cleared once it is highlighted.
         #expect(try await reader.evaluate("frame(0).getSelection().isCollapsed") == "true")
     }
 
     @Test func aSelectionBetweenElementsHasTheOffsetsOfItsText() async throws {
-        var reported: [HighlightAnchor] = []
+        var reported: [Passage] = []
         let reader = try await openReader(
-            chapters: ["<h1>Title</h1><p id=\"p\">One <i>two</i> three</p>"], onHighlight: { reported.append($0) })
+            chapters: ["<h1>Title</h1><p id=\"p\">One <i>two</i> three</p>"],
+            onHighlight: { reported.append(Passage(anchor: $0, quotedText: $1)) })
 
         // From after the heading to the end of the paragraph, by element boundaries.
         try await select(
@@ -694,14 +698,15 @@ private typealias PageNote = LeafPDF.PageNote
         reader.highlightSelection()
         try await eventually { !reported.isEmpty }
 
-        let span = HighlightAnchor.Span(
-            start: .init(spineIndex: 0, offset: 5), end: .init(spineIndex: 0, offset: 18))
-        #expect(reported == [HighlightAnchor(location: .epub(span), quotedText: "One two three")])
+        let anchor = Anchor.epub(
+            start: EpubPosition(spineIndex: 0, offset: 5), end: EpubPosition(spineIndex: 0, offset: 18))
+        #expect(reported == [Passage(anchor: anchor, quotedText: "One two three")])
     }
 
     @Test func highlightingWithoutASelectionDoesNothing() async throws {
-        var reported: [HighlightAnchor] = []
-        let reader = try await openReader(chapters: ["<p>Text</p>"], onHighlight: { reported.append($0) })
+        var reported: [Passage] = []
+        let reader = try await openReader(
+            chapters: ["<p>Text</p>"], onHighlight: { reported.append(Passage(anchor: $0, quotedText: $1)) })
 
         reader.highlightSelection()
         try await Task.sleep(for: .milliseconds(300))
@@ -1323,7 +1328,7 @@ func importedBook(
 private func openReader(
     chapters: [String], manifest: String = "", files: [String: Data] = [:],
     size: CGSize = CGSize(width: 400, height: 800), onSingleTap: @escaping () -> Void = {},
-    onHighlight: @escaping (HighlightAnchor) -> Void = { _ in }, openExternally: @escaping (URL) -> Void = { _ in }
+    onHighlight: @escaping (Anchor, String) -> Void = { _, _ in }, openExternally: @escaping (URL) -> Void = { _ in }
 ) async throws -> ReaderEPUBView {
     try await openReader(
         book: importedBook(chapters: chapters, manifest: manifest, files: files), size: size,
@@ -1337,7 +1342,7 @@ private func openReader(
     textSize: CGFloat = TextSize.normal, appearance: PageAppearance = .light, onScreen: Bool = false,
     contents: TableOfContents = TableOfContents(), highlights: [Highlight] = [],
     onSingleTap: @escaping () -> Void = {}, onScroll: @escaping () -> Void = {},
-    onHighlight: @escaping (HighlightAnchor) -> Void = { _ in },
+    onHighlight: @escaping (Anchor, String) -> Void = { _, _ in },
     onHighlightTap: @escaping (Highlight, CGPoint) -> Void = { _, _ in },
     onAddNote: @escaping (Place) -> Void = { _ in },
     onPageNoteTap: @escaping (PageNote, CGPoint) -> Void = { _, _ in },

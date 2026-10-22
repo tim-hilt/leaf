@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import LeafCore
 import PDFKit
 import Testing
 
@@ -187,4 +188,19 @@ extension Place {
 extension RGB {
     /// A Highlight color for tests that don't care which.
     static let sampleYellow = RGB(1, 235 / 255, 60 / 255)
+}
+
+extension Highlight {
+    /// A Highlight created at the epoch, in a color tests don't care about unless they say.
+    init(id: String, anchor: Anchor, quotedText: String, color: RGB = .sampleYellow, note: String? = nil) {
+        self.init(
+            id: id, anchor: anchor, quotedText: quotedText, color: Rgb(color), created: 0, note: note)
+    }
+}
+
+extension PageNote {
+    /// A page Note created at the epoch.
+    init(id: String, place: Place, text: String) {
+        self.init(id: id, place: place, created: 0, text: text)
+    }
 }

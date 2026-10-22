@@ -1,4 +1,5 @@
 import CoreGraphics
+import LeafCore
 
 /// What `ReaderView` and the window's commands ask of the view that shows a
 /// Document, whatever its Format. Tabs, Back, the Table of Contents, the find
@@ -50,8 +51,8 @@ struct ReaderCallbacks {
     var onOpen: () -> Void = {}
     /// Called whenever the viewport scrolls, however it was moved: often, so keep it cheap.
     var onScroll: () -> Void = {}
-    /// Called with the anchor of the selection when the reader highlights it.
-    var onHighlight: (HighlightAnchor) -> Void = { _ in }
+    /// Called with the anchor of the selection and its text when the reader highlights it.
+    var onHighlight: (Anchor, String) -> Void = { _, _ in }
     /// Called when the reader clicks or taps a Highlight (the newest, where they
     /// overlap) at a point, given in the view's coordinates with the origin at
     /// the top-left.

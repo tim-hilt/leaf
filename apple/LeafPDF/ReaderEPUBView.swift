@@ -173,7 +173,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
 
     /// Where each Highlight's words are now, by its ID; nil for one found nowhere. A
     /// Highlight's anchor and quoted text never change, so this is asked of the core once.
-    private var placements: [String: HighlightAnchor.Span?] = [:]
+    private var placements: [String: (start: EpubPosition, end: EpubPosition)?] = [:]
 
     /// Whether the page has a selection.
     private var hasSelection = false {
@@ -230,7 +230,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         let messages = Messages()
         configuration.userContentController.add(messages, contentWorld: .defaultClient, name: ReaderEPUBScript.channel)
         var start: (chapter: Int, offset: Int)?
-        if case .epub(let spineIndex, let offset) = state?.place { start = (spineIndex, offset) }
+        if let position = state?.place.epubPosition { start = (position.spineIndex, position.offset) }
         configuration.userContentController.addUserScript(
             WKUserScript(
                 source: ReaderEPUBScript.source(
@@ -323,7 +323,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// Scrolls `place` to the top of the viewport, loading its Chapter first; the page then
     /// reports the new position.
     private func go(to place: Place) {
-        guard isOpen, case .epub(let spineIndex, let offset) = place else { return }
+        guard isOpen, let (spineIndex, offset) = place.epubPosition else { return }
         callPage("return await leaf.scrollToPosition([\(spineIndex), \(offset)])")
     }
     func zoomIn() { changeTextSize(to: TextSize.zoomedIn(from: textSize)) }
@@ -331,7 +331,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     func zoomToFitWidth() { changeTextSize(to: TextSize.normal) }
 
     func popoverPoint(of note: PageNote) async -> CGPoint? {
-        guard isOpen, case .epub(let spineIndex, let offset) = note.place else { return nil }
+        guard isOpen, let (spineIndex, offset) = note.place.epubPosition else { return nil }
         let icon = try? await evaluateJavaScript(
             "leaf.notePoint([\(spineIndex), \(offset)])", in: nil, contentWorld: .defaultClient)
         guard let point = icon as? [Double], point.count == 2 else { return nil }
@@ -390,9 +390,10 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
                 let start = parts[1] as? Int, let endSpine = parts[2] as? Int, let end = parts[3] as? Int,
                 let text = parts[4] as? String
             else { return }
-            let span = HighlightAnchor.Span(
-                start: .init(spineIndex: startSpine, offset: start), end: .init(spineIndex: endSpine, offset: end))
-            callbacks.onHighlight(HighlightAnchor(location: .epub(span), quotedText: text))
+            callbacks.onHighlight(
+                .epub(
+                    start: EpubPosition(spineIndex: startSpine, offset: start),
+                    end: EpubPosition(spineIndex: endSpine, offset: end)), text)
         }
     }
 
@@ -402,15 +403,12 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     }
 
     /// Where the words of `highlight` are, if it is an EPUB Highlight and they can be found.
-    private func span(of highlight: Highlight) -> HighlightAnchor.Span? {
-        guard case .epub(let stored) = highlight.anchor.location else { return nil }
+    private func span(of highlight: Highlight) -> (start: EpubPosition, end: EpubPosition)? {
+        guard case .epub(let start, let end) = highlight.anchor else { return nil }
         if let known = placements[highlight.id] { return known }
-        let found = book.relocate(
-            start: stored.start.stored, end: stored.end.stored, quotedText: highlight.anchor.quotedText)
-        var span: HighlightAnchor.Span?
-        if case .epub(let foundStart, let foundEnd) = found {
-            span = HighlightAnchor.Span(start: .init(foundStart), end: .init(foundEnd))
-        }
+        let found = book.relocate(start: start, end: end, quotedText: highlight.quotedText)
+        var span: (start: EpubPosition, end: EpubPosition)?
+        if case .epub(let foundStart, let foundEnd) = found { span = (foundStart, foundEnd) }
         placements.updateValue(span, forKey: highlight.id)
         return span
     }
@@ -421,8 +419,8 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         let drawn: [[String: Any]] = highlights.compactMap { highlight in
             guard let span = span(of: highlight) else { return nil }
             return [
-                "id": highlight.id, "color": highlight.color.hex, "note": highlight.note != nil,
-                "start": [span.start.spineIndex, span.start.offset], "end": [span.end.spineIndex, span.end.offset],
+                "id": highlight.id, "color": highlight.tint.hex, "note": highlight.note != nil,
+                "start": [span.start.spine, span.start.utf16Offset], "end": [span.end.spine, span.end.utf16Offset],
             ]
         }
         callPage("setHighlights", with: drawn)
@@ -452,7 +450,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     private func syncPageNotes() {
         guard isOpen else { return }
         let drawn: [[String: Any]] = pageNotes.compactMap { note in
-            guard case .epub(let spineIndex, let offset) = note.place else { return nil }
+            guard let (spineIndex, offset) = note.place.epubPosition else { return nil }
             return ["id": note.id, "color": pageNoteColor.hex, "at": [spineIndex, offset]]
         }
         callPage("setPageNotes", with: drawn)
@@ -632,7 +630,7 @@ extension ReaderEPUBView: WKNavigationDelegate {
         if scheme == EPUBSchemeHandler.scheme {
             let path = String(url.path(percentEncoded: false).dropFirst())
             if let place = book.locate(path: path, fragment: url.fragment(percentEncoded: false)) {
-                jump(to: Place(place))
+                jump(to: place)
             }
         } else if ["http", "https", "mailto"].contains(scheme) {
             openExternally(url)

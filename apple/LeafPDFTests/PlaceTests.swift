@@ -1,4 +1,5 @@
 import CoreGraphics
+import LeafCore
 import Testing
 
 @testable import LeafPDF

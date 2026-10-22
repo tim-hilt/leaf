@@ -1,4 +1,5 @@
 import CoreGraphics
+import LeafCore
 
 /// The script `ReaderEPUBView` injects into the page that stacks the chapter frames.
 ///

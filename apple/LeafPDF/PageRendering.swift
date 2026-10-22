@@ -1,4 +1,5 @@
 import CoreImage
+import LeafCore
 import PDFKit
 import Synchronization
 
@@ -67,7 +68,7 @@ final class StyledDocument: PDFDocument, PDFDocumentDelegate {
             var byPage: [Int: [Mark]] = [:]
             for highlight in highlights {
                 for page in highlight.anchor.pages {
-                    byPage[page.pageIndex, default: []] += page.rects.map { Mark(rect: $0, color: highlight.color) }
+                    byPage[page.page, default: []] += page.cgRects.map { Mark(rect: $0, color: highlight.tint) }
                 }
             }
             marks.withLock { $0 = byPage }

@@ -1,3 +1,4 @@
+import LeafCore
 import SwiftUI
 
 /// The Table of Contents as a list: titles with printed page numbers, where
