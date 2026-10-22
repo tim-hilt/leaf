@@ -697,10 +697,11 @@ impl Library {
             // Details are never synced: an EPUB's are read here, as at Import. A
             // File that isn't a readable EPUB has none, and reads as a PDF.
             let file = self.root.join(&entry.id).join(&entry.name);
-            let stored = match read_epub_details(&file, &entry.name) {
-                Ok(Some(details)) => self.set_details(&entry.id, &details),
-                _ => Ok(()),
+            let details = match format_of(&file) {
+                Ok(Some(Format::Epub)) => read_epub_details(&file).ok(),
+                _ => None,
             };
+            let stored = details.map_or(Ok(()), |d| self.set_details(&entry.id, &d));
             // After the details, so a caller that sees the change finds them.
             self.sync_changes.fetch_add(1, Relaxed);
             stored?;
@@ -801,6 +802,11 @@ mod tests {
         }
     }
 
+    /// The bytes of a File that is a PDF with `content`.
+    fn pdf(content: &[u8]) -> Vec<u8> {
+        [b"%PDF-", content].concat()
+    }
+
     struct Device {
         library: Library,
         home: PathBuf,
@@ -808,8 +814,14 @@ mod tests {
     }
 
     impl Device {
+        /// Imports a File with `bytes`; as a PDF's content (see `pdf`) if it is named `.pdf`.
         fn import(&self, name: &str, bytes: &[u8]) -> Document {
             let source = self.home.join(name);
+            let bytes = if name.ends_with(".pdf") {
+                pdf(bytes)
+            } else {
+                bytes.to_vec()
+            };
             fs::write(&source, bytes).unwrap();
             match self.library.import(&source, |_, _| {}).unwrap() {
                 ImportResult::Imported(document) | ImportResult::AlreadyImported(document) => {
@@ -893,7 +905,7 @@ mod tests {
         b.sync();
 
         let document = b.document(&imported.id);
-        assert_eq!(fs::read(&document.path).unwrap(), b"paper bytes");
+        assert_eq!(fs::read(&document.path).unwrap(), pdf(b"paper bytes"));
         assert_eq!(document.path.file_name().unwrap(), "Paper.pdf");
         assert!(document.progress.is_none());
     }
@@ -1005,8 +1017,9 @@ mod tests {
             let mut expected = vec![on_a.id.clone(), on_b.id.clone()];
             expected.sort();
             assert_eq!(ids, expected);
-            assert_eq!(fs::read(&device.document(&on_a.id).path).unwrap(), b"on a");
-            assert_eq!(fs::read(&device.document(&on_b.id).path).unwrap(), b"on b");
+            let read = |id: &str| fs::read(&device.document(id).path).unwrap();
+            assert_eq!(read(&on_a.id), pdf(b"on a"));
+            assert_eq!(read(&on_b.id), pdf(b"on b"));
         }
     }
 
@@ -1074,7 +1087,7 @@ mod tests {
         );
         assert_eq!(
             fs::read(&b.document(&shared_on_a.id).path).unwrap(),
-            b"shared"
+            pdf(b"shared")
         );
     }
 
@@ -1084,14 +1097,14 @@ mod tests {
         let (a, b) = (cloud.device(), cloud.device());
         a.import("a.pdf", b"precious");
         a.sync();
-        let blobs = cloud.blobs_with(b"precious");
+        let blobs = cloud.blobs_with(&pdf(b"precious"));
         assert_eq!(blobs.len(), 1);
         fs::remove_file(&blobs[0]).unwrap();
 
         a.sync();
         b.sync();
 
-        assert_eq!(cloud.blobs_with(b"precious").len(), 1);
+        assert_eq!(cloud.blobs_with(&pdf(b"precious")).len(), 1);
         assert_eq!(b.ids().len(), 1);
     }
 
@@ -1102,7 +1115,7 @@ mod tests {
         let document = a.import("a.pdf", b"precious");
         a.sync();
         b.sync();
-        fs::remove_file(&cloud.blobs_with(b"precious")[0]).unwrap();
+        fs::remove_file(&cloud.blobs_with(&pdf(b"precious"))[0]).unwrap();
         // B has the File too, so any of the two puts it back.
         b.sync();
         c.sync();
@@ -1184,7 +1197,7 @@ mod tests {
         let (a, b) = (cloud.device(), cloud.device());
         let document = a.import("a.pdf", b"genuine");
         a.sync();
-        let blob = cloud.blobs_with(b"genuine").remove(0);
+        let blob = cloud.blobs_with(&pdf(b"genuine")).remove(0);
         fs::write(blob, b"tampered").unwrap();
 
         b.sync();
@@ -1787,14 +1800,14 @@ mod tests {
     fn a_remove_deletes_the_document_and_its_file_on_the_other_device_and_in_the_cloud() {
         let mut cloud = Cloud::new();
         let (a, b, id) = two_devices_with_a_document(&mut cloud);
-        assert_eq!(cloud.blobs_with(b"shared document").len(), 1);
+        assert_eq!(cloud.blobs_with(&pdf(b"shared document")).len(), 1);
 
         a.library.remove(&id).unwrap();
         settle(&a, &b);
 
         assert!(a.ids().is_empty() && b.ids().is_empty());
         assert!(!b.home.join("library").join(&id).exists());
-        assert!(cloud.blobs_with(b"shared document").is_empty());
+        assert!(cloud.blobs_with(&pdf(b"shared document")).is_empty());
     }
 
     fn state_chunks(cloud: &Cloud) -> Vec<Blob> {
@@ -1834,7 +1847,7 @@ mod tests {
         b.sync();
         a.sync();
 
-        assert_eq!(cloud.blobs_with(b"shared document").len(), 1);
+        assert_eq!(cloud.blobs_with(&pdf(b"shared document")).len(), 1);
         assert_eq!(a.ids(), std::slice::from_ref(&id));
         assert_eq!(b.ids(), [id]);
     }
@@ -1849,13 +1862,13 @@ mod tests {
         // A's Remove deletes the File before B's Re-Import got there.
         a.library.remove(&id).unwrap();
         a.sync();
-        assert!(cloud.blobs_with(b"shared document").is_empty());
+        assert!(cloud.blobs_with(&pdf(b"shared document")).is_empty());
         b.library.remove(&id).unwrap();
         b.import("again.pdf", b"shared document");
         b.sync();
         a.sync();
 
-        assert_eq!(cloud.blobs_with(b"shared document").len(), 1);
+        assert_eq!(cloud.blobs_with(&pdf(b"shared document")).len(), 1);
         for device in [&a, &b] {
             assert_eq!(device.ids(), std::slice::from_ref(&id));
             assert!(device.library.markup(&id).unwrap().highlights.is_empty());
@@ -1877,7 +1890,7 @@ mod tests {
 
         assert_eq!(a.ids(), std::slice::from_ref(&other));
         assert_eq!(b.ids(), [other]);
-        assert!(cloud.blobs_with(b"shared document").is_empty());
+        assert!(cloud.blobs_with(&pdf(b"shared document")).is_empty());
         assert!(!a.home.join("library").join(&id).exists());
     }
 
@@ -1906,7 +1919,7 @@ mod tests {
     fn importing_a_file_whose_state_arrived_before_its_download_still_imports() {
         let mut cloud = Cloud::new();
         let b = cloud.device();
-        let id = hex(&Sha256::digest(b"shared document"));
+        let id = hex(&Sha256::digest(pdf(b"shared document")));
         // What a sync leaves when it got the state of a Document, not its File.
         let state_only = b.home.join("library").join(&id);
         fs::create_dir_all(&state_only).unwrap();
@@ -1914,7 +1927,7 @@ mod tests {
 
         let document = b.import("again.pdf", b"shared document");
 
-        assert_eq!(fs::read(&document.path).unwrap(), b"shared document");
+        assert_eq!(fs::read(&document.path).unwrap(), pdf(b"shared document"));
     }
 
     /// Everything in the cloud, by path.

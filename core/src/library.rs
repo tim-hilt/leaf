@@ -138,6 +138,8 @@ pub enum ImportError {
     Io(io::Error),
     /// The File is an EPUB LeafPDF can't read. Nothing was imported.
     Epub(epub::Error),
+    /// The File is neither a PDF nor an EPUB. Nothing was imported.
+    UnsupportedFormat,
 }
 
 impl From<io::Error> for ImportError {
@@ -157,6 +159,7 @@ impl std::fmt::Display for ImportError {
         match self {
             Self::Io(e) => e.fmt(f),
             Self::Epub(e) => e.fmt(f),
+            Self::UnsupportedFormat => f.write_str("not a PDF or EPUB"),
         }
     }
 }
@@ -360,10 +363,10 @@ impl Library {
     /// File that is already there copies nothing and returns its Document as
     /// `AlreadyImported`.
     ///
-    /// A File that is a zip, or named `.epub`, is an EPUB: if it isn't a valid
-    /// reflowable one without DRM, nothing is imported. The core reads the
-    /// details of an EPUB itself. Any other File is a PDF, which the client
-    /// checks.
+    /// A File that is neither a PDF nor an EPUB (see [`format_of`]) is
+    /// rejected before anything is copied. An EPUB that isn't a valid
+    /// reflowable one without DRM is rejected too. The core reads the details
+    /// of an EPUB itself; a PDF is checked by the client.
     ///
     /// `progress(copied, total)` is called with the bytes processed so far out
     /// of the File's size: first with 0, last with the total.
@@ -377,11 +380,12 @@ impl Library {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "source has no file name"))?
             .to_string_lossy()
             .into_owned();
+        let format = format_of(source)?.ok_or(ImportError::UnsupportedFormat)?;
 
         let staged = self.staging().join(unique_name());
         fs::create_dir(&staged)?;
 
-        let result = self.import_staged(source, &staged, &name, progress);
+        let result = self.import_staged(source, &staged, &name, format, progress);
         // Nothing left to remove after a successful rename.
         let _ = fs::remove_dir_all(&staged);
 
@@ -404,10 +408,14 @@ impl Library {
         source: &Path,
         staged: &Path,
         name: &str,
+        format: Format,
         progress: impl FnMut(u64, u64),
     ) -> Result<(String, bool), ImportError> {
         let id = copy_hashed(source, &staged.join(name), progress)?;
-        let epub_details = read_epub_details(&staged.join(name), name)?;
+        let epub_details = match format {
+            Format::Epub => Some(read_epub_details(&staged.join(name))?),
+            Format::Pdf => None,
+        };
         let is_new = self.admit(staged, &id, name)?;
         // Also for a File the Library had without details, e.g. from a Sync.
         if let Some(details) = epub_details {
@@ -996,23 +1004,33 @@ fn cursor_name(import: &str) -> String {
     format!(".cursor-{import}")
 }
 
-/// The details of the EPUB `file` named `name`; none if it isn't meant to be
-/// one: a File that is a zip, or has the extension `.epub`, unless it is a PDF.
-fn read_epub_details(file: &Path, name: &str) -> Result<Option<Details>, epub::Error> {
-    let mut head = [0; 5];
-    let read = File::open(file).and_then(|mut f| f.read(&mut head));
-    let head = &head[..read.unwrap_or(0)];
-    let is_epub = !head.starts_with(b"%PDF-")
-        && (head.starts_with(b"PK\x03\x04") || name.to_lowercase().ends_with(".epub"));
-    if !is_epub {
-        return Ok(None);
-    }
+/// The Format of the File at `path`, or none if it can be Imported as neither.
+/// A PDF has `%PDF-` within its first 1024 bytes, as PDF readers accept. Else
+/// an EPUB starts with a zip signature or is named `.epub`.
+pub fn format_of(path: &Path) -> io::Result<Option<Format>> {
+    let mut head = Vec::with_capacity(1024);
+    File::open(path)?.take(1024).read_to_end(&mut head)?;
+    Ok(if head.windows(5).any(|w| w == b"%PDF-") {
+        Some(Format::Pdf)
+    } else if head.starts_with(b"PK\x03\x04")
+        || path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
+    {
+        Some(Format::Epub)
+    } else {
+        None
+    })
+}
+
+/// The details of the EPUB `file`.
+fn read_epub_details(file: &Path) -> Result<Details, epub::Error> {
     let epub = Epub::open(file)?;
-    Ok(Some(Details {
+    Ok(Details {
         title: epub.title().map(str::to_owned),
         author: epub.author().map(str::to_owned),
         size: Size::Characters(epub.characters()),
-    }))
+    })
 }
 
 /// Whether `name` is a plain file name, not a path.
@@ -1182,24 +1200,26 @@ mod tests {
         }
     }
 
-    // SHA-256 of "abc", from FIPS 180-2.
-    const ABC_SHA256: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    /// The bytes of a File that is a PDF.
+    const PDF: &[u8] = b"%PDF-abc";
+    // Its SHA-256.
+    const PDF_SHA256: &str = "1e8a7587529cc956d46dea481f38c623395a879a1179c277f476a9cdb88a540d";
 
     #[test]
     fn import_stores_a_byte_identical_file_under_its_hash_and_original_name() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let source = scratch.file("Paper.pdf", b"abc");
+        let source = scratch.file("Paper.pdf", PDF);
 
         let document = import_new(&library, &source);
 
-        assert_eq!(document.id, ABC_SHA256);
+        assert_eq!(document.id, PDF_SHA256);
         assert_eq!(
             document.path,
-            scratch.0.join("library").join(ABC_SHA256).join("Paper.pdf")
+            scratch.0.join("library").join(PDF_SHA256).join("Paper.pdf")
         );
-        assert_eq!(fs::read(&document.path).unwrap(), b"abc");
-        assert_eq!(fs::read(&source).unwrap(), b"abc");
+        assert_eq!(fs::read(&document.path).unwrap(), PDF);
+        assert_eq!(fs::read(&source).unwrap(), PDF);
     }
 
     #[test]
@@ -1207,7 +1227,9 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
         let size = 600 * 1024;
-        let source = scratch.file("big.pdf", &vec![7; size]);
+        let mut bytes = vec![7; size];
+        bytes[..5].copy_from_slice(b"%PDF-");
+        let source = scratch.file("big.pdf", &bytes);
 
         let mut reports = Vec::new();
         library
@@ -1229,9 +1251,9 @@ mod tests {
     fn documents_lists_newest_import_first() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let first = import_new(&library, &scratch.file("a.pdf", b"first"));
+        let first = import_new(&library, &scratch.file("a.pdf", b"%PDF-first"));
         sleep(Duration::from_millis(20));
-        let second = import_new(&library, &scratch.file("b.pdf", b"second"));
+        let second = import_new(&library, &scratch.file("b.pdf", b"%PDF-second"));
 
         assert_eq!(library.documents().unwrap(), vec![second, first]);
     }
@@ -1277,6 +1299,63 @@ mod tests {
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("book", &emma().bytes()));
         assert_eq!(document.format(), Format::Epub);
+    }
+
+    #[test]
+    fn a_file_that_is_neither_a_pdf_nor_an_epub_is_rejected_and_leaves_nothing() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let late_header = [vec![b' '; 1024], b"%PDF-".to_vec()].concat();
+        for (name, bytes) in [
+            ("notes.txt", b"hello".to_vec()),
+            ("empty", Vec::new()),
+            ("late.pdf", late_header),
+        ] {
+            let source = scratch.file(name, &bytes);
+            assert_eq!(format_of(&source).unwrap(), None, "{name}");
+            let rejected = import(&library, &source);
+            assert!(
+                matches!(rejected, Err(ImportError::UnsupportedFormat)),
+                "{name}: {rejected:?}"
+            );
+        }
+
+        assert_eq!(library.documents().unwrap(), []);
+        let stored = fs::read_dir(scratch.0.join("library")).unwrap();
+        let stored = stored.filter(|e| {
+            !e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with('.')
+        });
+        assert_eq!(stored.count(), 0);
+    }
+
+    #[test]
+    fn a_pdf_with_leading_bytes_is_accepted() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let bytes = [vec![b' '; 1019], b"%PDF-1.7".to_vec()].concat();
+        let source = scratch.file("odd.pdf", &bytes);
+        assert_eq!(format_of(&source).unwrap(), Some(Format::Pdf));
+        assert_eq!(import_new(&library, &source).format(), Format::Pdf);
+    }
+
+    #[test]
+    fn an_epub_without_the_extension_is_accepted_by_its_content() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let source = scratch.file("download", &emma().bytes());
+        assert_eq!(format_of(&source).unwrap(), Some(Format::Epub));
+        assert_eq!(import_new(&library, &source).format(), Format::Epub);
+    }
+
+    #[test]
+    fn an_epub_is_recognised_by_its_extension_in_any_case() {
+        let scratch = Scratch::new();
+        let source = scratch.file("Book.EPUB", b"not a zip");
+        assert_eq!(format_of(&source).unwrap(), Some(Format::Epub));
     }
 
     #[test]
@@ -1328,7 +1407,7 @@ mod tests {
     fn the_cover_of_a_missing_document_is_none_and_of_a_bad_id_an_error() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        assert_eq!(library.epub_cover(ABC_SHA256).unwrap(), None);
+        assert_eq!(library.epub_cover(PDF_SHA256).unwrap(), None);
         assert!(library.epub_cover("../x").is_err());
     }
 
@@ -1434,10 +1513,10 @@ mod tests {
     fn only_an_epub_in_the_library_opens() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let pdf = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let pdf = import_new(&library, &scratch.file("a.pdf", PDF));
 
         assert!(library.open_epub(&pdf.id).unwrap().is_none());
-        assert!(library.open_epub(ABC_SHA256).unwrap().is_none());
+        assert!(library.open_epub(PDF_SHA256).unwrap().is_none());
         assert!(library.open_epub("../x").is_err());
     }
 
@@ -1445,7 +1524,7 @@ mod tests {
     fn an_epub_sorts_and_removes_like_a_pdf() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let pdf = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let pdf = import_new(&library, &scratch.file("a.pdf", PDF));
         let epub = import_new(&library, &scratch.file("b.epub", &emma().bytes()));
         assert_eq!(library.documents().unwrap(), [epub.clone(), pdf]);
 
@@ -1459,7 +1538,7 @@ mod tests {
     fn a_failed_import_leaves_the_library_unchanged() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        import_new(&library, &scratch.file("a.pdf", b"abc"));
+        import_new(&library, &scratch.file("a.pdf", PDF));
 
         assert!(
             library
@@ -1501,9 +1580,9 @@ mod tests {
     fn importing_the_same_bytes_again_reports_the_existing_document() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let first = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let first = import_new(&library, &scratch.file("a.pdf", PDF));
 
-        let again = import(&library, &scratch.file("b.pdf", b"abc")).unwrap();
+        let again = import(&library, &scratch.file("b.pdf", PDF)).unwrap();
 
         assert_eq!(again, ImportResult::AlreadyImported(first));
     }
@@ -1512,9 +1591,9 @@ mod tests {
     fn a_duplicate_import_leaves_the_library_unchanged() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let first = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let first = import_new(&library, &scratch.file("a.pdf", PDF));
 
-        import(&library, &scratch.file("renamed.pdf", b"abc")).unwrap();
+        import(&library, &scratch.file("renamed.pdf", PDF)).unwrap();
 
         assert_eq!(library.documents().unwrap(), vec![first.clone()]);
         let folder = first.path.parent().unwrap();
@@ -1531,8 +1610,8 @@ mod tests {
     fn remove_deletes_the_document_and_its_file() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let keep = import_new(&library, &scratch.file("a.pdf", b"first"));
-        let gone = import_new(&library, &scratch.file("b.pdf", b"second"));
+        let keep = import_new(&library, &scratch.file("a.pdf", b"%PDF-first"));
+        let gone = import_new(&library, &scratch.file("b.pdf", b"%PDF-second"));
 
         library.remove(&gone.id).unwrap();
 
@@ -1550,7 +1629,7 @@ mod tests {
     fn removing_a_document_that_is_not_there_does_nothing() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let kept = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let kept = import_new(&library, &scratch.file("a.pdf", PDF));
 
         library.remove("0123").unwrap();
 
@@ -1576,7 +1655,7 @@ mod tests {
     fn a_removed_document_can_be_imported_again() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let source = scratch.file("a.pdf", b"abc");
+        let source = scratch.file("a.pdf", PDF);
         let first = import_new(&library, &source);
         library.remove(&first.id).unwrap();
 
@@ -1639,7 +1718,7 @@ mod tests {
     fn a_never_opened_document_lists_without_reading_progress() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         assert_eq!(document.progress, None);
         assert_eq!(listed_progress(&library, &document.id), None);
@@ -1649,7 +1728,7 @@ mod tests {
     fn saved_reading_progress_is_listed_and_survives_reopening_the_library() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         library
             .save_progress(&document.id, &progress(7, 1_000))
@@ -1671,7 +1750,7 @@ mod tests {
     fn saving_again_replaces_the_reading_progress_as_a_whole() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         library
             .save_progress(&document.id, &progress(7, 1_000))
@@ -1690,7 +1769,7 @@ mod tests {
     fn the_state_and_progress_files_do_not_hide_the_file() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         library
             .save_progress(&document.id, &progress(1, 1))
             .unwrap();
@@ -1707,7 +1786,7 @@ mod tests {
         use automerge::{ROOT, ReadDoc};
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         highlight(&library, &document.id, "the passage", 1);
 
         let folder = document.path.parent().unwrap();
@@ -1733,7 +1812,7 @@ mod tests {
     fn saving_leaves_nothing_in_staging() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         library
             .save_progress(&document.id, &progress(1, 1))
@@ -1766,7 +1845,7 @@ mod tests {
     fn a_document_has_no_details_until_set_and_keeps_them_after_reopening() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         assert_eq!(document.details, None);
 
         let moby = details(Some("Moby-Dick"), Some("Melville"), 635);
@@ -1799,7 +1878,7 @@ mod tests {
     fn details_are_kept_as_stored() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         library
             .set_details(&document.id, &details(Some(" "), Some(" Melville\n"), 3))
@@ -1813,7 +1892,7 @@ mod tests {
     fn details_of_a_removed_document_are_gone_and_not_written() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let source = scratch.file("a.pdf", b"abc");
+        let source = scratch.file("a.pdf", PDF);
         let document = import_new(&library, &source);
         let moby = details(Some("Moby-Dick"), None, 1);
         library.set_details(&document.id, &moby).unwrap();
@@ -1829,7 +1908,7 @@ mod tests {
     fn details_read_back_as_stored_and_a_reimport_has_no_stale_ones() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let source = scratch.file("a.pdf", b"abc");
+        let source = scratch.file("a.pdf", PDF);
         let document = import_new(&library, &source);
         let first = details(Some("Moby-Dick"), None, 1);
         let second = details(Some("Dracula"), Some("Stoker"), 2);
@@ -1875,7 +1954,7 @@ mod tests {
     fn the_title_is_the_stored_one_or_else_the_file_name_without_extension() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("scan0042.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("scan0042.pdf", PDF));
         assert_eq!(document.title(), "scan0042");
 
         library
@@ -1987,7 +2066,7 @@ mod tests {
     fn a_document_is_found_by_id_while_it_is_in_the_library() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         library
             .save_progress(&document.id, &progress(1, 1))
             .unwrap();
@@ -2007,7 +2086,7 @@ mod tests {
     fn saving_for_a_removed_document_does_nothing() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         library.remove(&document.id).unwrap();
 
         library
@@ -2032,7 +2111,7 @@ mod tests {
     fn remove_deletes_the_state_along_with_the_file() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         library
             .save_progress(&document.id, &progress(3, 5))
             .unwrap();
@@ -2041,7 +2120,7 @@ mod tests {
         assert_eq!(library.documents().unwrap(), vec![]);
 
         // Imported again, the Document is as good as new.
-        let again = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let again = import_new(&library, &scratch.file("a.pdf", PDF));
         assert_eq!(again.progress, None);
     }
 
@@ -2049,7 +2128,7 @@ mod tests {
     fn a_corrupt_progress_file_lists_as_never_opened_and_is_replaced_by_the_next_save() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         library
             .save_progress(&document.id, &progress(3, 5))
             .unwrap();
@@ -2070,7 +2149,7 @@ mod tests {
     fn reading_progress_in_an_older_state_is_read_until_the_document_has_its_own() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         fs::write(
             state_path(&library, &document),
             stored_progress(&progress(9, 2_000)),
@@ -2097,7 +2176,7 @@ mod tests {
     fn a_state_file_without_progress_lists_as_never_opened() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         let empty = automerge::AutoCommit::new().save();
         fs::write(state_path(&library, &document), empty).unwrap();
 
@@ -2302,7 +2381,7 @@ mod tests {
     fn a_document_without_markup_has_no_highlights() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         assert_eq!(library.markup(&document.id).unwrap(), Markup::default());
     }
 
@@ -2310,7 +2389,7 @@ mod tests {
     fn an_added_highlight_is_in_the_markup_and_survives_reopening_the_library() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         let added = highlight(&library, &document.id, "the passage", 1_000);
 
@@ -2331,7 +2410,7 @@ mod tests {
     fn every_highlight_gets_its_own_id_and_the_markup_lists_them_oldest_first() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         let later = highlight(&library, &document.id, "later", 2_000);
         let earlier = highlight(&library, &document.id, "earlier", 1_000);
@@ -2347,7 +2426,7 @@ mod tests {
     fn markup_and_reading_progress_are_kept_side_by_side() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         library
             .save_progress(&document.id, &progress(7, 1_000))
@@ -2369,7 +2448,7 @@ mod tests {
         use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         let state = state_path(&library, &document);
         let mut v1 = AutoCommit::load(&stored_progress(&progress(7, 1_000))).unwrap();
         v1.put(ROOT, "version", 1_u64).unwrap();
@@ -2391,7 +2470,7 @@ mod tests {
     fn remove_takes_the_markup_along() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let source = scratch.file("a.pdf", b"abc");
+        let source = scratch.file("a.pdf", PDF);
         let document = import_new(&library, &source);
         highlight(&library, &document.id, "the passage", 1_000);
 
@@ -2407,7 +2486,7 @@ mod tests {
     fn a_recolored_highlight_keeps_its_color_after_reopening_the_library() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         let first = highlight(&library, &document.id, "first", 1_000);
         let second = highlight(&library, &document.id, "second", 2_000);
 
@@ -2431,7 +2510,7 @@ mod tests {
     fn a_note_survives_reopening_the_library_and_emptying_it_removes_it() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         let added = highlight(&library, &document.id, "first", 1_000);
 
         library
@@ -2455,7 +2534,7 @@ mod tests {
     fn removing_a_highlight_removes_its_note() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         let added = highlight(&library, &document.id, "first", 1_000);
         library
             .set_highlight_note(&document.id, &added.id, "x")
@@ -2470,7 +2549,7 @@ mod tests {
     fn a_removed_highlight_is_gone_after_reopening_the_library() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         let first = highlight(&library, &document.id, "first", 1_000);
         let second = highlight(&library, &document.id, "second", 2_000);
 
@@ -2491,7 +2570,7 @@ mod tests {
     fn a_page_note_survives_reopening_the_library_and_emptying_it_removes_it() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         let added = library
             .add_page_note(&document.id, pdf_spot(4, 100.5, 200.5), 1_000)
@@ -2555,7 +2634,7 @@ mod tests {
     fn a_removed_page_note_is_gone_after_reopening_the_library() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         let first = library
             .add_page_note(&document.id, pdf_spot(0, 1.0, 2.0), 1)
             .unwrap()
@@ -2587,7 +2666,7 @@ mod tests {
     fn changing_or_removing_an_unknown_page_note_does_nothing() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         let added = library
             .add_page_note(&document.id, pdf_spot(0, 1.0, 2.0), 1)
             .unwrap()
@@ -2608,7 +2687,7 @@ mod tests {
     fn remove_takes_page_notes_along() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         let added = library
             .add_page_note(&document.id, pdf_spot(0, 1.0, 2.0), 1)
             .unwrap()
@@ -2626,7 +2705,7 @@ mod tests {
     fn changing_or_removing_an_unknown_highlight_does_nothing() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         let added = highlight(&library, &document.id, "first", 1_000);
 
         library
@@ -2683,7 +2762,7 @@ mod tests {
     fn adding_a_page_note_to_a_removed_document_adds_nothing() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         library.remove(&document.id).unwrap();
 
         let added = library
@@ -2712,7 +2791,7 @@ mod tests {
     fn a_corrupt_state_has_no_markup_and_is_replaced_by_the_next_highlight() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         let state = state_path(&library, &document);
         fs::write(&state, b"garbage").unwrap();
         assert_eq!(library.markup(&document.id).unwrap(), Markup::default());
@@ -2865,7 +2944,7 @@ mod tests {
     fn a_highlight_keeps_its_color_when_the_custom_color_is_removed() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         let teal = library.add_custom_color(TEAL, 100).unwrap();
         let added = library
             .add_highlight(&document.id, Anchor::Pdf(vec![]), "x", teal.rgb, 1)
@@ -2916,7 +2995,7 @@ mod tests {
     fn preferences_are_a_hidden_file_at_the_library_root_and_no_document() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         library.set_default_highlight_color("Blue").unwrap();
 
@@ -2984,9 +3063,9 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
         let device = library.device_id();
-        let source = scratch.file("a.pdf", b"abc");
+        let source = scratch.file("a.pdf", PDF);
         let kept = import_new(&library, &source);
-        let gone = import_new(&library, &scratch.file("b.pdf", b"def"));
+        let gone = import_new(&library, &scratch.file("b.pdf", b"%PDF-def"));
         let work = |library: &Library| {
             library
                 .save_progress(&kept.id, &progress(7, 1_000))
@@ -3083,7 +3162,7 @@ mod tests {
         }
         // A Document imported after the migration is the newest.
         let library = scratch.library();
-        let fresh = import_new(&library, &scratch.file("c.pdf", b"c"));
+        let fresh = import_new(&library, &scratch.file("c.pdf", b"%PDF-c"));
         assert_eq!(library.documents().unwrap()[0], fresh);
     }
 
@@ -3119,10 +3198,10 @@ mod tests {
     fn a_re_imported_document_is_the_newest_again() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let source = scratch.file("a.pdf", b"first");
+        let source = scratch.file("a.pdf", b"%PDF-first");
         let first = import_new(&library, &source);
         sleep(Duration::from_millis(5));
-        let second = import_new(&library, &scratch.file("b.pdf", b"second"));
+        let second = import_new(&library, &scratch.file("b.pdf", b"%PDF-second"));
         sleep(Duration::from_millis(5));
         library.remove(&first.id).unwrap();
 
@@ -3135,7 +3214,7 @@ mod tests {
     fn a_re_import_starts_fresh_even_if_the_old_state_was_never_deleted() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let source = scratch.file("a.pdf", b"abc");
+        let source = scratch.file("a.pdf", PDF);
         let first = import_new(&library, &source);
         library.save_progress(&first.id, &progress(3, 5)).unwrap();
         highlight(&library, &first.id, "the passage", 1);
@@ -3156,7 +3235,7 @@ mod tests {
     fn a_folder_of_a_recorded_remove_is_deleted_on_open() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         {
             // The Remove was recorded, but the folder wasn't renamed yet.
             let mut doc = library.catalog();
@@ -3169,7 +3248,7 @@ mod tests {
 
         assert!(!document.path.exists());
         assert_eq!(library.documents().unwrap(), vec![]);
-        let again = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let again = import_new(&library, &scratch.file("a.pdf", PDF));
         assert_eq!(again.progress, None);
     }
 
@@ -3186,7 +3265,7 @@ mod tests {
     fn a_document_with_several_imports_is_listed_once_and_reads_as_the_merge_of_their_states() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
         library
             .save_progress(&document.id, &progress(3, 1_000))
             .unwrap();
@@ -3243,14 +3322,14 @@ mod tests {
     fn an_import_listed_without_its_file_is_not_a_document_until_the_file_is_imported() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        add_import(&library, ABC_SHA256, 5);
+        add_import(&library, PDF_SHA256, 5);
         assert_eq!(library.documents().unwrap(), vec![]);
 
-        let document = import_new(&library, &scratch.file("other-name.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("other-name.pdf", PDF));
 
         // It is stored under the listed name and keeps the listed Import.
         assert_eq!(document.path.file_name().unwrap(), "a.pdf");
-        assert_eq!(library.catalog().live(ABC_SHA256).count(), 1);
+        assert_eq!(library.catalog().live(PDF_SHA256).count(), 1);
         assert_eq!(library.documents().unwrap(), vec![document]);
     }
 
@@ -3272,7 +3351,7 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
         let sources: Vec<_> = (0..8)
-            .map(|n| scratch.file(&format!("{n}.pdf"), format!("document {n}").as_bytes()))
+            .map(|n| scratch.file(&format!("{n}.pdf"), format!("%PDF-document {n}").as_bytes()))
             .collect();
 
         std::thread::scope(|scope| {
@@ -3289,7 +3368,7 @@ mod tests {
     fn library_of_opened_documents(scratch: &Scratch, count: u32) -> Library {
         let library = scratch.library();
         for n in 0..count {
-            let source = scratch.file("source.pdf", format!("document {n}").as_bytes());
+            let source = scratch.file("source.pdf", format!("%PDF-document {n}").as_bytes());
             let document = import_new(&library, &source);
             library
                 .save_progress(&document.id, &progress(n, u64::from(n) + 1))
@@ -3302,7 +3381,7 @@ mod tests {
     fn saving_reading_progress_keeps_no_history() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", b"abc"));
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         for n in 0..1_000 {
             library

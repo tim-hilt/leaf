@@ -489,10 +489,10 @@ mod tests {
             Arc::new(Library::open(self.dir.join(name).join("library")).unwrap())
         }
 
-        /// Imports a File with `bytes` into `library` and returns its ID.
+        /// Imports a PDF with `bytes` after its header into `library` and returns its ID.
         fn import(&self, library: &Library, bytes: &[u8]) -> String {
             let source = self.dir.join(format!("{}.pdf", bytes.len()));
-            fs::write(&source, bytes).unwrap();
+            fs::write(&source, [b"%PDF-", bytes].concat()).unwrap();
             match library.import(&source, |_, _| {}).unwrap() {
                 ImportResult::Imported(d) | ImportResult::AlreadyImported(d) => d.id,
             }

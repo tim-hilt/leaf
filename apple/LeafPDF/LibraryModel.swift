@@ -515,6 +515,8 @@ final class LibraryModel {
             return .rejected(.drmProtectedEPUB)
         } catch LibraryError.FixedLayoutEpub {
             return .rejected(.fixedLayoutEPUB)
+        } catch LibraryError.UnsupportedFormat {
+            return .rejected(.notPDF)
         } catch {
             return .failed(error.localizedDescription)
         }
@@ -731,22 +733,22 @@ final class LibraryModel {
         let cover: CGImage?
     }
 
-    /// What the File at `url` yields if it can be Imported, or why not. A File
-    /// that can't be read at all isn't rejected (nil): copying it fails with
-    /// the system's own reason. Nor is one that may be an EPUB, a zip or named
-    /// `.epub`: the core decides. Reads the File and renders its Cover, so
-    /// keep it off the main thread.
+    /// What the File at `url` yields if it can be Imported, or why not. The
+    /// core decides its Format; PDFKit checks a PDF. A File that can't be read
+    /// at all isn't rejected (nil): copying it fails with the system's own
+    /// reason. Nor is an EPUB: the core checks it. Reads the File and renders
+    /// its Cover, so keep it off the main thread.
     private nonisolated static func check(_ url: URL, covers: CoverStore) -> Result<ReadPDF?, ImportRejection> {
-        if let pdf = PDFDocument(url: url) {
+        let format: Format?
+        do { format = try formatOfFile(path: url.path) } catch { return .success(nil) }
+        switch format {
+        case nil: return .failure(.notPDF)
+        case .epub: return .success(nil)
+        case .pdf:
+            guard let pdf = PDFDocument(url: url) else { return .failure(.unreadable) }
             guard !pdf.isLocked else { return .failure(.locked) }
             return .success(ReadPDF(title: pdf.title, details: pdf.details, cover: covers.render(pdf)))
         }
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return .success(nil) }
-        defer { try? handle.close() }
-        let head = (try? handle.read(upToCount: 5)) ?? Data()
-        if head == Data("%PDF-".utf8) { return .failure(.unreadable) }
-        let mayBeEPUB = head.starts(with: Data("PK\u{3}\u{4}".utf8)) || url.pathExtension.lowercased() == "epub"
-        return mayBeEPUB ? .success(nil) : .failure(.notPDF)
     }
 
     /// One item per Document; Last Read only when sorted by it.

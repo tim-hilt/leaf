@@ -759,7 +759,7 @@ mod tests {
         let open = |device: &str| Library::open(home.0.join(device).join("library")).unwrap();
         let (a, b) = (open("a"), open("b"));
         let source = home.0.join("Paper.pdf");
-        fs::write(&source, b"paper bytes").unwrap();
+        fs::write(&source, b"%PDF-paper bytes").unwrap();
         let ImportResult::Imported(imported) = a.import(&source, |_, _| {}).unwrap() else {
             panic!("not imported");
         };
@@ -770,7 +770,7 @@ mod tests {
         let documents = b.documents().unwrap();
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0].id, imported.id);
-        assert_eq!(fs::read(&documents[0].path).unwrap(), b"paper bytes");
+        assert_eq!(fs::read(&documents[0].path).unwrap(), b"%PDF-paper bytes");
         assert_eq!(documents[0].path.file_name().unwrap(), "Paper.pdf");
     }
 }

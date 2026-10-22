@@ -39,6 +39,7 @@ pub enum LibraryError {
     InvalidEpub,
     DrmProtectedEpub,
     FixedLayoutEpub,
+    UnsupportedFormat,
 }
 
 impl std::fmt::Display for LibraryError {
@@ -48,6 +49,7 @@ impl std::fmt::Display for LibraryError {
             Self::InvalidEpub => epub::Error::Invalid.fmt(f),
             Self::DrmProtectedEpub => epub::Error::DrmProtected.fmt(f),
             Self::FixedLayoutEpub => epub::Error::FixedLayout.fmt(f),
+            Self::UnsupportedFormat => ImportError::UnsupportedFormat.fmt(f),
         }
     }
 }
@@ -65,8 +67,16 @@ impl From<ImportError> for LibraryError {
             ImportError::Epub(epub::Error::Invalid) => Self::InvalidEpub,
             ImportError::Epub(epub::Error::DrmProtected) => Self::DrmProtectedEpub,
             ImportError::Epub(epub::Error::FixedLayout) => Self::FixedLayoutEpub,
+            ImportError::UnsupportedFormat => Self::UnsupportedFormat,
         }
     }
+}
+
+/// The Format the File at `path` would be Imported as; none if it is neither a
+/// PDF nor an EPUB, which Import refuses.
+#[uniffi::export]
+pub fn format_of_file(path: String) -> Result<Option<Format>, LibraryError> {
+    Ok(leafpdf_core::library::format_of(path.as_ref())?)
 }
 
 // The core's types cross the FFI as remote types: declared here, defined (and
@@ -742,6 +752,22 @@ mod tests {
 
     impl ImportProgress for NoProgress {
         fn report(&self, _: u64, _: u64) {}
+    }
+
+    #[test]
+    fn import_refuses_a_file_that_is_neither_a_pdf_nor_an_epub() {
+        let dir = std::env::temp_dir().join(format!("leafpdf-ffi-format-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("notes.txt");
+        std::fs::write(&source, b"hello").unwrap();
+        let path = source.display().to_string();
+        let library = Library::open(dir.join("library").display().to_string()).unwrap();
+
+        assert_eq!(format_of_file(path.clone()).unwrap(), None);
+        let refused = library.import(path, Arc::new(NoProgress));
+        assert!(matches!(refused, Err(LibraryError::UnsupportedFormat)));
+        assert_eq!(library.documents().unwrap().len(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Waits up to 5 s for a step to end after the `before`th one.
