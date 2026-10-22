@@ -33,3 +33,17 @@ open apple/LeafPDF.xcodeproj  # run the LeafPDF scheme on a simulator or "My Mac
 - Narrow either to a suite or test: `ONLY=LeafPDFTests/ReaderPDFViewTests`. Full log: `/tmp/leafpdf-test.log`
 - Debug build of the core: `make apple-core PROFILE=dev`
 - Running on a device: create `apple/Config/Local.xcconfig` with `DEVELOPMENT_TEAM = <your team ID>`
+
+### Install on an iPad without opening Xcode
+
+One-time: enable Developer Mode on the iPad (Settings → Privacy & Security). Connect it by cable and tap Trust. For Wi-Fi installs, tick Xcode → Window → Devices and Simulators → your iPad → **Connect via network** (same Wi-Fi as the Mac).
+
+```sh
+make apple
+cd apple && xcodebuild -scheme LeafPDF -configuration Release -destination 'generic/platform=iOS' \
+  -derivedDataPath build -allowProvisioningUpdates build
+xcrun devicectl list devices   # find the iPad
+xcrun devicectl device install app --device "<iPad name>" build/Build/Products/Release-iphoneos/LeafPDF.app
+```
+
+Free Apple ID builds expire after 7 days; install again to renew.
