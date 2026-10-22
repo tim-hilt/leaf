@@ -33,6 +33,8 @@ import CoreGraphics
 /// with it while the side margin on the page stays as it is. `leaf.setTextSize` keeps
 /// the position at the top of the viewport.
 ///
+/// Raster images never grow past their pixels (`keepSharp`).
+///
 /// Light Pages leave the book's colors alone. Dark Pages override the text and background
 /// of every chapter with the Page Colors, never touching images, and give the page behind
 /// the chapters the paper. `leaf.setAppearance` switches between them in place: colors
@@ -398,6 +400,19 @@ enum ReaderEPUBScript {
                 if (frame) window.scrollTo(0, window.scrollY + frame.getBoundingClientRect().top + lineTop(frame, offset));
               };
 
+              // Raster images, and SVGs wrapping one (Calibre's covers), never grow past their
+              // pixels, however wide the book styles them: blown up they only get blocky.
+              const keepSharp = doc => {
+                const cap = (element, width) =>
+                  element.style.setProperty('max-width', 'min(100%, ' + width + 'px)', 'important');
+                doc.querySelectorAll('img').forEach(image => {
+                  if (image.naturalWidth && !/\\.svg([?#]|$)/i.test(image.currentSrc)) cap(image, image.naturalWidth);
+                });
+                doc.querySelectorAll('svg').forEach(svg => {
+                  const box = svg.viewBox.baseVal;
+                  if (box && box.width && svg.querySelector('image')) cap(svg, box.width);
+                });
+              };
               const fit = frame => {
                 frame.style.height = frame.contentDocument.documentElement.offsetHeight + 'px';
               };
@@ -492,6 +507,7 @@ enum ReaderEPUBScript {
                 sheet.textContent = css();
                 sheets.push(sheet);
                 (doc.head || doc.documentElement).append(sheet);
+                keepSharp(doc);
                 fit(frame);
                 new ResizeObserver(() => { fit(frame); scheduleNotes(); }).observe(doc.documentElement);
                 doc.addEventListener('selectionchange', selectionChanged);

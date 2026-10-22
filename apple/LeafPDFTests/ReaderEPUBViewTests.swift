@@ -63,6 +63,22 @@ private typealias PageNote = LeafPDF.PageNote
         #expect(try await reader.evaluate("frame(0).getElementById('i').naturalWidth") == "40")
     }
 
+    @Test func rasterImagesAreNeverBlownUpBeyondTheirPixels() async throws {
+        let reader = try await openReader(
+            chapters: [
+                """
+                <img id="i" src="pic.png" style="width: 100%"/>\
+                <svg id="s" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" \
+                viewBox="0 0 40 60" width="100%" height="100%"><image width="40" height="60" xlink:href="pic.png"/></svg>
+                """
+            ],
+            manifest: "<item id=\"pic\" href=\"pic.png\" media-type=\"image/png\"/>",
+            files: ["OEBPS/pic.png": solidPNG(red: 255, green: 0, blue: 0)])
+
+        #expect(try await reader.evaluate("frame(0).getElementById('i').getBoundingClientRect().width") == "40")
+        #expect(try await reader.evaluate("frame(0).getElementById('s').getBoundingClientRect().width") == "40")
+    }
+
     @Test func webLinksOpenInTheBrowserAndNeverNavigateTheBook() async throws {
         var opened: [URL] = []
         let reader = try await openReader(
