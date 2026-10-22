@@ -1,5 +1,8 @@
 # LeafPDF
 
+[![Build](https://github.com/tim-hilt/leafpdf/actions/workflows/build.yml/badge.svg)](https://github.com/tim-hilt/leafpdf/actions/workflows/build.yml)
+[![Test](https://github.com/tim-hilt/leafpdf/actions/workflows/test.yml/badge.svg)](https://github.com/tim-hilt/leafpdf/actions/workflows/test.yml)
+
 <p align="center">
   <img src="docs/images/light-dark-pages.png" alt="LeafPDF showing the same page with light and dark pages" width="400">
 </p>
