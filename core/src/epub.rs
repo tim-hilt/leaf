@@ -5,6 +5,7 @@
 //! `.opf` file named by `META-INF/container.xml`): Title, Author, the spine
 //! (the reading order of its XHTML files) and the declared Cover. Zip entries
 //! are read, and inflated, one at a time, so a book is never held in memory.
+//! Entries are read at an offset, so an `Epub` serves several threads at once.
 //!
 //! The text of a spine item, the contract with the clients' web views (ADR-0022),
 //! is its XHTML body's text nodes concatenated in document order, with
@@ -24,10 +25,9 @@ use quick_xml::reader::Reader;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::ops::ControlFlow;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 mod entities;
 
@@ -61,7 +61,9 @@ pub struct Epub {
     /// The spine items read so far, by index (None: the zip can't read it).
     /// Readers ask for the same items again and again (placing Highlights), so
     /// each is inflated and parsed once.
-    items: HashMap<usize, Option<Arc<Scanned>>>,
+    /// Its lock is held only to look up or insert, never while inflating or
+    /// parsing, so reads on several threads don't wait for each other.
+    items: Mutex<HashMap<usize, Option<Arc<Scanned>>>>,
 }
 
 /// What one `scan` of a spine item yields.
@@ -76,7 +78,7 @@ struct Scanned {
 impl Epub {
     /// Opens the EPUB at `path`.
     pub fn open(path: &Path) -> Result<Self, Error> {
-        let mut zip = Zip::open(path).ok_or(Error::Invalid)?;
+        let zip = Zip::open(path).ok_or(Error::Invalid)?;
         let mimetype = zip.read("mimetype").ok_or(Error::Invalid)?;
         if mimetype.trim_ascii() != b"application/epub+zip" {
             return Err(Error::Invalid);
@@ -97,7 +99,7 @@ impl Epub {
         Ok(Self {
             zip,
             package,
-            items: HashMap::new(),
+            items: Mutex::default(),
         })
     }
 
@@ -120,7 +122,7 @@ impl Epub {
     /// The manifest item at zip path `path`: a spine item or what it uses (an
     /// image, style sheet or font). None for any other file of the zip, and for
     /// an item the zip lacks or can't read.
-    pub fn resource(&mut self, path: &str) -> Option<Resource> {
+    pub fn resource(&self, path: &str) -> Option<Resource> {
         let media_type = self.package.media_types.get(path)?.clone();
         let bytes = self.zip.read(path)?;
         Some(Resource { bytes, media_type })
@@ -128,13 +130,13 @@ impl Epub {
 
     /// The bytes of the Cover image: the declared cover, else the first image
     /// of the first spine item. None if there is no image.
-    pub fn cover(&mut self) -> Option<Vec<u8>> {
+    pub fn cover(&self) -> Option<Vec<u8>> {
         let path = self.package.cover.clone().or_else(|| self.first_image())?;
         self.zip.read(&path)
     }
 
     /// The path of the first image in the first spine item that the zip has.
-    fn first_image(&mut self) -> Option<String> {
+    fn first_image(&self) -> Option<String> {
         let item = &self.package.spine[0];
         let xhtml = self.zip.read(item)?;
         let dir = directory_of(item);
@@ -162,8 +164,8 @@ impl Epub {
 
     /// The spine item at `index`, scanned once. None for an index beyond the
     /// spine, and for an item the zip can't read.
-    fn item(&mut self, index: usize) -> Option<Arc<Scanned>> {
-        if let Some(item) = self.items.get(&index) {
+    fn item(&self, index: usize) -> Option<Arc<Scanned>> {
+        if let Some(item) = self.cached().get(&index) {
             return item.clone();
         }
         let item = self.package.spine.get(index)?;
@@ -174,19 +176,23 @@ impl Epub {
                 anchors,
             })
         });
-        self.items.insert(index, item.clone());
-        item
+        // Another thread may have scanned it meanwhile; keep the first result.
+        self.cached().entry(index).or_insert(item).clone()
+    }
+
+    fn cached(&self) -> MutexGuard<'_, HashMap<usize, Option<Arc<Scanned>>>> {
+        self.items.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The spine item at `index`; empty if the zip can't read it.
-    fn item_or_empty(&mut self, index: usize) -> Arc<Scanned> {
+    fn item_or_empty(&self, index: usize) -> Arc<Scanned> {
         self.item(index).unwrap_or_default()
     }
 
     /// The text of the spine item at `index`, see the module docs: up to where
     /// it breaks if it isn't well-formed. None for an index beyond the spine,
     /// and for an item the zip can't read.
-    pub fn text(&mut self, index: usize) -> Option<String> {
+    pub fn text(&self, index: usize) -> Option<String> {
         Some(String::from_utf16_lossy(&self.item(index)?.text))
     }
 
@@ -195,7 +201,7 @@ impl Epub {
     /// `start` in the text of the whole book. Spine items' texts are joined by
     /// `\n` there and in `quoted`. None if it occurs nowhere, or `quoted` is empty.
     pub fn relocate(
-        &mut self,
+        &self,
         start: EpubPosition,
         end: EpubPosition,
         quoted: &str,
@@ -218,7 +224,7 @@ impl Epub {
         // by item, until no further item can hold a nearer occurrence. Of two
         // equally near ones the earlier wins.
         let mut best: Option<Nearest> = None;
-        let search = |epub: &mut Self, best: &mut Option<Nearest>, index, base: isize| {
+        let search = |epub: &Self, best: &mut Option<Nearest>, index, base: isize| {
             let item = epub.item_or_empty(index);
             for offset in 0..=item.text.len() {
                 if unit_at(&item.text, offset) != quoted[0] {
@@ -268,7 +274,7 @@ impl Epub {
 
     /// Whether `quoted` is what the text reads from `offset` in spine item
     /// `index` on, the spine items' texts joined by `\n`.
-    fn occurs_at(&mut self, quoted: &[u16], mut index: usize, mut offset: usize) -> bool {
+    fn occurs_at(&self, quoted: &[u16], mut index: usize, mut offset: usize) -> bool {
         let mut rest = quoted;
         while !rest.is_empty() {
             if index >= self.package.spine.len() {
@@ -289,7 +295,7 @@ impl Epub {
 
     /// The text from `start` to `end`, the spine items' texts joined by `\n`.
     /// None if they aren't in order or beyond the text.
-    fn passage(&mut self, start: EpubPosition, end: EpubPosition) -> Option<Vec<u16>> {
+    fn passage(&self, start: EpubPosition, end: EpubPosition) -> Option<Vec<u16>> {
         let (first, last) = (start.spine_index as usize, end.spine_index as usize);
         let mut passage = Vec::new();
         for index in first..=last {
@@ -314,7 +320,7 @@ impl Epub {
     /// The Table of Contents: Chapters with their nested Sections, in reading
     /// order. Empty if the EPUB has none. An entry whose link isn't in the
     /// spine, or that has none, has no place.
-    pub fn contents(&mut self) -> Vec<ContentsEntry> {
+    pub fn contents(&self) -> Vec<ContentsEntry> {
         let (source, parse): (_, OutlineParser) = match (&self.package.nav, &self.package.ncx) {
             (Some(nav), _) => (nav.clone(), nav_outline),
             (None, Some(ncx)) => (ncx.clone(), ncx_outline),
@@ -330,13 +336,13 @@ impl Epub {
     /// path `path` points: the offset of the text before the anchor, or the
     /// start of the item if it has no such anchor. None if `path` isn't a spine
     /// item.
-    pub fn locate(&mut self, path: &str, fragment: Option<&str>) -> Option<Place> {
+    pub fn locate(&self, path: &str, fragment: Option<&str>) -> Option<Place> {
         let index = self.package.spine.iter().position(|item| item == path)?;
         Some(self.place_of(index, fragment))
     }
 
     /// Where `fragment` is in the spine item `index`.
-    fn place_of(&mut self, index: usize, fragment: Option<&str>) -> Place {
+    fn place_of(&self, index: usize, fragment: Option<&str>) -> Place {
         let offset = fragment.map_or(0, |fragment| {
             let item = self.item_or_empty(index);
             item.anchors.get(fragment).copied().unwrap_or(0)
@@ -347,7 +353,7 @@ impl Epub {
         }
     }
 
-    fn resolve_outline(&mut self, outline: Vec<Outlined>, dir: &str) -> Vec<ContentsEntry> {
+    fn resolve_outline(&self, outline: Vec<Outlined>, dir: &str) -> Vec<ContentsEntry> {
         outline
             .into_iter()
             .map(|item| {
@@ -368,7 +374,7 @@ impl Epub {
 
     /// The length of the text of each spine item, in characters, in order; 0 for
     /// one the zip can't read.
-    pub fn characters(&mut self) -> Vec<u64> {
+    pub fn characters(&self) -> Vec<u64> {
         (0..self.package.spine.len())
             .map(|i| self.item(i).map_or(0, |item| item.text.len() as u64))
             .collect()
@@ -819,30 +825,35 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
 }
 
+/// Fills `buf` from `file` at `offset`, leaving no cursor to share between
+/// threads. None if the file ends first.
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> Option<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(buf, offset).ok()
+}
+
 impl Zip {
     /// Opens the zip at `path`; none if it isn't one.
     fn open(path: &Path) -> Option<Self> {
-        let mut file = File::open(path).ok()?;
+        let file = File::open(path).ok()?;
         let len = file.metadata().ok()?.len();
         let mut signature = [0; 4];
-        file.read_exact(&mut signature).ok()?;
+        read_at(&file, &mut signature, 0)?;
         if signature != LOCAL_HEADER {
             return None;
         }
         // The end record is within 64 KiB (its comment) of the end.
         let tail_len = len.min(22 + 0xFFFF);
-        file.seek(SeekFrom::Start(len - tail_len)).ok()?;
         let mut tail = vec![0; usize::try_from(tail_len).ok()?];
-        file.read_exact(&mut tail).ok()?;
+        read_at(&file, &mut tail, len - tail_len)?;
         let end = &tail[tail.windows(4).rposition(|w| w == END_OF_DIRECTORY)?..];
         let count = usize::from(u16_at(end, 10)?);
         let (size, offset) = (u32_at(end, 12)?, u32_at(end, 16)?);
         if count == 0xFFFF || size == u32::MAX || offset == u32::MAX || u64::from(size) > len {
             return None;
         }
-        file.seek(SeekFrom::Start(offset.into())).ok()?;
         let mut directory = vec![0; usize::try_from(size).ok()?];
-        file.read_exact(&mut directory).ok()?;
+        read_at(&file, &mut directory, offset.into())?;
 
         let mut entries = HashMap::new();
         let mut at = 0;
@@ -878,24 +889,22 @@ impl Zip {
 
     /// The content of entry `name`; none if there is no such entry or it
     /// can't be read.
-    fn read(&mut self, name: &str) -> Option<Vec<u8>> {
+    fn read(&self, name: &str) -> Option<Vec<u8>> {
         let entry = self.entries.get(name)?;
         if entry.size > MAX_ENTRY || entry.compressed > self.len {
             return None;
         }
-        self.file.seek(SeekFrom::Start(entry.header_offset)).ok()?;
         let mut header = [0; 30];
-        self.file.read_exact(&mut header).ok()?;
+        read_at(&self.file, &mut header, entry.header_offset)?;
         if header[..4] != LOCAL_HEADER {
             return None;
         }
-        let skip = i64::from(u16_at(&header, 26)?) + i64::from(u16_at(&header, 28)?);
-        self.file.seek(SeekFrom::Current(skip)).ok()?;
-        let mut raw = Vec::with_capacity(usize::try_from(entry.compressed).ok()?);
-        (&mut self.file)
-            .take(entry.compressed)
-            .read_to_end(&mut raw)
-            .ok()?;
+        let data = entry.header_offset
+            + 30
+            + u64::from(u16_at(&header, 26)?)
+            + u64::from(u16_at(&header, 28)?);
+        let mut raw = vec![0; usize::try_from(entry.compressed).ok()?];
+        read_at(&self.file, &mut raw, data)?;
         let content = match entry.method {
             0 => raw,
             8 => decompress_to_vec_with_limit(&raw, usize::try_from(entry.size).ok()?).ok()?,
@@ -1132,7 +1141,7 @@ mod tests {
             "<h1>Hi</h1><p>a<b>b</b>&amp;&#233;&nbsp;&apos;&bogus;</p>",
             "<p><![CDATA[<x>]]>😀</p>",
         ]);
-        let mut epub = open(&book.bytes()).unwrap();
+        let epub = open(&book.bytes()).unwrap();
         // HTML's named entities too, as web views resolve them in XHTML; unknown ones are dropped.
         assert_eq!(epub.text(0).as_deref(), Some("Hiab&é\u{a0}'"));
         assert_eq!(epub.text(1).as_deref(), Some("<x>😀"));
@@ -1157,13 +1166,42 @@ mod tests {
     }
 
     #[test]
+    fn resources_and_texts_are_served_to_several_threads_at_once() {
+        let bodies: Vec<String> = (0..6).map(|n| format!("<p>chapter {n}</p>")).collect();
+        let mut book =
+            Book::new("").chapters(&bodies.iter().map(String::as_str).collect::<Vec<_>>());
+        for n in 0..6 {
+            book = book
+                .manifest(&format!(
+                    r#"<item id="i{n}" href="img/{n}.png" media-type="image/png"/>"#
+                ))
+                .file(&format!("OEBPS/img/{n}.png"), format!("PNG{n}").as_bytes());
+        }
+        let epub = open(&book.bytes()).unwrap();
+
+        std::thread::scope(|scope| {
+            for thread in 0..8 {
+                let epub = &epub;
+                scope.spawn(move || {
+                    for round in 0..50 {
+                        let n = (thread + round) % 6;
+                        let image = epub.resource(&format!("OEBPS/img/{n}.png")).unwrap();
+                        assert_eq!(image.bytes, format!("PNG{n}").as_bytes());
+                        assert_eq!(epub.text(n), Some(format!("chapter {n}")));
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
     fn resources_are_the_manifests_items_with_their_media_types() {
         let book = Book::new("")
             .manifest(r#"<item id="i" href="img/c%20d.png" media-type="image/png"/>"#)
             .manifest(r#"<item id="g" href="gone.png" media-type="image/png"/>"#)
             .file("OEBPS/img/c d.png", b"PNG")
             .file("OEBPS/unlisted.txt", b"secret");
-        let mut epub = open(&book.bytes()).unwrap();
+        let epub = open(&book.bytes()).unwrap();
 
         let image = epub.resource("OEBPS/img/c d.png").unwrap();
         assert_eq!(image.media_type, "image/png");
@@ -1209,7 +1247,7 @@ mod tests {
                 r#"<item id="n" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>"#,
             )
             .file("OEBPS/nav.xhtml", NAV.as_bytes());
-        let mut epub = open(&book.bytes()).unwrap();
+        let epub = open(&book.bytes()).unwrap();
 
         // A heading without a link is listed but points nowhere, and so is a web link.
         let part = ContentsEntry {
@@ -1248,7 +1286,7 @@ mod tests {
             ])
             .manifest(r#"<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>"#)
             .file("OEBPS/toc.ncx", ncx.as_bytes());
-        let mut epub = open(&book.bytes()).unwrap();
+        let epub = open(&book.bytes()).unwrap();
 
         let deep = entry("Deep", 1, 4, vec![]);
         let one = entry("One", 0, 0, vec![entry("Mid way", 1, 2, vec![deep])]);
@@ -1263,7 +1301,7 @@ mod tests {
             .manifest(r#"<item id="n" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>"#)
             .file("OEBPS/nav.xhtml", nav.as_bytes())
             .file("OEBPS/toc.ncx", ncx.as_bytes());
-        let mut both = open(&book.bytes()).unwrap();
+        let both = open(&book.bytes()).unwrap();
         assert_eq!(both.contents(), [entry("Nav", 0, 0, vec![])]);
 
         assert!(open(&Book::new("").bytes()).unwrap().contents().is_empty());
@@ -1273,7 +1311,7 @@ mod tests {
     fn locate_finds_the_text_offset_of_an_anchor_in_a_spine_item() {
         let book =
             Book::new("").chapters(&[r#"<p id="a">ab</p><p>c<span id="b"/>d</p>"#, "<p>x</p>"]);
-        let mut epub = open(&book.bytes()).unwrap();
+        let epub = open(&book.bytes()).unwrap();
         let at = |spine_index, offset| {
             Some(Place::Epub {
                 spine_index,
@@ -1311,7 +1349,7 @@ mod tests {
             ("OEBPS/content.opf", OPF.as_bytes()),
             ("OEBPS/a.xhtml", b"<html><body>12345</body></html>"),
         ];
-        let mut epub = open(&zip(&entries, &["OEBPS/content.opf", "OEBPS/a.xhtml"])).unwrap();
+        let epub = open(&zip(&entries, &["OEBPS/content.opf", "OEBPS/a.xhtml"])).unwrap();
         assert_eq!(epub.title(), Some("Deflated"));
         assert_eq!(epub.characters(), [5]);
     }
@@ -1409,7 +1447,7 @@ mod tests {
     #[test]
     fn relocate_finds_a_passage_spanning_two_spine_items() {
         let book = Book::new("").chapters(&["<p>alpha beta</p>", "<p>gamma delta</p>"]);
-        let mut epub = open(&book.bytes()).unwrap();
+        let epub = open(&book.bytes()).unwrap();
         // Joined by `\n`; the stored place is stale.
         assert_eq!(
             epub.relocate(at(1, 9), at(1, 9), "beta\ngamma"),
@@ -1422,8 +1460,8 @@ mod tests {
     #[test]
     fn relocate_picks_the_occurrence_nearest_to_the_stored_start_on_either_side() {
         let book = Book::new("").chapters(&["<p>ab</p>", "<p>zzzz</p>", "<p>ab</p>", "<p>ab</p>"]);
-        let mut epub = open(&book.bytes()).unwrap();
-        let mut nearest = |from: EpubPosition| epub.relocate(from, from, "ab");
+        let epub = open(&book.bytes()).unwrap();
+        let nearest = |from: EpubPosition| epub.relocate(from, from, "ab");
         assert_eq!(nearest(at(1, 0)), Some((at(0, 0), at(0, 2))));
         assert_eq!(nearest(at(1, 4)), Some((at(2, 0), at(2, 2))));
         // Beyond the book, a start counts as its end.

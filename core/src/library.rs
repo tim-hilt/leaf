@@ -525,7 +525,7 @@ impl Library {
     /// that isn't in the Library, or an EPUB without images. An `id` that isn't
     /// a Document ID is `InvalidInput`.
     pub fn epub_cover(&self, id: &str) -> io::Result<Option<Vec<u8>>> {
-        Ok(self.open_epub(id)?.and_then(|mut epub| epub.cover()))
+        Ok(self.open_epub(id)?.and_then(|epub| epub.cover()))
     }
 
     /// Keeps `details`, read from the File of Document `id`, on this Device,
@@ -1007,7 +1007,7 @@ fn read_epub_details(file: &Path, name: &str) -> Result<Option<Details>, epub::E
     if !is_epub {
         return Ok(None);
     }
-    let mut epub = Epub::open(file)?;
+    let epub = Epub::open(file)?;
     Ok(Some(Details {
         title: epub.title().map(str::to_owned),
         author: epub.author().map(str::to_owned),
@@ -1393,7 +1393,7 @@ mod tests {
             .file("OEBPS/style.css", b"p{}");
         let document = import_new(&library, &scratch.file("emma.epub", &book.bytes()));
 
-        let mut epub = library.open_epub(&document.id).unwrap().unwrap();
+        let epub = library.open_epub(&document.id).unwrap().unwrap();
 
         assert_eq!(
             epub.spine(),

@@ -255,30 +255,30 @@ pub struct EpubResource {
 /// An EPUB opened for reading, see `leafpdf_core::epub::Epub`. Clients keep it
 /// open while the Reader shows the book, instead of opening it per file.
 #[derive(uniffi::Object)]
-pub struct EpubBook(Mutex<epub::Epub>);
+pub struct EpubBook(epub::Epub);
 
 #[uniffi::export]
 impl EpubBook {
     /// The paths of the spine items, in reading order.
     pub fn spine(&self) -> Vec<String> {
-        self.lock().spine().to_vec()
+        self.0.spine().to_vec()
     }
 
     /// The text of the spine item at `index`, which positions count into
     /// (ADR-0022); none beyond the spine.
     pub fn text(&self, index: u32) -> Option<String> {
-        self.lock().text(index as usize)
+        self.0.text(index as usize)
     }
 
     /// The Table of Contents: Chapters with their nested Sections.
     pub fn contents(&self) -> Vec<ContentsEntry> {
-        self.lock().contents()
+        self.0.contents()
     }
 
     /// Where a link to `fragment` in the file at `path` points; none if `path`
     /// isn't a spine item.
     pub fn locate(&self, path: String, fragment: Option<String>) -> Option<Place> {
-        self.lock().locate(&path, fragment.as_deref())
+        self.0.locate(&path, fragment.as_deref())
     }
 
     /// Where the passage `quoted_text` of a Highlight from `start` to `end` is
@@ -290,23 +290,17 @@ impl EpubBook {
         end: EpubPosition,
         quoted_text: String,
     ) -> Option<Anchor> {
-        let (start, end) = self.lock().relocate(start, end, &quoted_text)?;
+        let (start, end) = self.0.relocate(start, end, &quoted_text)?;
         Some(Anchor::Epub { start, end })
     }
 
     /// The file at `path` (a spine item or what it uses), if the EPUB has it.
     pub fn resource(&self, path: String) -> Option<EpubResource> {
-        let resource = self.lock().resource(&path)?;
+        let resource = self.0.resource(&path)?;
         Some(EpubResource {
             bytes: resource.bytes,
             media_type: resource.media_type,
         })
-    }
-}
-
-impl EpubBook {
-    fn lock(&self) -> std::sync::MutexGuard<'_, epub::Epub> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -573,7 +567,7 @@ impl Library {
         Ok(self
             .core
             .open_epub(&id)?
-            .map(|epub| Arc::new(EpubBook(Mutex::new(epub)))))
+            .map(|epub| Arc::new(EpubBook(epub))))
     }
 
     /// The bytes of the Cover image of EPUB `id`, if it has one.
