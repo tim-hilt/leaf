@@ -1,9 +1,11 @@
 name: Build
 
+# Runs only by hand until GitHub runners ship Xcode 27 (the app needs the
+# iOS 27 SDK). Then uncomment push and pull_request, and the README badges.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  # push:
+  #   branches: [main]
+  # pull_request:
   workflow_dispatch:
 
 concurrency:
