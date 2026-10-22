@@ -3,7 +3,7 @@ import WebKit
 
 /// Serves an EPUB to a web view under `leafpdf-epub://book/`, straight from the
 /// core: nothing is unzipped to disk. The root is a page stacking the spine items
-/// as frames, in reading order; every other path is a file of the EPUB, so the
+/// as frames, in reading order, that load their items on demand; every other path is a file of the EPUB, so the
 /// relative references inside the book resolve as its author wrote them. Files
 /// are read off the main thread.
 @MainActor
@@ -61,12 +61,13 @@ final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
         return Reply(status: 200, mediaType: file.mediaType, data: file.bytes)
     }
 
-    /// The page with a frame for each spine item `paths`, each as wide as the
-    /// view; `ReaderEPUBView` sizes them to their content.
+    /// The page with a frame for each spine item `paths`, each as wide as the view. A frame
+    /// has no source but the `data-src` it is given while it is near the viewport; the page's
+    /// script (`ReaderEPUBScript`) does that and sizes the frames.
     private nonisolated static func page(of paths: [String]) -> String {
         let frames = paths.map { path in
             let source = rootURL.appending(path: path).absoluteString.replacingOccurrences(of: "&", with: "&amp;")
-            return "<iframe src=\"\(source)\" scrolling=\"no\"></iframe>"
+            return "<iframe data-src=\"\(source)\" scrolling=\"no\"></iframe>"
         }
         return """
             <!DOCTYPE html><html><head>\

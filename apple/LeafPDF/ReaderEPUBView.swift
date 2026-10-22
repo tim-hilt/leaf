@@ -13,12 +13,19 @@ import WebKit
 /// side margin and keeps images within the width. The text reflows when the
 /// view's size changes.
 ///
+/// Only the Chapters near the viewport are loaded, those within a viewport above and
+/// below it; a Chapter far away is released and keeps its height, and one never loaded
+/// has a height estimated from the core's text lengths, so the column keeps its full
+/// height. Highlights, page Notes, search marks, the text size and the Page Style are
+/// applied to each Chapter as it loads, and going to a place loads its Chapter first
+/// (`ReaderEPUBScript`).
+///
 /// Files come from the core through `EPUBSchemeHandler`. Web links open in the
 /// browser through `openExternally`; links inside the book are Jumps. A Jump goes
 /// to a place and remembers the top of the viewport as the Back place, named by
 /// its Chapter in the Table of Contents (`contents`); only the latest is kept.
-/// `onOpen` is called once every spine item is laid out and the view has scrolled
-/// to its opening place; a tap on text that isn't a link is reported to
+/// `onOpen` is called once the opening Chapter is laid out and the view has scrolled
+/// to its opening place, the other Chapters loading on from there; a tap on text that isn't a link is reported to
 /// `onSingleTap`. The page reports the position at the top of the viewport as it
 /// scrolls (`ReaderEPUBScript`), which `topOfViewport` gives and `onScroll` announces.
 ///
@@ -31,8 +38,9 @@ import WebKit
 /// behind the page has the paper's color from the start, so nothing flashes.
 ///
 /// Document Search runs in the core's text of the spine items (`EPUBSearch`), so a match is
-/// a position. The native find bar (`find`) searches as the reader types; the matches are
-/// listed in `results` and marked in the text. Going to a match scrolls it into view, and
+/// a position, also in a Chapter that isn't loaded. The native find bar (`find`) searches as
+/// the reader types; the matches are listed in `results` and marked in the text, each Chapter
+/// as it loads. Going to a match scrolls it into view, loading its Chapter, and
 /// during one search session that is one Jump: Back returns to where the search started.
 ///
 /// Highlights are drawn over their words by the page (`ReaderEPUBScript`), so they follow
@@ -221,7 +229,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         configuration.userContentController.addUserScript(
             WKUserScript(
                 source: ReaderEPUBScript.source(
-                    frameCount: spine.count, start: start, textSize: textSize, appearance: pageAppearance),
+                    lengths: book.textLengths(), start: start, textSize: textSize, appearance: pageAppearance),
                 injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .defaultClient))
         super.init(frame: .zero, configuration: configuration)
         messages.view = self
@@ -307,11 +315,11 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         go(to: place)
     }
 
-    /// Scrolls `place` to the top of the viewport; the page then reports the new position.
+    /// Scrolls `place` to the top of the viewport, loading its Chapter first; the page then
+    /// reports the new position.
     private func go(to place: Place) {
         guard isOpen, case .epub(let spineIndex, let offset) = place else { return }
-        let script = "leaf.scrollToPosition([\(spineIndex), \(offset)])"
-        Task { _ = try? await evaluateJavaScript(script, in: nil, contentWorld: .defaultClient) }
+        callPage("return await leaf.scrollToPosition([\(spineIndex), \(offset)])")
     }
     func zoomIn() { changeTextSize(to: TextSize.zoomedIn(from: textSize)) }
     func zoomOut() { changeTextSize(to: TextSize.zoomedOut(from: textSize)) }
@@ -349,18 +357,17 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     func markMatches(_ matches: [EPUBSearch.Match], current: Int?) {
         guard isOpen else { return }
         let list = matches.map { "[\($0.spineIndex), \($0.range.location), \($0.range.length)]" }
-        let script = "leaf.setFindMarks([\(list.joined(separator: ","))], \(current ?? -1))"
-        Task { _ = try? await evaluateJavaScript(script, in: nil, contentWorld: .defaultClient) }
+        callPage("leaf.setFindMarks([\(list.joined(separator: ","))], \(current ?? -1))")
     }
 
     /// Scrolls a Document Search match into view, a third of the way down the
-    /// viewport; does nothing if it is already in view. Within a search session the
-    /// move is part of one Jump; see `beginSearchSession()`.
+    /// viewport, loading its Chapter first; does nothing if it is already in view. Within
+    /// a search session the move is part of one Jump; see `beginSearchSession()`.
     func reveal(_ match: EPUBSearch.Match) {
         guard isOpen else { return }
-        let script = "leaf.reveal([\(match.spineIndex), \(match.range.location), \(match.range.length)])"
+        let script = "return await leaf.reveal([\(match.spineIndex), \(match.range.location), \(match.range.length)])"
         Task {
-            let moved = try? await evaluateJavaScript(script, in: nil, contentWorld: .defaultClient) as? Bool
+            let moved = try? await callAsyncJavaScript(script, in: nil, contentWorld: .defaultClient) as? Bool
             if moved == true, let searchStart { backPlace = searchStart }
         }
     }
@@ -421,7 +428,12 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         guard let data = try? JSONSerialization.data(withJSONObject: argument),
             let json = String(data: data, encoding: .utf8)
         else { return }
-        Task { _ = try? await evaluateJavaScript("leaf.\(function)(\(json))", in: nil, contentWorld: .defaultClient) }
+        callPage("leaf.\(function)(\(json))")
+    }
+
+    /// Runs `script`, the body of a function that may wait for the page, in the Reader's world.
+    private func callPage(_ script: String) {
+        Task { _ = try? await callAsyncJavaScript(script, in: nil, contentWorld: .defaultClient) }
     }
 
     // MARK: Page Notes

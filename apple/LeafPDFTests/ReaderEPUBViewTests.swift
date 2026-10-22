@@ -22,7 +22,14 @@ private typealias PageNote = LeafPDF.PageNote
 
     @Test func allChaptersAreReachableByScrollingOneColumn() async throws {
         let chapters = (1...3).map { "<div style=\"height: 1000px\">Chapter \($0)</div>" }
-        let reader = try await openReader(chapters: chapters, size: CGSize(width: 400, height: 800))
+        let reader = try await openReader(
+            book: importedBook(chapters: chapters), size: CGSize(width: 400, height: 800), onScreen: true)
+        // Chapters load as they come near the viewport.
+        try await eventually {
+            _ = try await reader.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+            try await Task.sleep(for: .milliseconds(100))
+            return try await reader.chapterText(2).contains("Chapter 3")
+        }
 
         let frames = try await reader.chapterFrames()
         #expect(frames.count == 3)
@@ -995,6 +1002,214 @@ private typealias PageNote = LeafPDF.PageNote
         else { throw ImportFailed() }
 
         #expect(await library.epub(of: pdf) == nil)
+    }
+}
+
+// MARK: Long books: Chapters load near the viewport
+
+/// Books of many tall Chapters, most of them outside what the Reader keeps loaded.
+extension ReaderEPUBViewTests {
+    /// `count` Chapters of twelve numbered paragraphs each, about 3000 points tall; the paragraphs are
+    /// "C<chapter> Paragraph <n> ...". `extra` adds markup after a Chapter's paragraphs.
+    private func longChapters(_ count: Int = 12, extra: [Int: String] = [:]) -> [String] {
+        (0..<count).map { paragraphs(12, prefix: "C\($0) ") + (extra[$0] ?? "") }
+    }
+
+    private func longBook(_ count: Int = 12, extra: [Int: String] = [:]) async throws -> EpubBook {
+        try await importedBook(chapters: longChapters(count, extra: extra))
+    }
+
+    /// Where paragraph `number` of Chapter `chapter` starts.
+    private func paragraph(_ number: Int, of chapter: Int, in book: EpubBook) throws -> Place {
+        .epub(spineIndex: chapter, offset: try offset(of: "C\(chapter) Paragraph \(number) ", in: chapter, of: book))
+    }
+
+    /// The distance from the top of the viewport to the top of paragraph `number` of Chapter `chapter`;
+    /// nil while the Chapter isn't loaded.
+    private func distance(_ reader: ReaderEPUBView, toParagraph number: Int, of chapter: Int) async throws -> Double? {
+        Double(
+            try await reader.evaluate(
+                """
+                (() => { const f = document.querySelectorAll('iframe')[\(chapter)], \
+                p = f.contentDocument.querySelectorAll('p')[\(number)]; \
+                return p ? f.getBoundingClientRect().top + p.getBoundingClientRect().top : 'none'; })()
+                """))
+    }
+
+    /// Waits until paragraph `number` of Chapter `chapter` is at the top of the viewport, within `tolerance`.
+    private func expectParagraphAtTop(
+        _ reader: ReaderEPUBView, _ number: Int, of chapter: Int, tolerance: Double = 2
+    ) async throws {
+        try await eventually {
+            guard let distance = try await self.distance(reader, toParagraph: number, of: chapter) else { return false }
+            return abs(distance) < tolerance
+        }
+        let found = try #require(try await distance(reader, toParagraph: number, of: chapter))
+        #expect(abs(found) < tolerance)
+    }
+
+    @Test func aLongBookOpensDeepAtItsPlaceAndKeepsItsFullHeight() async throws {
+        let book = try await longBook()
+        let place = try paragraph(6, of: 9, in: book)
+
+        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+
+        try await expectParagraphAtTop(reader, 6, of: 9)
+        #expect(reader.topOfViewport == place)
+        #expect(reader.viewState?.place == place)
+        // The column has the height of the whole book, not of what is loaded: 12 Chapters of about 3000.
+        let height = try await reader.scrollHeight()
+        #expect(height > 12 * 1500 && height < 12 * 6000, "\(height)")
+    }
+
+    @Test func scrollingReachesTheEndOfALongBook() async throws {
+        let reader = try await openReader(book: longBook(), onScreen: true)
+
+        // The end moves while Chapters on the way are measured, so scroll until it holds still.
+        try await eventually {
+            _ = try await reader.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+            try await Task.sleep(for: .milliseconds(100))
+            guard case .epub(11, _)? = reader.topOfViewport else { return false }
+            return try await reader.evaluate("document.documentElement.scrollHeight - scrollY - innerHeight") == "0"
+        }
+
+        guard case .epub(11, let offset)? = reader.topOfViewport else { throw ImportFailed() }
+        #expect(offset > 0)
+        #expect(try await reader.chapterText(11).contains("C11 Paragraph 11 "))
+        let height = try await reader.scrollHeight()
+        #expect(height > 12 * 1500 && height < 12 * 6000, "\(height)")
+    }
+
+    @Test func aJumpAcrossFarChaptersLandsOnItsLineAndBackReturnsEvenAfterItWasReleased() async throws {
+        let book = try await longBook()
+        let reader = try await openReader(book: book, onScreen: true)
+        let start = try #require(reader.topOfViewport)
+        let far = try paragraph(6, of: 10, in: book)
+        let other = try paragraph(3, of: 2, in: book)
+
+        reader.jump(to: far)
+        try await expectParagraphAtTop(reader, 6, of: 10)
+        #expect(reader.topOfViewport == far)
+        #expect(reader.backPlace == start)
+
+        // Another far Jump releases Chapter 10 meanwhile; Back still lands on its line.
+        reader.jump(to: other)
+        try await expectParagraphAtTop(reader, 3, of: 2)
+        #expect(reader.backPlace == far)
+        reader.back()
+        try await expectParagraphAtTop(reader, 6, of: 10)
+        #expect(reader.topOfViewport == far)
+        #expect(reader.backPlace == nil)
+    }
+
+    @Test func aLinkToAFarChapterLandsOnItsAnchor() async throws {
+        var chapters = longChapters(extra: [9: "<p id=\"deep\">Deep target</p>" + paragraphs(3)])
+        chapters[0] = #"<p><a id="go" href="chapter9.xhtml#deep">Deep</a></p>"# + chapters[0]
+        let book = try await importedBook(chapters: chapters)
+        let reader = try await openReader(book: book, onScreen: true, openExternally: { _ in })
+        let start = try #require(reader.topOfViewport)
+
+        _ = try await reader.evaluate("frame(0).getElementById('go').click()")
+
+        let target = Place.epub(spineIndex: 9, offset: try offset(of: "Deep target", in: 9, of: book))
+        try await eventually { reader.topOfViewport == target }
+        #expect(reader.topOfViewport == target)
+        let top = try await reader.evaluate(
+            "document.querySelectorAll('iframe')[9].getBoundingClientRect().top + frame(9).getElementById('deep').getBoundingClientRect().top"
+        )
+        #expect(abs(try #require(Double(top))) < 2)
+        #expect(reader.backPlace == start)
+    }
+
+    @Test func theTextSizeKeepsThePlaceInALongBookAndChaptersLoadedLaterUseIt() async throws {
+        let book = try await longBook()
+        let place = try paragraph(6, of: 9, in: book)
+        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        try await expectParagraphAtTop(reader, 6, of: 9)
+        let height = try await reader.scrollHeight()
+
+        for size in [2, 0.75, 1] as [CGFloat] {
+            reader.textSize = size
+            try await reader.settle()
+            #expect(reader.topOfViewport == place, "at size \(size)")
+            try await expectParagraphAtTop(reader, 6, of: 9, tolerance: 4)
+        }
+        reader.textSize = 2
+        try await reader.settle()
+        // Unloaded Chapters are taller too, so the whole column grows.
+        #expect(try await reader.scrollHeight() > height * 1.5)
+
+        reader.jump(to: try paragraph(2, of: 2, in: book))
+        try await expectParagraphAtTop(reader, 2, of: 2, tolerance: 4)
+        #expect(try await reader.evaluate("getComputedStyle(frame(2).body).zoom") == "2")
+    }
+
+    @Test func thePageStyleKeepsThePlaceInALongBookAndChaptersLoadedLaterUseIt() async throws {
+        let book = try await longBook()
+        let place = try paragraph(6, of: 9, in: book)
+        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        try await expectParagraphAtTop(reader, 6, of: 9)
+        try await reader.settle()  // the Chapters around load and are measured
+        let height = try await reader.scrollHeight()
+
+        reader.pageAppearance = .dark(night)
+        try await reader.settle()
+
+        #expect(reader.topOfViewport == place)
+        #expect(try await reader.scrollHeight() == height)
+        reader.jump(to: try paragraph(2, of: 2, in: book))
+        try await expectParagraphAtTop(reader, 2, of: 2)
+        let color = "getComputedStyle(frame(2).querySelectorAll('p')[2]).color"
+        #expect(try await reader.evaluate(color) == "rgb(224, 208, 160)")
+    }
+
+    @Test func highlightsAndPageNotesAppearInChaptersOnceTheyLoad() async throws {
+        let book = try await longBook()
+        let reader = try await openReader(book: book, onScreen: true)
+        let words = "C8 Paragraph 3"
+        let start = try offset(of: words, in: 8, of: book)
+        reader.highlights = [
+            highlight("h", from: (8, start), to: (8, start + words.count), quoting: words, note: "why")
+        ]
+        reader.pageNotes = [pageNote("n", at: try offset(of: "C8 Paragraph 5 ", in: 8, of: book), in: 8)]
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(try await reader.noteIcons().isEmpty)
+
+        reader.jump(to: try paragraph(3, of: 8, in: book))
+
+        try await eventually { try await self.covered(reader, self.yellow, in: 8) == [words] }
+        #expect(try await covered(reader, yellow, in: 8) == [words])
+        try await eventually { try await reader.noteIcons().map(\.id).sorted() == ["h", "n"] }
+        let icons = try await reader.noteIcons().map(\.id).sorted()
+        #expect(icons == ["h", "n"], "\(icons) \(String(describing: reader.topOfViewport))")
+    }
+
+    @Test func aSearchMatchInAnUnloadedChapterIsRevealedAndMarked() async throws {
+        let book = try await longBook(extra: [8: "<p>The needle is here</p>", 10: "<p>Another needle</p>"])
+        let reader = try await openReader(book: book, onScreen: true)
+        let start = try #require(reader.topOfViewport)
+        reader.beginSearchSession()
+        reader.matches.search(.init("needle"))
+        try await eventually { reader.results.matches.count == 2 }
+
+        reader.results.onChoose(0)
+
+        try await eventually { reader.topOfViewport?.isSameSpot(as: start) == false }
+        try await eventually { try await reader.marks("leaf-find-current")[8] == 1 }
+        #expect(try await reader.marks("leaf-find-current")[8] == 1)
+        guard case .epub(8, _)? = reader.topOfViewport else { throw ImportFailed() }
+        // The match is on screen, and the reveal is one Jump.
+        let top = try await reader.evaluate(
+            "(() => { const f = document.querySelectorAll('iframe')[8]; return f.getBoundingClientRect().top + [...f.contentDocument.querySelectorAll('p')].find(p => p.textContent.includes('needle')).getBoundingClientRect().top; })()"
+        )
+        #expect((0..<800).contains(try #require(Double(top))))
+        try await eventually { reader.backPlace != nil }
+        #expect(reader.backPlace == start)
+
+        // The other match is marked once its Chapter loads.
+        reader.jump(to: .epub(spineIndex: 10, offset: 0))
+        try await eventually { try await reader.marks("leaf-find")[10] == 1 }
+        #expect(try await reader.marks("leaf-find")[10] == 1)
     }
 }
 
