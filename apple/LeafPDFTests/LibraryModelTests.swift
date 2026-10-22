@@ -787,6 +787,29 @@ import UniformTypeIdentifiers
         #expect(problems.map(\.file.lastPathComponent) == ["bad.epub"])
     }
 
+    @Test func aMixedDropOfAPDFAndAnEPUBImportsBothAndOpensATabForEach() async throws {
+        let library = try openLibrary()
+        let tabs = Tabs(defaults: UserDefaults(suiteName: UUID().uuidString)!, library: [])
+        let dropped = DroppedFiles()
+        let providers = [
+            NSItemProvider(contentsOf: try writePDF(named: "a.pdf"))!,
+            NSItemProvider(contentsOf: try writeEPUB(named: "b.epub", title: "Emma"))!,
+        ]
+
+        let urls = await dropped.receive(providers)
+        let result = await library.importFiles(urls, from: .drop)
+        dropped.removeCopies()
+
+        guard case .open(let documents, let problems) = result else {
+            Issue.record("expected .open, got \(result)")
+            return
+        }
+        tabs.open(documents)
+        #expect(problems.isEmpty)
+        #expect(documents.map(\.format) == [.pdf, .epub])
+        #expect(tabs.openIDs == documents.map(\.id))
+    }
+
     @Test func searchFindsAnEPUBByItsAuthorAndItSortsLikeAPDF() async throws {
         let library = try openLibrary()
         _ = await library.import(try writePDF(named: "a.pdf", metadataTitle: "Moby-Dick", author: "Melville"))
