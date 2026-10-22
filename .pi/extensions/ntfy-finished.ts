@@ -7,16 +7,27 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const NTFY_URL = `https://ntfy.sh/${process.env.NTFY_AGENT_TOPIC}`;
-
 export default function (pi: ExtensionAPI) {
 	// `agent_settled` fires when Pi will not continue automatically
 	// (no retries, compaction, or queued follow-ups pending).
 	pi.on("agent_settled", async (_event, ctx) => {
 		try {
-			await fetch(NTFY_URL, {
+			const payload = {
+				title: `${process.cwd().split("/").pop()}: Agent Finished`,
+				topic: process.env.NTFY_AGENT_TOPIC,
+				message: ctx.sessionManager.getEntries().filter(e => e.message?.role === "assistant").pop()?.message?.content[0]["text"] || "The agents output",
+				tags: ["robot"],
+				markdown: true,
+				icon: "https://upload.wikimedia.org/wikipedia/commons/8/81/Pi_logo.png",
+			};
+			ctx.ui.notify(JSON.stringify(payload));
+
+			await fetch("https://ntfy.sh", {
 				method: "POST",
-				body: "Agent finished",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(payload),
 			});
 		} catch (error) {
 			if (ctx.mode === "tui") {
