@@ -21,7 +21,7 @@ import WebKit
             book: importedBook(chapters: chapters), size: CGSize(width: 400, height: 800), onScreen: true)
         // Chapters load as they come near the viewport.
         try await eventually {
-            _ = try await reader.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+            try await reader.scrollAsReader("window.scrollTo(0, document.documentElement.scrollHeight)")
             try await Task.sleep(for: .milliseconds(100))
             return try await reader.chapterText(2).contains("Chapter 3")
         }
@@ -176,7 +176,7 @@ import WebKit
         let book = try await importedBook(chapters: [paragraphs(20), paragraphs(60)])
         let reader = try await openReader(book: book, onScreen: true, onScroll: { scrolls += 1 })
 
-        _ = try await reader.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+        try await reader.scrollAsReader("window.scrollTo(0, document.documentElement.scrollHeight)")
         try await Task.sleep(for: .milliseconds(300))
 
         #expect(scrolls > 0)
@@ -189,7 +189,7 @@ import WebKit
     @Test func aPlaceIsKeptAcrossReopeningAtItsReportedPlace() async throws {
         let book = try await importedBook(chapters: [paragraphs(60)])
         let first = try await openReader(book: book)
-        _ = try await first.evaluate("window.scrollTo(0, 3000)")
+        try await first.scrollAsReader("window.scrollTo(0, 3000)")
         try await Task.sleep(for: .milliseconds(300))
         let reported = try #require(first.viewState)
 
@@ -1067,12 +1067,56 @@ extension ReaderEPUBViewTests {
         #expect(height > 12 * 1500 && height < 12 * 6000, "\(height)")
     }
 
+    @Test func theChapterOfThePlaceGrowingAboveItAfterOpeningKeepsThePlace() async throws {
+        let book = try await longBook()
+        let place = try paragraph(6, of: 9, in: book)
+        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        try await expectParagraphAtTop(reader, 6, of: 9)
+
+        // As when its images or fonts arrive late.
+        _ = try await reader.evaluate(
+            "frame(9).body.prepend(Object.assign(frame(9).createElement('div'), { style: 'height: 1500px' }))")
+
+        try await expectParagraphAtTop(reader, 6, of: 9)
+        #expect(reader.topOfViewport == place)
+    }
+
+    @Test func aScrollTheReaderDidntMakeAfterOpeningIsNotTheirPlace() async throws {
+        let book = try await longBook()
+        let place = try paragraph(6, of: 9, in: book)
+        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+
+        // iOS can scroll the page back for a moment to where its own scroll view was.
+        _ = try await reader.evaluate("window.scrollTo(0, 0)")
+        try await Task.sleep(for: .milliseconds(300))
+
+        #expect(reader.topOfViewport == place)
+    }
+
+    @Test func resizingKeepsThePlace() async throws {
+        let book = try await longBook()
+        let place = try paragraph(6, of: 9, in: book)
+        let reader = try await openReader(
+            book: book, state: ReaderViewState(place: place), size: CGSize(width: 400, height: 800), onScreen: true)
+        try await expectParagraphAtTop(reader, 6, of: 9)
+
+        let size = CGSize(width: 800, height: 400)
+        #if os(iOS)
+            reader.window?.frame.size = size
+            reader.frame.size = size
+        #else
+            reader.window?.setContentSize(size)
+        #endif
+
+        try await expectParagraphAtTop(reader, 6, of: 9, tolerance: 30)
+    }
+
     @Test func scrollingReachesTheEndOfALongBook() async throws {
         let reader = try await openReader(book: longBook(), onScreen: true)
 
         // The end moves while Chapters on the way are measured, so scroll until it holds still.
         try await eventually {
-            _ = try await reader.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+            try await reader.scrollAsReader("window.scrollTo(0, document.documentElement.scrollHeight)")
             try await Task.sleep(for: .milliseconds(100))
             guard case .epub(11, _)? = reader.topOfViewport else { return false }
             return try await reader.evaluate("document.documentElement.scrollHeight - scrollY - innerHeight") == "0"
@@ -1405,6 +1449,11 @@ private func show(_ reader: ReaderEPUBView) {
 extension ReaderEPUBView {
     /// Back, as the Reader asks for it; `WKWebView` has a `goBack()` of its own.
     fileprivate func back() { (self as any ReaderDocumentView).goBack() }
+
+    /// Runs `script` as the reader's scrolling: their input comes first, as a wheel event.
+    fileprivate func scrollAsReader(_ script: String) async throws {
+        _ = try await evaluate("(window.dispatchEvent(new WheelEvent('wheel')), \(script))")
+    }
 
     /// The result of the JavaScript `script`, as text. `frame(i)` is the document of chapter `i`.
     fileprivate func evaluate(_ script: String) async throws -> String {

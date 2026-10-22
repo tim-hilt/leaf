@@ -14,9 +14,10 @@ import LeafCore
 /// measured height. A frame that was never loaded has an estimated height, from the length
 /// of its text (the `lengths` the core gives) at the average height per character of the
 /// loaded chapters; the estimates scale with the text size and the page's width, and
-/// improve as chapters are measured. When a frame above the viewport changes height, the
-/// page scrolls by the difference, so what is on screen doesn't move. Going to a place
-/// loads its chapter first and then scrolls to the exact line.
+/// improve as chapters are measured. When frames change height or a chapter reflows (late
+/// images or fonts, a new width), the page scrolls so the reader's place stays put. Going
+/// to a place loads its chapter first, scrolls to the exact line and pins the place there
+/// until the reader moves: scrolling iOS does on its own meanwhile is ignored.
 ///
 /// Everything the page draws over the text is page-level state, applied to a frame as it
 /// loads: Highlights, page Notes, Document Search marks, the text size and the Page Style.
@@ -24,7 +25,7 @@ import LeafCore
 ///
 /// It posts to the `reader` message handler: "opened" once the opening chapter is laid out
 /// at its place (the others load on from there), "tap" for a tap on text that isn't a link,
-/// and `[chapter, offset]` for the position at the top of the viewport: once before
+/// and `[chapter, offset]` for the reader's place at the top of the viewport: once before
 /// "opened", then as the page scrolls. The top of the viewport is always in a loaded
 /// chapter, and the position is only reported while it is. Tests and later features call
 /// `window.leaf` in the same content world.
@@ -167,8 +168,7 @@ enum ReaderEPUBScript {
                 return [index, starts[low] + from - 1];
               };
               const report = () => {
-                const place = position();
-                if (place) post(place);
+                if (anchor) post(anchor);
               };
 
               // The index of the text node holding the character at offset: the last one
@@ -420,8 +420,43 @@ enum ReaderEPUBScript {
                 return heights.map(height => { const top = y; y += height; return top; });
               };
 
-              // Sets the heights [[index, height], ...] of frames. Frames wholly above the viewport
-              // scroll it by the difference, so what is on screen stays where it is.
+              // The reader's place: the position at the top of the viewport, and the top of its line in
+              // the page (`anchorY`) and in the viewport (`anchorDrop`). When chapters are measured or
+              // reflow, the page scrolls so the place stays put. Going to a position pins it until the
+              // reader touches, scrolls, clicks or types: iOS may still scroll the page back for a moment
+              // to where its own scroll view was, so a pinned place ignores scrolling and goes back to its
+              // spot. Other scrolling (a scroll bar) unpins it a second after the page last moved it.
+              let anchor = null, anchorY = 0, anchorDrop = 0, pinned = true, heldY = 0, heldAt = 0;
+              const lineY = ([i, offset]) =>
+                window.scrollY + frames[i].getBoundingClientRect().top + lineTop(frames[i], offset);
+              const held = () => { heldY = window.scrollY; heldAt = performance.now(); };
+              // Takes the position at the top of the viewport as the place, pinned or not.
+              const anchorHere = pin => {
+                const at = position();
+                if (!at) return;
+                anchor = at;
+                pinned = pin;
+                anchorY = lineY(at);
+                anchorDrop = anchorY - window.scrollY;
+                held();
+              };
+              // Keeps the place after the text moved; by `shift` while its chapter isn't loaded.
+              const hold = shift => {
+                if (!anchor || status[anchor[0]] !== 'loaded') {
+                  if (shift) window.scrollBy(0, shift);
+                  return;
+                }
+                const y = lineY(anchor);
+                const to = pinned ? y - anchorDrop : window.scrollY + y - anchorY;
+                anchorY = y;
+                if (Math.abs(to - window.scrollY) < 1) return;
+                window.scrollTo(0, to);
+                if (pinned) held();
+              };
+              const watchReader = target => ['touchstart', 'wheel', 'keydown', 'mousedown'].forEach(type =>
+                target.addEventListener(type, () => { pinned = false; }, { capture: true, passive: true }));
+
+              // Sets the heights [[index, height], ...] of frames and keeps the place.
               const setHeights = (changes, keepPlace = true) => {
                 const y = window.scrollY, edges = tops();
                 let shift = 0, changed = false;
@@ -432,8 +467,9 @@ enum ReaderEPUBScript {
                   frames[i].style.height = height + 'px';
                   changed = true;
                 }
-                if (shift) window.scrollBy(0, shift);
-                if (changed) scheduleNotes();
+                if (!changed) return;
+                if (keepPlace) hold(shift);
+                scheduleNotes();
               };
               const fit = i => setHeights([[i, frames[i].contentDocument.documentElement.offsetHeight]]);
 
@@ -483,15 +519,16 @@ enum ReaderEPUBScript {
                 scheduleNotes();
               };
 
-              // Loads the chapters near the viewport and releases those far from it.
+              // Loads the chapters near the viewport and releases those far from it, but for that of a
+              // pinned place.
               const update = () => {
-                const y = window.scrollY, vh = viewport(), edges = tops();
+                const y = window.scrollY, vh = viewport(), edges = tops(), kept = pinned && anchor ? anchor[0] : -1;
                 for (let i = 0; i < count; i++) {
                   const top = edges[i], bottom = top + heights[i];
                   const near = bottom > y - vh * loadMargin && top < y + vh * (1 + loadMargin);
                   const far = bottom < y - vh * keepMargin || top > y + vh * (1 + keepMargin);
                   if (near && status[i] === 'empty') load(i);
-                  else if (far && status[i] !== 'empty') release(i);
+                  else if (far && i !== kept && status[i] !== 'empty') release(i);
                 }
               };
               let updating = false;
@@ -514,7 +551,10 @@ enum ReaderEPUBScript {
                   const y = window.scrollY, vh = viewport(), top = tops()[i];
                   const near = top + heights[i] > y - vh * loadMargin && top < y + vh * (1 + loadMargin);
                   if (!near) {
+                    anchor = null;
+                    pinned = true;
                     window.scrollTo(0, top);
+                    held();
                     moved = true;
                   }
                   update();
@@ -537,6 +577,7 @@ enum ReaderEPUBScript {
                 await bring(index, mine);
                 if (mine !== latest || status[index] !== 'loaded') return false;
                 scrollToLine(index, offset);
+                anchorHere(true);
                 return true;
               };
 
@@ -554,6 +595,7 @@ enum ReaderEPUBScript {
                 const top = frame.getBoundingClientRect().top + rect.top;
                 if (!moved && top >= 0 && top + rect.height <= window.innerHeight) return false;
                 window.scrollTo(0, window.scrollY + top - window.innerHeight / 3);
+                anchorHere(true);
                 return true;
               };
 
@@ -574,14 +616,17 @@ enum ReaderEPUBScript {
               // Reflows the loaded chapters at the new size and keeps the position; the others
               // are about as much taller as the text is larger (more lines, taller lines).
               const setTextSize = size => {
-                const place = ready ? position() : null;
+                const place = ready ? (pinned ? anchor : position()) : null;
                 const grow = (size / textSize) ** 2;
                 textSize = size;
                 render();
                 setHeights(frames.map((frame, i) => [i, status[i] === 'loaded'
                   ? frame.contentDocument.documentElement.offsetHeight : Math.round(heights[i] * grow)]), false);
                 reestimate();
-                if (place) scrollToLine(...place);
+                if (place) {
+                  scrollToLine(...place);
+                  anchorHere(pinned);
+                }
                 scheduleUpdate();
                 layOutNotes();
                 if (ready) report();
@@ -652,11 +697,18 @@ enum ReaderEPUBScript {
                 post({ contextSpot: emptySpot(box.left + event.clientX, box.top + event.clientY) });
               }, true);
               watchContextMenu(document);
+              watchReader(window);
               renderPage();
               window.addEventListener('scroll', () => {
                 if (queued) return;
                 queued = true;
-                setTimeout(() => { queued = false; update(); if (ready) report(); }, 16);
+                setTimeout(() => {
+                  queued = false;
+                  if (pinned && Math.abs(window.scrollY - heldY) >= 1 && performance.now() - heldAt > 1000) pinned = false;
+                  if (!pinned) anchorHere(false);
+                  update();
+                  if (ready) report();
+                }, 16);
               });
 
               // The text reflows with the page's width: the chapters that aren't loaded, about as
@@ -670,6 +722,7 @@ enum ReaderEPUBScript {
                     status[i] === 'empty' && measured[i] ? [[i, Math.round(heights[i] * was / width)]] : []));
                 }
                 reestimate();
+                hold(0);
                 scheduleUpdate();
               });
 
@@ -692,6 +745,7 @@ enum ReaderEPUBScript {
                 watchers.set(i, watcher);
                 doc.addEventListener('selectionchange', selectionChanged);
                 watchContextMenu(doc, frame);
+                watchReader(doc);
                 doc.addEventListener('click', click => {
                   if (click.target.closest('a[href]') || !doc.getSelection().isCollapsed) return;
                   const hit = highlightAt(i, click.clientX, click.clientY);
@@ -718,7 +772,7 @@ enum ReaderEPUBScript {
                   heights[i] = estimate(i, perUnit);
                   frame.style.height = heights[i] + 'px';
                 });
-                await scrollToPosition(\(start) || [0, 0]);
+                if (!await scrollToPosition(\(start) || [0, 0])) anchorHere(true);
                 ready = true;
                 renderPage();
                 report();
