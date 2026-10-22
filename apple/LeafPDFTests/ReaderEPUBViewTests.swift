@@ -545,10 +545,14 @@ private typealias PageNote = LeafPDF.PageNote
     // MARK: The core's text
 
     @Test func offsetsInTheDOMEqualTheCoresOffsets() async throws {
-        let book = try await importedBook(chapters: [
-            "<h1>Title</h1><p>Plain <b id=\"b\">bold</b> &amp; &#233;<i>\u{1F600}x</i> <![CDATA[<cdata>]]> tail</p>",
-            "<p><span><em id=\"e\">deep</em></span>\n  <span>last</span></p>",
-        ])
+        // With the XHTML 1.1 doctype many EPUB 2 books have, the web view resolves HTML's entities.
+        let book = try await importedBook(
+            chapters: [
+                "<h1>Title</h1><p>Plain <b id=\"b\">bold</b> &amp; &#233;<i>\u{1F600}x</i> <![CDATA[<cdata>]]> tail</p>",
+                "<p><span><em id=\"e\">deep</em></span>\n  <span>last&nbsp;&mdash;&rsquo;</span></p>",
+            ],
+            doctype: #"<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "#
+                + #""http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">"#)
         let reader = try await openReader(book: book)
 
         for index in 0..<2 {
@@ -1041,10 +1045,11 @@ func makeLibrary() throws -> LibraryModel {
 /// An EPUB of `chapters`, imported.
 @MainActor
 func importedBook(
-    chapters: [String], manifest: String = "", files: [String: Data] = [:]
+    chapters: [String], manifest: String = "", files: [String: Data] = [:], doctype: String = ""
 ) async throws -> EpubBook {
     let library = try makeLibrary()
-    let source = try writeEPUB(named: "book.epub", chapters: chapters, manifest: manifest, files: files)
+    let source = try writeEPUB(
+        named: "book.epub", chapters: chapters, manifest: manifest, files: files, doctype: doctype)
     guard case .opened(let document) = await library.import(source), let book = library.epub(of: document)
     else { throw ImportFailed() }
     return book

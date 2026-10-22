@@ -10,7 +10,8 @@ import UniformTypeIdentifiers
 /// are more entries of the zip, by path.
 func writeEPUB(
     named fileName: String, title: String? = nil, author: String? = nil, body: String = "<p>Hello</p>",
-    chapters: [String]? = nil, metadata: String = "", manifest: String = "", files: [String: Data] = [:]
+    chapters: [String]? = nil, metadata: String = "", manifest: String = "", files: [String: Data] = [:],
+    doctype: String = ""
 ) throws -> URL {
     let chapters = chapters ?? [body]
     var details = metadata
@@ -34,7 +35,7 @@ func writeEPUB(
     ]
     for (index, body) in chapters.enumerated() {
         let chapter = """
-            <?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>x</title></head>\
+            <?xml version="1.0"?>\(doctype)<html xmlns="http://www.w3.org/1999/xhtml"><head><title>x</title></head>\
             <body>\(body)</body></html>
             """
         entries.append(("OEBPS/chapter\(index).xhtml", Data(chapter.utf8)))

@@ -179,7 +179,7 @@ import Testing
         #expect(TableOfContents(try await importedBook(chapters: ["<p>x</p>"])).isEmpty)
     }
 
-    @Test func theBackCapsuleNamesTheEntryAPlaceIsIn() {
+    @Test func theBackCapsuleNamesTheChapterAPlaceIsIn() {
         func entry(_ id: Int, _ title: String, _ offset: Int, _ sections: [TableOfContents.Entry] = [])
             -> TableOfContents.Entry
         {
@@ -192,7 +192,8 @@ import Testing
         ])
 
         #expect(contents.backTarget(at: .epub(spineIndex: 0, offset: 15)) == .chapter("One"))
-        #expect(contents.backTarget(at: .epub(spineIndex: 0, offset: 20)) == .chapter("Opening"))
+        // In a Section: still named by its Chapter, as the glossary has it.
+        #expect(contents.backTarget(at: .epub(spineIndex: 0, offset: 20)) == .chapter("One"))
         #expect(contents.backTarget(at: .epub(spineIndex: 0, offset: 500)) == .chapter("Two"))
         // Before the first entry.
         #expect(contents.backTarget(at: .epub(spineIndex: 0, offset: 5)) == .beginning)

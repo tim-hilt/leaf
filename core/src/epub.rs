@@ -8,7 +8,8 @@
 //!
 //! The text of a spine item, the contract with the clients' web views (ADR-0022),
 //! is its XHTML body's text nodes concatenated in document order, with
-//! entities resolved. Its length is counted in UTF-16 code units, as
+//! entities resolved: XML's and HTML 4's, as web views resolve them in XHTML.
+//! Its length is counted in UTF-16 code units, as
 //! JavaScript counts a string.
 //!
 //! The Table of Contents (the EPUB 3 nav, else the EPUB 2 NCX) points into that
@@ -26,6 +27,8 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::ControlFlow;
 use std::path::Path;
+
+mod entities;
 
 /// Why a File isn't an EPUB LeafPDF reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +57,10 @@ impl std::error::Error for Error {}
 pub struct Epub {
     zip: Zip,
     package: Package,
+    /// The text of each spine item read so far, by index. Readers ask for the
+    /// same items again and again (placing Highlights), so each is inflated and
+    /// parsed once.
+    texts: HashMap<usize, String>,
 }
 
 impl Epub {
@@ -77,7 +84,11 @@ impl Epub {
         if package.spine.is_empty() {
             return Err(Error::Invalid);
         }
-        Ok(Self { zip, package })
+        Ok(Self {
+            zip,
+            package,
+            texts: HashMap::new(),
+        })
     }
 
     /// The title the EPUB declares, if any.
@@ -143,8 +154,13 @@ impl Epub {
     /// it breaks if it isn't well-formed. None for an index beyond the spine,
     /// and for an item the zip can't read.
     pub fn text(&mut self, index: usize) -> Option<String> {
+        if let Some(text) = self.texts.get(&index) {
+            return Some(text.clone());
+        }
         let item = self.package.spine.get(index)?;
-        self.zip.read(item).map(|xhtml| text_of(&xhtml))
+        let text = text_of(&self.zip.read(item)?);
+        self.texts.insert(index, text.clone());
+        Some(text)
     }
 
     /// Where the passage `quoted` of a Highlight is, now: from `start` to `end`
@@ -530,17 +546,13 @@ fn scan(xhtml: &[u8], mut anchors: Option<&mut HashMap<String, u64>>) -> String 
     text
 }
 
-/// The character an entity or character reference stands for. Entities XML
-/// doesn't define (such as `&nbsp;`) are none.
+/// The character an entity or character reference stands for: XML's and
+/// HTML 4's entities (such as `&nbsp;`); none for any other.
 fn entity(reference: &BytesRef<'_>) -> Option<char> {
     match (reference.resolve_char_ref(), &**reference) {
         (Ok(Some(c)), _) => Some(c),
-        (_, "amp") => Some('&'),
-        (_, "lt") => Some('<'),
-        (_, "gt") => Some('>'),
-        (_, "quot") => Some('"'),
         (_, "apos") => Some('\''),
-        _ => None,
+        (_, name) => entities::html(name),
     }
 }
 
@@ -1063,12 +1075,12 @@ mod tests {
     #[test]
     fn text_is_the_concatenated_body_text_nodes_of_a_spine_item() {
         let book = Book::new("").chapters(&[
-            "<h1>Hi</h1><p>a<b>b</b>&amp;&#233;&nbsp;</p>",
+            "<h1>Hi</h1><p>a<b>b</b>&amp;&#233;&nbsp;&apos;&bogus;</p>",
             "<p><![CDATA[<x>]]>😀</p>",
         ]);
         let mut epub = open(&book.bytes()).unwrap();
-        // `&nbsp;` is not an XML entity: dropped.
-        assert_eq!(epub.text(0).as_deref(), Some("Hiab&é"));
+        // HTML's named entities too, as web views resolve them in XHTML; unknown ones are dropped.
+        assert_eq!(epub.text(0).as_deref(), Some("Hiab&é\u{a0}'"));
         assert_eq!(epub.text(1).as_deref(), Some("<x>😀"));
         assert_eq!(epub.text(2), None);
     }
@@ -1079,8 +1091,8 @@ mod tests {
             "<h1>Hi</h1><p>a<b>b</b>&amp;&#233;&nbsp;</p>",
             "<p><![CDATA[<x>]]>😀</p>",
         ]);
-        // "Hiab&é" and "<x>" + 😀 (2 units)
-        assert_eq!(open(&book.bytes()).unwrap().characters(), [6, 5]);
+        // "Hiab&é\u{a0}" and "<x>" + 😀 (2 units)
+        assert_eq!(open(&book.bytes()).unwrap().characters(), [7, 5]);
     }
 
     #[test]

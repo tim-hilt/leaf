@@ -170,8 +170,6 @@ enum ReaderEPUBScript {
                 return range;
               };
 
-              // Scrolls the match [index, offset, length] a third of the way down the viewport
-              // unless its first line is in view; returns whether it scrolled.
               // The offset in the text of the point (container, offset) of the DOM: of a text
               // node's character, or of the first character at or after an element's point.
               const pointOffset = ({ nodes, starts, length }, container, offset) => {
@@ -357,6 +355,8 @@ enum ReaderEPUBScript {
                 layOutNotes();
               };
 
+              // Scrolls the match [index, offset, length] a third of the way down the viewport
+              // unless its first line is in view; returns whether it scrolled.
               const reveal = ([index, offset, length]) => {
                 const frame = frames()[index];
                 const range = frame && rangeOf(frame, offset, length);

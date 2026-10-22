@@ -88,10 +88,10 @@ struct TableOfContents {
         return best.map { Position(current: $0.entry, containing: $0.containing) }
     }
 
-    /// How Back names `place`: by the Chapter or Section it is in, or the beginning
-    /// of the Document before the first one.
+    /// How Back names `place`: by the Chapter it is in, also within one of its Sections,
+    /// or the beginning of the Document before the first one.
     func backTarget(at place: Place) -> BackTarget {
-        position(at: place).map { .chapter($0.current.title) } ?? .beginning
+        position(at: place).map { .chapter(($0.containing.first ?? $0.current).title) } ?? .beginning
     }
 
     private static func target(
