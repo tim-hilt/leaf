@@ -485,7 +485,7 @@ mod tests {
         fn new() -> Self {
             static NEXT: AtomicU32 = AtomicU32::new(0);
             let dir = std::env::temp_dir().join(format!(
-                "leafpdf-loop-{}-{}",
+                "leaf-loop-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Relaxed)
             ));

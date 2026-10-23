@@ -65,18 +65,18 @@ Markup is never written into the File: it lives in the Document's synced state a
 
 ## 8. Cloud Backing (WebDAV)
 
-Cloud Backing is off until the user Connects a Cloud Provider in Settings; only one is Connected at a time. The first Cloud Provider is WebDAV, for self-hosting (e.g. `rclone serve webdav` on a Raspberry Pi behind a Cloudflare Tunnel, see `docs/self-hosting.md`): Server URL (https only), username and password. LeafPDF keeps everything in a `LeafPDF` folder inside that URL.
+Cloud Backing is off until the user Connects a Cloud Provider in Settings; only one is Connected at a time. The first Cloud Provider is WebDAV, for self-hosting (e.g. `rclone serve webdav` on a Raspberry Pi behind a Cloudflare Tunnel, see `docs/self-hosting.md`): Server URL (https only), username and password. Leaf keeps everything in a `Leaf` folder inside that URL.
 
 - Connecting merges the Device's Library with the one in the cloud; nothing is lost. Files download right away, most recently read first; a Document appears once its File is there.
 - The Library, Reading Progress, Markup and Highlight Colors keep Syncing: a few seconds after a change, on launch and foreground, and every 10 seconds while in the foreground. Importing uploads the File.
 - A Remove wins over concurrent edits and frees the cloud storage. Importing the File again starts fresh.
 - An open Reader keeps its place; new Markup shows up live. A Document Removed elsewhere closes its Tab.
-- While Files transfer, the Gallery shows "Syncing 12 of 120 Documents". Settings shows the status; a blocked Sync (access lost, LeafPDF needs an update) adds a warning icon to the Gallery.
+- While Files transfer, the Gallery shows "Syncing 12 of 120 Documents". Settings shows the status; a blocked Sync (access lost, Leaf needs an update) adds a warning icon to the Gallery.
 - Disconnect keeps everything and forgets the credentials. Switching Cloud Provider Disconnects first, after a confirmation.
 
 ## 9. File Import (external)
 
-Files can also be Imported from outside: the share sheet on iOS and iPadOS, "Open With" and the Dock icon on macOS, and dropping onto the Gallery. LeafPDF only declares that it opens PDFs and EPUBs (on macOS as an Alternate handler, never the default). There are no extension targets; the in-app import pipeline is reused. A Share Extension would need an App Group for the Library folder, would have two processes writing the Library state, and would lack the progress modal, alerts and Reader.
+Files can also be Imported from outside: the share sheet on iOS and iPadOS, "Open With" and the Dock icon on macOS, and dropping onto the Gallery. Leaf only declares that it opens PDFs and EPUBs (on macOS as an Alternate handler, never the default). There are no extension targets; the in-app import pipeline is reused. A Share Extension would need an App Group for the Library folder, would have two processes writing the Library state, and would lack the progress modal, alerts and Reader.
 
 - Each file opens in a new Tab next to the open ones. A single file already in the Library opens its Tab with Open With or Share; "+" and a drop show "Already in your Library" with "Open".
 - Several files are Imported one after another and each opens in a Tab, the first one active. Duplicates open (or switch to) their Tab; rejections are listed in one alert. "+" accepts several files too.
@@ -88,9 +88,9 @@ Files can also be Imported from outside: the share sheet on iOS and iPadOS, "Ope
 
 Same Cloud Backing as section 8, other storage, in order:
 
-1. iCloud Drive: always `iCloud Drive/LeafPDF`; Connect asks once to grant iCloud Drive itself (other folders are refused), or says "Turn on iCloud Drive in Settings"
-2. Google Drive: `My Drive/LeafPDF`, only files LeafPDF created (ADR-0011)
-3. OneDrive: `Apps/LeafPDF`, personal accounts only; reuses the HTTP + OAuth groundwork from Google Drive
+1. iCloud Drive: always `iCloud Drive/Leaf`; Connect asks once to grant iCloud Drive itself (other folders are refused), or says "Turn on iCloud Drive in Settings"
+2. Google Drive: `My Drive/Leaf`, only files Leaf created (ADR-0011)
+3. OneDrive: `Apps/Leaf`, personal accounts only; reuses the HTTP + OAuth groundwork from Google Drive
 
 - Settings shows each Cloud Provider's icon in the picker and on the Connected row. These three have one "Connect" button (the provider's sign-in page for Google Drive and OneDrive); cancelling is silent. WebDAV keeps its form.
 - Connected shows the folder (iCloud Drive) or account (Google Drive, OneDrive).

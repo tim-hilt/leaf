@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Usage: scripts/apple-test.sh <xcodebuild args>, e.g. -destination ... -only-testing:...
-# Runs the LeafPDF scheme's tests and prints only compile errors and the test
+# Runs the Leaf scheme's tests and prints only compile errors and the test
 # output (failures, prints and the summary); the full log stays in $LOG.
 # Failure diagnostics are off: collecting them takes ~10 minutes per failing run.
 
 set -uo pipefail
-LOG=${LOG:-/tmp/leafpdf-test.log}
+LOG=${LOG:-/tmp/leaf-test.log}
 
 cd "$(dirname "$0")/../apple" || exit 1
-xcodebuild -scheme LeafPDF test -collect-test-diagnostics never "$@" >"$LOG" 2>&1
+xcodebuild -scheme Leaf test -collect-test-diagnostics never "$@" >"$LOG" 2>&1
 status=$?
 
 awk -v zwsp="$(printf '\342\200\213')" '

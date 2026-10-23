@@ -1,5 +1,5 @@
 //! The OneDrive storage: a Cloud Provider (ADR-0010) that keeps everything in
-//! the app folder of the user's OneDrive, `Apps/LeafPDF`.
+//! the app folder of the user's OneDrive, `Apps/Leaf`.
 //!
 //! Scope `Files.ReadWrite.AppFolder`, personal accounts only (ADR-0011).
 //! Items are addressed by path below the app root, so there are no IDs to look
@@ -186,7 +186,7 @@ struct Spool {
 
 impl Spool {
     fn new() -> io::Result<Self> {
-        let path = std::env::temp_dir().join(format!("leafpdf-upload-{}", unique_name()));
+        let path = std::env::temp_dir().join(format!("leaf-upload-{}", unique_name()));
         let file = File::options()
             .read(true)
             .write(true)
@@ -606,13 +606,13 @@ mod tests {
     }
 
     /// A storage in a new folder of the account whose OAuth client ID and
-    /// refresh token are in `LEAFPDF_ONEDRIVE_CLIENT_ID` and
-    /// `LEAFPDF_ONEDRIVE_REFRESH_TOKEN`. None if they aren't set.
+    /// refresh token are in `LEAF_ONEDRIVE_CLIENT_ID` and
+    /// `LEAF_ONEDRIVE_REFRESH_TOKEN`. None if they aren't set.
     fn real_storage() -> Option<(RealFolder, OneDriveStorage)> {
         let var = |name| std::env::var(name).ok();
         let (Some(client), Some(token)) = (
-            var("LEAFPDF_ONEDRIVE_CLIENT_ID"),
-            var("LEAFPDF_ONEDRIVE_REFRESH_TOKEN"),
+            var("LEAF_ONEDRIVE_CLIENT_ID"),
+            var("LEAF_ONEDRIVE_REFRESH_TOKEN"),
         ) else {
             eprintln!("skipped: no OneDrive account in the environment");
             return None;
@@ -621,7 +621,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let folder = format!("leafpdf-test-{nanos}-{}", unique_name());
+        let folder = format!("leaf-test-{nanos}-{}", unique_name());
         let at = |dir: &str| {
             let callback = Arc::<Recorder>::default();
             OneDriveStorage::at(&client, &token, dir, callback, production())

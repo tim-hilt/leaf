@@ -21,7 +21,7 @@ export default function (pi: ExtensionAPI) {
 				block: true,
 				reason:
 					"Run app tests with `make apple-test` (macOS) or `make apple-test-ios` (iOS Simulator), " +
-					"narrowed with ONLY=LeafPDFTests/<Suite>[/<test>()]. Full log: /tmp/leafpdf-test.log.",
+					"narrowed with ONLY=LeafTests/<Suite>[/<test>()]. Full log: /tmp/leaf-test.log.",
 			};
 		}
 	});

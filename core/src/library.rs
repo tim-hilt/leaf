@@ -138,7 +138,7 @@ impl Document {
 pub enum ImportError {
     /// Reading or copying the File failed. Nothing was imported.
     Io(io::Error),
-    /// The File is an EPUB LeafPDF can't read. Nothing was imported.
+    /// The File is an EPUB Leaf can't read. Nothing was imported.
     Epub(epub::Error),
     /// The File is neither a PDF nor an EPUB. Nothing was imported.
     UnsupportedFormat,
@@ -337,7 +337,7 @@ impl Library {
         Ok(())
     }
 
-    /// Makes the state an older LeafPDF left in the Document `folder`, if any,
+    /// Makes the state an older Leaf left in the Document `folder`, if any,
     /// the state of Import `import`. It is remade as this Device, which Sync
     /// sends; its changes by random actors no Device would.
     fn adopt_legacy_state(&self, folder: &Path, import: &str) -> io::Result<()> {
@@ -1124,7 +1124,7 @@ mod tests {
             use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
             static NEXT: AtomicU32 = AtomicU32::new(0);
             let dir = std::env::temp_dir().join(format!(
-                "leafpdf-test-{}-{}",
+                "leaf-test-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Relaxed)
             ));

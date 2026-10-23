@@ -300,7 +300,7 @@ mod tests {
     impl Scratch {
         fn new(name: &str) -> (Self, DirStorage) {
             let dir =
-                std::env::temp_dir().join(format!("leafpdf-chunks-{}-{name}", std::process::id()));
+                std::env::temp_dir().join(format!("leaf-chunks-{}-{name}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             let storage = DirStorage::open(&dir).unwrap();
             (Scratch(dir), storage)

@@ -40,5 +40,5 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: leafpdf-test-log
-          path: /tmp/leafpdf-test.log
+          name: leaf-test-log
+          path: /tmp/leaf-test.log

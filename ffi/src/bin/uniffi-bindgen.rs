@@ -1,4 +1,4 @@
-//! Generates foreign-language bindings from the compiled `leafpdf-ffi`
+//! Generates foreign-language bindings from the compiled `leaf-ffi`
 //! library. Invoked by the `Makefile`; not shipped.
 
 fn main() {

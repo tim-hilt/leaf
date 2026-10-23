@@ -1,7 +1,7 @@
 //! The Google Drive storage: a Cloud Provider (ADR-0010) that keeps everything
 //! in one folder of the user's Drive.
 //!
-//! Scope `drive.file` (ADR-0011), so only files LeafPDF created are visible.
+//! Scope `drive.file` (ADR-0011), so only files Leaf created are visible.
 //! Drive has no paths: names map to IDs through the folder hierarchy below the
 //! root folder. Small blobs upload in one request, bigger ones through a
 //! resumable upload, which is never resumed: an interrupted `put` starts over
@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 const API: &str = "https://www.googleapis.com";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 /// The folder in My Drive that holds everything.
-const APP_FOLDER: &str = "LeafPDF";
+const APP_FOLDER: &str = "Leaf";
 const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 
 /// Blobs up to this many bytes upload in one request. They are held in memory.
@@ -42,7 +42,7 @@ struct Item {
     created: String,
 }
 
-/// The `LeafPDF` folder of a Google Drive and everything below it.
+/// The `Leaf` folder of a Google Drive and everything below it.
 ///
 /// Errors tell why a request failed, see `cloud_http::OAuthClient`: revoked
 /// access is `PermissionDenied`, a full Drive is `QuotaExceeded`.
@@ -83,7 +83,7 @@ impl GoogleDriveStorage {
 
     /// The storage of a Drive that was connected before, e.g. at the last
     /// launch. Contacts nobody, so it works offline: the first use looks up
-    /// the `LeafPDF` folder in My Drive's root by name, so a renamed or
+    /// the `Leaf` folder in My Drive's root by name, so a renamed or
     /// trashed one isn't found, and creates it if missing. Of several, the
     /// oldest counts, then the lowest ID. Until that works, uses fail as
     /// requests do, see above.
@@ -111,7 +111,7 @@ impl GoogleDriveStorage {
         Ok((storage, account.to_owned()))
     }
 
-    /// The ID of the `LeafPDF` folder, looked up the first time. "root" is My
+    /// The ID of the `Leaf` folder, looked up the first time. "root" is My
     /// Drive's, by Drive's alias.
     fn root(&self) -> io::Result<String> {
         let mut root = self.root.lock().unwrap();
@@ -270,7 +270,7 @@ impl GoogleDriveStorage {
                 bytes,
             )?,
             None => {
-                let boundary = format!("leafpdf-{}", unique_name());
+                let boundary = format!("leaf-{}", unique_name());
                 let metadata = json!({"name": name, "parents": [parent]});
                 let mut body = format!(
                     "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n\
@@ -446,7 +446,7 @@ mod tests {
         counter: u64,
         /// Drive is full: nothing can be created or changed.
         full: bool,
-        /// Another Device creates a `LeafPDF` folder just before this one's.
+        /// Another Device creates a `Leaf` folder just before this one's.
         race: bool,
         /// Every API request fails like this: status and reason.
         outage: Option<(u16, &'static str)>,
@@ -763,13 +763,13 @@ mod tests {
             GoogleDriveStorage::at(CLIENT, REFRESH, None, self.reported.clone(), config)
         }
 
-        /// A folder `LeafPDF` in My Drive's root, created at second `created`.
+        /// A folder `Leaf` in My Drive's root, created at second `created`.
         fn add_app_folder(&self, created: u64, trashed: bool) -> String {
             let mut state = self.state();
             state.add_at(APP_FOLDER, "root", true, Vec::new(), created, trashed)
         }
 
-        /// How many not trashed `LeafPDF` folders are in My Drive's root.
+        /// How many not trashed `Leaf` folders are in My Drive's root.
         fn app_folders(&self) -> usize {
             let state = self.state();
             let named = |i: &&Stored| i.parent == "root" && i.name == APP_FOLDER && !i.trashed;
@@ -827,13 +827,13 @@ mod tests {
     }
 
     /// A storage in a new folder of the account whose OAuth client ID and
-    /// refresh token are in `LEAFPDF_GOOGLE_DRIVE_CLIENT_ID` and
-    /// `LEAFPDF_GOOGLE_DRIVE_REFRESH_TOKEN`. None if they aren't set.
+    /// refresh token are in `LEAF_GOOGLE_DRIVE_CLIENT_ID` and
+    /// `LEAF_GOOGLE_DRIVE_REFRESH_TOKEN`. None if they aren't set.
     fn real_storage() -> Option<(RealFolder, GoogleDriveStorage)> {
         let var = |name| std::env::var(name).ok();
         let (Some(client), Some(token)) = (
-            var("LEAFPDF_GOOGLE_DRIVE_CLIENT_ID"),
-            var("LEAFPDF_GOOGLE_DRIVE_REFRESH_TOKEN"),
+            var("LEAF_GOOGLE_DRIVE_CLIENT_ID"),
+            var("LEAF_GOOGLE_DRIVE_REFRESH_TOKEN"),
         ) else {
             eprintln!("skipped: no Google Drive account in the environment");
             return None;
@@ -848,7 +848,7 @@ mod tests {
         };
         let admin = at("root");
         let folder = admin
-            .make_folder("root", &format!("leafpdf-test-{nanos}-{}", unique_name()))
+            .make_folder("root", &format!("leaf-test-{nanos}-{}", unique_name()))
             .unwrap();
         let storage = at(&folder);
         Some((RealFolder(admin, folder), storage))

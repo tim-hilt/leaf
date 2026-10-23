@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 mod entities;
 
-/// Why a File isn't an EPUB LeafPDF reads.
+/// Why a File isn't an EPUB Leaf reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     /// Not a zip, or not an EPUB: a required part is missing or unreadable.
@@ -1030,8 +1030,7 @@ mod tests {
     fn open(bytes: &[u8]) -> Result<Epub, Error> {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("leafpdf-epub-{}-{n}.epub", std::process::id()));
+        let path = std::env::temp_dir().join(format!("leaf-epub-{}-{n}.epub", std::process::id()));
         fs::write(&path, bytes).unwrap();
         let opened = Epub::open(&path);
         fs::remove_file(path).unwrap();

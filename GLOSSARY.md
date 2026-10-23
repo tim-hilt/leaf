@@ -1,11 +1,11 @@
-# LeafPDF
+# Leaf
 
 A native PDF and EPUB reader that syncs reading state across a user's devices.
 
 ## Language
 
 **Document**:
-A PDF or EPUB the user has brought into LeafPDF to read.
+A PDF or EPUB the user has brought into Leaf to read.
 _Avoid_: PDF, EPUB, book
 
 **Format**:
@@ -29,7 +29,7 @@ The set of Documents the user has imported.
 _Avoid_: Collection, Gallery (when meaning the set)
 
 **Import**:
-Copying a File into LeafPDF, which adds a Document to the Library.
+Copying a File into Leaf, which adds a Document to the Library.
 _Avoid_: Add, upload, open
 
 **Remove**:
@@ -97,7 +97,7 @@ When the Reader last showed a Document.
 _Avoid_: Last opened, recently opened
 
 **Theme**:
-Whether LeafPDF looks light or dark: System, Light or Dark.
+Whether Leaf looks light or dark: System, Light or Dark.
 _Avoid_: Appearance, dark mode, color scheme
 
 **Page Style**:
@@ -141,7 +141,7 @@ The Highlight Color every new Highlight gets. Yellow unless the user picks anoth
 _Avoid_: Last used color, current color
 
 **Device**:
-One installation of LeafPDF.
+One installation of Leaf.
 _Avoid_: Client, installation
 
 **Cloud Backing**:

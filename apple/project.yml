@@ -1,6 +1,6 @@
 # XcodeGen spec for the Apple clients; `make apple-project` generates
-# LeafPDF.xcodeproj from it. Edit this file, never the generated project.
-name: LeafPDF
+# Leaf.xcodeproj from it. Edit this file, never the generated project.
+name: Leaf
 options:
   bundleIdPrefix: com.timhilt
   deploymentTarget:
@@ -11,17 +11,17 @@ packages:
     path: LeafCore
 targets:
   # One multiplatform target serves iOS, iPadOS and macOS.
-  LeafPDF:
+  Leaf:
     type: application
     platform: auto
     supportedDestinations: [iOS, macOS]
-    sources: [LeafPDF]
+    sources: [Leaf]
     configFiles:
       Debug: Config/Signing.xcconfig
       Release: Config/Signing.xcconfig
     dependencies:
       - package: LeafCore
-    # The formats LeafPDF opens from outside (share sheet, Open With, Dock).
+    # The formats Leaf opens from outside (share sheet, Open With, Dock).
     # Alternate: never the default handler. Add MOBI here.
     info:
       path: Config/Info.plist
@@ -53,7 +53,7 @@ targets:
           UIApplicationSupportsMultipleScenes: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.timhilt.leafpdf
+        PRODUCT_BUNDLE_IDENTIFIER: com.timhilt.leaf
         # Automatic signing with the team from Config/Local.xcconfig, so no
         # manual signing setup is needed after regenerating the project.
         CODE_SIGN_STYLE: Automatic
@@ -62,7 +62,7 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: LeafPDF
+        INFOPLIST_KEY_CFBundleDisplayName: Leaf
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
@@ -73,7 +73,7 @@ targets:
         # Cloud Backing talks to the user's WebDAV server.
         ENABLE_OUTGOING_NETWORK_CONNECTIONS: YES
         # The iCloud Drive grant: user-selected files and app-scoped bookmarks.
-        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Config/LeafPDF-macOS.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Config/Leaf-macOS.entitlements
         ENABLE_HARDENED_RUNTIME: YES
         # The core is built for Apple silicon only (see docs/adr/0006).
         ARCHS: arm64
@@ -90,17 +90,17 @@ targets:
         Release:
           SWIFT_OPTIMIZATION_LEVEL: -Osize
     scheme:
-      testTargets: [LeafPDFTests]
-  LeafPDFTests:
+      testTargets: [LeafTests]
+  LeafTests:
     type: bundle.unit-test
     platform: auto
     supportedDestinations: [iOS, macOS]
-    sources: [LeafPDFTests]
+    sources: [LeafTests]
     configFiles:
       Debug: Config/Signing.xcconfig
       Release: Config/Signing.xcconfig
     dependencies:
-      - target: LeafPDF
+      - target: Leaf
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -110,5 +110,5 @@ targets:
         DEVELOPMENT_TEAM: $(inherited)
         "CODE_SIGN_IDENTITY[sdk=macosx*]": "-"
         # macOS app bundles keep the executable under Contents/MacOS.
-        "TEST_HOST[sdk=macosx*]": "$(BUILT_PRODUCTS_DIR)/LeafPDF.app/Contents/MacOS/LeafPDF"
+        "TEST_HOST[sdk=macosx*]": "$(BUILT_PRODUCTS_DIR)/Leaf.app/Contents/MacOS/Leaf"
         "BUNDLE_LOADER[sdk=macosx*]": "$(TEST_HOST)"

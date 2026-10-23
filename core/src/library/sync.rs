@@ -751,7 +751,7 @@ mod tests {
         fn new() -> Self {
             static NEXT: AtomicU32 = AtomicU32::new(0);
             let dir = std::env::temp_dir().join(format!(
-                "leafpdf-sync-{}-{}",
+                "leaf-sync-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Relaxed)
             ));
@@ -1723,7 +1723,7 @@ mod tests {
     #[test]
     fn a_library_from_before_device_ids_sends_its_progress_markup_and_colors() {
         let mut cloud = Cloud::new();
-        // Stored the way an older LeafPDF did: every write by a random actor.
+        // Stored the way an older Leaf did: every write by a random actor.
         let home = cloud.dir.join("legacy");
         let root = home.join("library");
         let id = hex::encode(Sha256::digest(b"legacy bytes"));

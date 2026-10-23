@@ -10,4 +10,4 @@ The core defines a small storage interface (put, get, list, delete) and owns all
 
 ## Consequences
 
-- iCloud Drive has no app container without the paid membership. Instead, the user grants the iCloud Drive root once per Device (iOS and macOS alike), and LeafPDF always uses `iCloud Drive/LeafPDF` in it; granting any other folder is refused. The core reads it as a directory. The OS decides when its files download: a file not downloaded yet is a `.name.icloud` placeholder, which the directory storage treats as absent while asking the client (`request_download`) to have it fetched, so a later poll finds it.
+- iCloud Drive has no app container without the paid membership. Instead, the user grants the iCloud Drive root once per Device (iOS and macOS alike), and Leaf always uses `iCloud Drive/Leaf` in it; granting any other folder is refused. The core reads it as a directory. The OS decides when its files download: a file not downloaded yet is a `.name.icloud` placeholder, which the directory storage treats as absent while asking the client (`request_download`) to have it fetched, so a later poll finds it.

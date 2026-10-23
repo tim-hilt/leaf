@@ -2,7 +2,7 @@
 //! ADR-0017). Any WebDAV server works, e.g. `rclone serve webdav`.
 //!
 //! HTTPS only, Basic auth, blocking (no async runtime). Everything lives in a
-//! `LeafPDF` folder inside the Server URL. Blobs are uploaded to a hidden
+//! `Leaf` folder inside the Server URL. Blobs are uploaded to a hidden
 //! temporary name and then moved into place, so a half-written blob is never
 //! visible under its final name.
 
@@ -20,21 +20,21 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ureq::http::{Request, Response};
 use ureq::{Agent, Body, SendBody};
 
-/// The folder in the Server URL that holds everything LeafPDF stores.
-const FOLDER: &str = "LeafPDF";
+/// The folder in the Server URL that holds everything Leaf stores.
+const FOLDER: &str = "Leaf";
 
 /// Where blobs are uploaded before they are moved into place. Starts with a
 /// dot, so it is no valid name and never listed.
 const INCOMING: &str = ".incoming";
 
-/// The `LeafPDF` folder of a WebDAV server. A rejected login (HTTP 401) is an
+/// The `Leaf` folder of a WebDAV server. A rejected login (HTTP 401) is an
 /// `io::ErrorKind::PermissionDenied` error, a full server (507) is
 /// `StorageFull`, anything else that fails to connect is another kind.
 pub struct WebDavStorage {
     agent: Agent,
     /// The Server URL, without a trailing slash.
     base: String,
-    /// The URL of the `LeafPDF` folder inside it.
+    /// The URL of the `Leaf` folder inside it.
     root: String,
     /// The `Authorization` header value.
     auth: String,
@@ -53,7 +53,7 @@ impl fmt::Debug for WebDavStorage {
 
 impl WebDavStorage {
     /// Connects to the WebDAV server at `url` and checks the details. Creates
-    /// the `LeafPDF` folder inside `url` if it's missing; uses it if not.
+    /// the `Leaf` folder inside `url` if it's missing; uses it if not.
     pub fn connect(url: &str, username: &str, password: &str) -> Result<Self, ConnectError> {
         Self::connect_with(url, username, password, tls_config())
     }
@@ -85,7 +85,7 @@ impl WebDavStorage {
             _ => return Err(ConnectError::NotWebDav),
         }
 
-        // Its LeafPDF folder is there, or is created now.
+        // Its Leaf folder is there, or is created now.
         let status = storage
             .propfind(&storage.root, "0")
             .map_err(|_| ConnectError::Unreachable)?
@@ -134,7 +134,7 @@ impl WebDavStorage {
         })
     }
 
-    /// The URL of `name`, a `/`-separated path below the `LeafPDF` folder.
+    /// The URL of `name`, a `/`-separated path below the `Leaf` folder.
     fn url(&self, name: &str) -> String {
         let mut url = self.root.clone();
         for part in name.split('/').filter(|part| !part.is_empty()) {
@@ -563,19 +563,19 @@ mod tests {
     fn listing_gives_files_but_no_directories_hidden_files_or_the_listed_directory() {
         let xml = r#"<?xml version="1.0" encoding="utf-8"?>
             <D:multistatus xmlns:D="DAV:">
-              <D:response><D:href>/dav/LeafPDF/v1/</D:href>
+              <D:response><D:href>/dav/Leaf/v1/</D:href>
                 <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat>
               </D:response>
-              <D:response><D:href>/dav/LeafPDF/v1/a%20b&amp;c</D:href>
+              <D:response><D:href>/dav/Leaf/v1/a%20b&amp;c</D:href>
                 <D:propstat><D:prop><D:resourcetype/><D:getcontentlength>12</D:getcontentlength></D:prop></D:propstat>
               </D:response>
-              <response xmlns="DAV:"><href>https://host/dav/LeafPDF/v1/sub/</href>
+              <response xmlns="DAV:"><href>https://host/dav/Leaf/v1/sub/</href>
                 <propstat><prop><resourcetype><collection></collection></resourcetype></prop></propstat>
               </response>
-              <D:response><D:href>/dav/LeafPDF/v1/.hidden</D:href>
+              <D:response><D:href>/dav/Leaf/v1/.hidden</D:href>
                 <D:propstat><D:prop><D:getcontentlength>3</D:getcontentlength></D:prop></D:propstat>
               </D:response>
-              <D:response><D:href>/dav/LeafPDF/v1/x</D:href>
+              <D:response><D:href>/dav/Leaf/v1/x</D:href>
                 <D:propstat><D:prop><D:getcontentlength>7</D:getcontentlength></D:prop></D:propstat>
                 <D:propstat><D:prop><D:foo/></D:prop><D:status>HTTP/1.1 404 Not Found</D:status></D:propstat>
               </D:response>
@@ -654,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn connecting_creates_the_leafpdf_folder_and_reuses_it() {
+    fn connecting_creates_the_leaf_folder_and_reuses_it() {
         let Some(server) = Rclone::webdav() else {
             return;
         };
@@ -687,7 +687,7 @@ mod tests {
             WebDavStorage::connect_with(&url, USER, PASSWORD, trusting(&server.cert)).unwrap();
         storage.put("blob", &mut &b"x"[..]).unwrap();
 
-        assert!(server.dir.0.join("my files/LeafPDF/blob").is_file());
+        assert!(server.dir.0.join("my files/Leaf/blob").is_file());
     }
 
     #[test]

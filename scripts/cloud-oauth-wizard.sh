@@ -202,7 +202,7 @@ run_wizard() {
 
 TOTAL_STAGES=7
 
-BUNDLE_ID="com.timhilt.leafpdf"
+BUNDLE_ID="com.timhilt.leaf"
 CLIENTS_FILE="apple/Config/CloudClients.xcconfig"
 GOOGLE_ID_RE='^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$'
 MICROSOFT_ID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
@@ -242,26 +242,26 @@ if [[ -f "$CLIENTS_FILE" ]]; then
   done < <(sed -nE 's/^([A-Z_]+) *= *(.*[^ ])$/\1 \2/p' "$CLIENTS_FILE")
 fi
 
-banner "LeafPDF: Google Cloud and Microsoft app registrations"
+banner "Leaf: Google Cloud and Microsoft app registrations"
 
 stage "Google: project"
 say "One project holds the OAuth clients of every platform (ADR-0011)."
-say "Otherwise one platform can't see the LeafPDF folder another created."
+say "Otherwise one platform can't see the Leaf folder another created."
 open_url "https://console.cloud.google.com/projectcreate"
-step "Project name: LeafPDF. Create it (or reuse an existing LeafPDF project)."
+step "Project name: Leaf. Create it (or reuse an existing Leaf project)."
 step "Make sure that project is selected in the top bar."
 pause "Project ready?"
 
 stage "Google: enable the Drive API"
 open_url "https://console.cloud.google.com/apis/library/drive.googleapis.com"
-step "With the LeafPDF project selected, click Enable."
+step "With the Leaf project selected, click Enable."
 note "If it says 'Manage' or 'API enabled', it's already on."
 pause "Drive API enabled?"
 
 stage "Google: consent screen, only drive.file, In production"
 say "In 'Testing', refresh tokens expire after 7 days, so publishing matters."
 open_url "https://console.cloud.google.com/auth/branding"
-step "Branding: app name LeafPDF, your support and developer emails. Save."
+step "Branding: app name Leaf, your support and developer emails. Save."
 step "Audience: user type External, then 'Publish app' → Confirm."
 step "The publishing status must read 'In production'."
 step "Data Access → Add or remove scopes → tick only the Drive scope"
@@ -276,7 +276,7 @@ stage "Google: OAuth client for iOS and macOS"
 say "One iOS-type client serves iOS, iPadOS and macOS. It has no secret."
 open_url "https://console.cloud.google.com/auth/clients/create"
 step "Application type: iOS."
-step "Name: LeafPDF Apple. Bundle ID: $BUNDLE_ID"
+step "Name: Leaf Apple. Bundle ID: $BUNDLE_ID"
 step "Create, then copy the Client ID (ends in .apps.googleusercontent.com)."
 ask_valid GOOGLE_CLIENT_ID "Paste the Google client ID:" "$GOOGLE_ID_RE" \
   "That isn't <number>-<id>.apps.googleusercontent.com."
@@ -288,7 +288,7 @@ write_clients
 stage "Microsoft: app registration (personal accounts only)"
 say "Work and school accounts can't consent to Files.ReadWrite.AppFolder."
 open_url "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/CreateApplicationBlade/isMSAApp~/true"
-step "Name: LeafPDF. It names the OneDrive folder: Apps/LeafPDF."
+step "Name: Leaf. It names the OneDrive folder: Apps/Leaf."
 step "Supported account types: Personal Microsoft accounts only."
 step "Redirect URI: platform 'Public client/native (mobile & desktop)', value"
 say "    msauth.$BUNDLE_ID://auth"
@@ -298,7 +298,7 @@ pause "App registered?"
 
 stage "Microsoft: permissions and public client"
 open_url "$MS_APPS"
-step "LeafPDF → API permissions → Add a permission → Microsoft Graph"
+step "Leaf → API permissions → Add a permission → Microsoft Graph"
 step "→ Delegated permissions → add Files.ReadWrite.AppFolder and offline_access."
 note "User.Read is there by default; leave it. No admin consent needed."
 step "Authentication → Settings → 'Allow public client flows' → Yes. Save."
@@ -306,7 +306,7 @@ pause "Permissions added and public client flows allowed?"
 
 stage "Microsoft: client ID, then commit"
 open_url "$MS_APPS"
-step "LeafPDF → Overview → copy 'Application (client) ID'."
+step "Leaf → Overview → copy 'Application (client) ID'."
 ask_valid MICROSOFT_CLIENT_ID "Paste the Microsoft client ID:" "$MICROSOFT_ID_RE" \
   "That isn't a GUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)."
 write_env MICROSOFT_CLIENT_ID "$MICROSOFT_CLIENT_ID"

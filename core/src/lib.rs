@@ -1,4 +1,4 @@
-//! Platform-independent heart of LeafPDF.
+//! Platform-independent heart of Leaf.
 //!
 //! Owns everything that must behave identically on every platform: the
 //! library of imported PDFs and EPUBs, markup, reading progress and cloud sync.
@@ -8,7 +8,7 @@
 //!
 //! The crate is plain Rust with no FFI concerns, so Rust clients (Linux)
 //! can depend on it directly. Foreign-language clients go through
-//! `leafpdf-ffi`.
+//! `leaf-ffi`.
 
 /// Semantic version of the core, as declared in the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

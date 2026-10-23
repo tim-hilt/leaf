@@ -1,25 +1,23 @@
-//! Foreign-language interface of the LeafPDF core, exported via UniFFI.
+//! Foreign-language interface of the Leaf core, exported via UniFFI.
 //!
 //! This crate is the only place that knows about FFI: it adapts
-//! `leafpdf-core` types to UniFFI-compatible ones and connects the Library to
+//! `leaf-core` types to UniFFI-compatible ones and connects the Library to
 //! its Sync loop, so every write is sent without the client asking. Keep
-//! domain logic in `leafpdf-core` so it stays testable without bindings.
+//! domain logic in `leaf-core` so it stays testable without bindings.
 
-use leafpdf_core::details::{Format, Size};
-use leafpdf_core::epub::{self, ContentsEntry};
-use leafpdf_core::google_drive::GoogleDriveStorage;
-use leafpdf_core::library::Document as CoreDocument;
-use leafpdf_core::library::{ImportError, ImportResult};
-use leafpdf_core::listing::{self, Sort, SortKey};
-use leafpdf_core::markup::{
-    Anchor, EpubPosition, Highlight, Markup, PageNote, PageRects, Rect, Rgb,
-};
-use leafpdf_core::onedrive::OneDriveStorage;
-use leafpdf_core::preferences::{HighlightColor, HighlightColors};
-use leafpdf_core::progress::{Place, ReadingProgress};
-use leafpdf_core::storage::{ConnectError, DirStorage, RefreshTokenCallback, Storage};
-use leafpdf_core::sync_loop::{self, Status, SyncLoop};
-use leafpdf_core::webdav::WebDavStorage;
+use leaf_core::details::{Format, Size};
+use leaf_core::epub::{self, ContentsEntry};
+use leaf_core::google_drive::GoogleDriveStorage;
+use leaf_core::library::Document as CoreDocument;
+use leaf_core::library::{ImportError, ImportResult};
+use leaf_core::listing::{self, Sort, SortKey};
+use leaf_core::markup::{Anchor, EpubPosition, Highlight, Markup, PageNote, PageRects, Rect, Rgb};
+use leaf_core::onedrive::OneDriveStorage;
+use leaf_core::preferences::{HighlightColor, HighlightColors};
+use leaf_core::progress::{Place, ReadingProgress};
+use leaf_core::storage::{ConnectError, DirStorage, RefreshTokenCallback, Storage};
+use leaf_core::sync_loop::{self, Status, SyncLoop};
+use leaf_core::webdav::WebDavStorage;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -29,11 +27,11 @@ uniffi::setup_scaffolding!();
 /// they talk to the core they were built against.
 #[uniffi::export]
 pub fn core_version() -> String {
-    leafpdf_core::VERSION.to_owned()
+    leaf_core::VERSION.to_owned()
 }
 
 /// The error crossing the FFI: the system's message for what failed, or, for
-/// an Import, why the EPUB isn't one LeafPDF reads.
+/// an Import, why the EPUB isn't one Leaf reads.
 #[derive(Debug, uniffi::Error)]
 #[uniffi(flat_error)]
 pub enum LibraryError {
@@ -78,11 +76,11 @@ impl From<ImportError> for LibraryError {
 /// PDF nor an EPUB, which Import refuses.
 #[uniffi::export]
 pub fn format_of_file(path: String) -> Result<Option<Format>, LibraryError> {
-    Ok(leafpdf_core::library::format_of(path.as_ref())?)
+    Ok(leaf_core::library::format_of(path.as_ref())?)
 }
 
 // The core's types cross the FFI as remote types: declared here, defined (and
-// documented) once in `leafpdf-core`, which stays free of FFI concerns.
+// documented) once in `leaf-core`, which stays free of FFI concerns.
 
 #[uniffi::remote(Enum)]
 pub enum Place {
@@ -218,7 +216,7 @@ pub enum ConnectError {
     NotWebDav,
 }
 
-/// A Document in the Library, see `leafpdf_core::library::Document`. Author
+/// A Document in the Library, see `leaf_core::library::Document`. Author
 /// and page count are none until `Library::set_details` gives them; an
 /// EPUB's come with it, and its page count is always none.
 #[derive(uniffi::Record)]
@@ -254,14 +252,14 @@ impl From<CoreDocument> for Document {
     }
 }
 
-/// A file of an EPUB, see `leafpdf_core::epub::Resource`.
+/// A file of an EPUB, see `leaf_core::epub::Resource`.
 #[derive(uniffi::Record)]
 pub struct EpubResource {
     pub bytes: Vec<u8>,
     pub media_type: String,
 }
 
-/// An EPUB opened for reading, see `leafpdf_core::epub::Epub`. Clients keep it
+/// An EPUB opened for reading, see `leaf_core::epub::Epub`. Clients keep it
 /// open while the Reader shows the book, instead of opening it per file.
 #[derive(uniffi::Object)]
 pub struct EpubBook(epub::Epub);
@@ -320,7 +318,7 @@ impl EpubBook {
 }
 
 /// The Library's Documents in the order of a `Sort`, ready for Library Search,
-/// see `leafpdf_core::listing::Listing`.
+/// see `leaf_core::listing::Listing`.
 #[derive(uniffi::Object)]
 pub struct Listing(listing::Listing);
 
@@ -399,9 +397,9 @@ impl RefreshTokenCallback for RefreshTokens {
 /// core; the client only signs in and keeps the refresh token.
 #[derive(uniffi::Enum, Clone, Copy)]
 pub enum OAuthProvider {
-    /// The `LeafPDF` folder in My Drive.
+    /// The `Leaf` folder in My Drive.
     GoogleDrive,
-    /// `Apps/LeafPDF`, personal accounts only.
+    /// `Apps/Leaf`, personal accounts only.
     OneDrive,
 }
 
@@ -441,7 +439,7 @@ impl OAuthProvider {
     }
 }
 
-/// When Sync steps run, see `leafpdf_core::sync_loop::Intervals`.
+/// When Sync steps run, see `leaf_core::sync_loop::Intervals`.
 #[derive(uniffi::Record)]
 pub struct SyncIntervals {
     pub debounce_ms: u64,
@@ -482,11 +480,11 @@ impl sync_loop::Observer for Observer {
     }
 }
 
-/// The Library folder, see `leafpdf_core::library::Library`, and its
+/// The Library folder, see `leaf_core::library::Library`, and its
 /// Connection to a Cloud Provider, if any.
 #[derive(uniffi::Object)]
 pub struct Library {
-    core: Arc<leafpdf_core::library::Library>,
+    core: Arc<leaf_core::library::Library>,
     sync: Mutex<Option<SyncLoop>>,
 }
 
@@ -538,14 +536,14 @@ impl Library {
     #[uniffi::constructor]
     pub fn open(root: String) -> Result<Arc<Self>, LibraryError> {
         Ok(Arc::new(Self {
-            core: Arc::new(leafpdf_core::library::Library::open(root)?),
+            core: Arc::new(leaf_core::library::Library::open(root)?),
             sync: Mutex::new(None),
         }))
     }
 
     /// Connects to the WebDAV server at `url` and starts syncing with it: the
     /// first step merges the Library with the cloud's. Checks the details first
-    /// and creates the `LeafPDF` folder if needed; blocks while it talks to the
+    /// and creates the `Leaf` folder if needed; blocks while it talks to the
     /// server. Replaces any earlier Connection.
     pub fn connect_webdav(
         &self,
@@ -593,7 +591,7 @@ impl Library {
     }
 
     /// Connects to iCloud Drive and starts syncing with it: the first step
-    /// merges the Library with the cloud's. `folder` is `LeafPDF` in the
+    /// merges the Library with the cloud's. `folder` is `Leaf` in the
     /// granted iCloud Drive, created if missing. Files other Devices wrote that
     /// iCloud hasn't downloaded yet are not there for Sync until `downloads` has
     /// fetched them. Contacts nobody, so it serves to resume a Connection too,
@@ -828,7 +826,7 @@ impl Library {
     }
 
     /// Keeps what the client read from the File of Document `id` on this
-    /// Device, see `leafpdf_core::library::Library::set_details`. Not synced.
+    /// Device, see `leaf_core::library::Library::set_details`. Not synced.
     pub fn set_details(
         &self,
         id: String,
@@ -836,7 +834,7 @@ impl Library {
         author: Option<String>,
         page_count: u32,
     ) -> Result<(), LibraryError> {
-        let details = leafpdf_core::details::Details {
+        let details = leaf_core::details::Details {
             title,
             author,
             size: Size::Pages(page_count),
@@ -876,8 +874,8 @@ mod tests {
 
     #[test]
     fn icloud_drive_syncs_its_folder_and_asks_for_files_not_downloaded_yet() {
-        let dir = std::env::temp_dir().join(format!("leafpdf-ffi-icloud-{}", std::process::id()));
-        let folder = dir.join("LeafPDF");
+        let dir = std::env::temp_dir().join(format!("leaf-ffi-icloud-{}", std::process::id()));
+        let folder = dir.join("Leaf");
         std::fs::create_dir_all(folder.join("v1")).unwrap();
         std::fs::write(folder.join("v1/.later.icloud"), b"placeholder").unwrap();
         let library = Library::open(dir.join("library").display().to_string()).unwrap();
@@ -910,13 +908,13 @@ mod tests {
 
     #[test]
     fn a_folder_that_cannot_be_created_is_access_denied() {
-        let dir = std::env::temp_dir().join(format!("leafpdf-ffi-denied-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("leaf-ffi-denied-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("LeafPDF"), b"a file").unwrap();
+        std::fs::write(dir.join("Leaf"), b"a file").unwrap();
         let library = Library::open(dir.join("library").display().to_string()).unwrap();
 
         let result = library.connect_icloud_drive(
-            dir.join("LeafPDF").display().to_string(),
+            dir.join("Leaf").display().to_string(),
             Arc::new(Requests(Mutex::default())),
             Arc::new(Steps::default()),
             SyncIntervals {
@@ -933,7 +931,7 @@ mod tests {
 
     #[test]
     fn the_library_lists_its_documents_by_id_in_order_and_searches_them() {
-        let dir = std::env::temp_dir().join(format!("leafpdf-ffi-listing-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("leaf-ffi-listing-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let library = Library::open(dir.join("library").display().to_string()).unwrap();
         let mut ids = vec![];
@@ -978,7 +976,7 @@ mod tests {
 
     #[test]
     fn import_refuses_a_file_that_is_neither_a_pdf_nor_an_epub() {
-        let dir = std::env::temp_dir().join(format!("leafpdf-ffi-format-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("leaf-ffi-format-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("notes.txt");
         std::fs::write(&source, b"hello").unwrap();
@@ -1005,7 +1003,7 @@ mod tests {
     fn every_write_starts_a_sync_step_without_being_told() {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "leafpdf-ffi-{}-{}",
+            "leaf-ffi-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Relaxed)
         ));

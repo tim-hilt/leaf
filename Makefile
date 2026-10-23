@@ -5,15 +5,15 @@ PROFILE ?= release
 PROFILE_DIR := $(if $(filter dev,$(PROFILE)),debug,$(PROFILE))
 
 APPLE_TARGETS := aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin
-FFI_LIB := libleafpdf_ffi.a
+FFI_LIB := libleaf_ffi.a
 APPLE_GEN := apple/LeafCore/Generated
-SWIFT_SRC := apple/LeafPDF apple/LeafPDFTests
-XCODEBUILD := cd apple && xcodebuild -quiet -scheme LeafPDF
+SWIFT_SRC := apple/Leaf apple/LeafTests
+XCODEBUILD := cd apple && xcodebuild -quiet -scheme Leaf
 CORE_SRC := $(shell find core ffi -type f) Cargo.toml Cargo.lock rust-toolchain.toml Makefile
 CORE_STAMP := $(APPLE_GEN)/.built-$(PROFILE)
 
-# App tests: ONLY narrows to a suite or test, e.g. ONLY=LeafPDFTests/ReaderPDFViewTests.
-ONLY ?= LeafPDFTests
+# App tests: ONLY narrows to a suite or test, e.g. ONLY=LeafTests/ReaderPDFViewTests.
+ONLY ?= LeafTests
 SIM ?= iPad Pro 13-inch (M5)
 XCTEST = scripts/apple-test.sh -only-testing:$(ONLY)
 
@@ -47,9 +47,9 @@ apple-core: $(CORE_STAMP)
 $(CORE_STAMP): $(CORE_SRC)
 	IPHONEOS_DEPLOYMENT_TARGET=26.0 MACOSX_DEPLOYMENT_TARGET=27.0 \
 	RUSTFLAGS="--remap-path-prefix=$(HOME)=~" \
-		cargo build -p leafpdf-ffi --profile $(PROFILE) $(addprefix --target ,$(APPLE_TARGETS))
+		cargo build -p leaf-ffi --profile $(PROFILE) $(addprefix --target ,$(APPLE_TARGETS))
 	rm -rf $(APPLE_GEN)
-	cargo run -q -p leafpdf-ffi --features cli --bin uniffi-bindgen -- generate \
+	cargo run -q -p leaf-ffi --features cli --bin uniffi-bindgen -- generate \
 		--library target/aarch64-apple-darwin/$(PROFILE_DIR)/$(FFI_LIB) \
 		--language swift --out-dir $(APPLE_GEN)/headers
 	mkdir -p $(APPLE_GEN)/Swift
@@ -80,4 +80,4 @@ apple-test-ios: apple-core apple-project
 
 clean:
 	cargo clean
-	rm -rf $(APPLE_GEN) apple/LeafPDF.xcodeproj apple/LeafCore/.build
+	rm -rf $(APPLE_GEN) apple/Leaf.xcodeproj apple/LeafCore/.build
