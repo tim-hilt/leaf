@@ -11,7 +11,7 @@ On Apple targets, ureq runs on `native-tls` (the Security framework) and checks 
 
 - Release build of the macOS app executable, before → after: 7,406,424 → 6,676,808 bytes (−9.9%).
 - ureq's `native-tls` feature also compiles in the `webpki-root-certs` data, though it is not used on Apple (the trust store is set explicitly): `native-tls-no-default` does not enable ureq's native-tls code.
-- The default provider of ureq is rustls, so the Apple config sets the provider and root source explicitly (`tls_config` in `webdav.rs`).
+- The default provider of ureq is rustls, so the Apple config sets the provider and root source explicitly (`tls_config` in `cloud_http.rs`, shared by WebDAV and the OAuth providers).
 - The Security framework refuses any server certificate, also from a private CA, valid longer than 825 days or without the `serverAuth` extended key usage; self-hosters must issue theirs accordingly. The WebDAV tests generate a 30-day certificate with `openssl` and skip without it or `rclone`.
 - Checked: a public HTTPS host passes the trust store (reaches "not a WebDAV server"); the tests' self-signed certificate is trusted only when passed as root, otherwise Unreachable.
 - Not yet checked: a server with a certificate from a private CA installed in the Device's trust store. To check: serve WebDAV with `rclone serve webdav --cert --key`, trust the CA in Keychain Access (or install a profile on iOS), and Connect.

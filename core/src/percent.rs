@@ -1,4 +1,19 @@
-//! Percent-decoding, as URLs and EPUB hrefs use it.
+//! Percent-encoding and -decoding, as URLs and EPUB hrefs use them.
+
+/// Percent-encodes a path segment or query value: everything but unreserved
+/// characters.
+pub(crate) fn encode(part: &str) -> String {
+    let mut out = String::with_capacity(part.len());
+    for byte in part.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
 
 /// `text` with each `%XX` escape replaced by its byte. An invalid escape stays
 /// as it is, and invalid UTF-8 in the result becomes U+FFFD.
@@ -26,6 +41,12 @@ pub(crate) fn decode(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_are_percent_encoded() {
+        assert_eq!(encode("a b/ü"), "a%20b%2F%C3%BC");
+        assert_eq!(decode(&encode("x&y='z'")), "x&y='z'");
+    }
 
     #[test]
     fn escapes_become_their_bytes() {

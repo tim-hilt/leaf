@@ -6,7 +6,8 @@
 //! temporary name and then moved into place, so a half-written blob is never
 //! visible under its final name.
 
-use crate::percent::decode;
+use crate::cloud_http::tls_config;
+use crate::percent::{decode, encode};
 use crate::storage::{Blob, ConnectError, Storage, check_name, unique_name};
 use base64::prelude::{BASE64_STANDARD, Engine};
 use quick_xml::events::Event;
@@ -48,18 +49,6 @@ impl fmt::Debug for WebDavStorage {
             .field("root", &self.root)
             .finish_non_exhaustive()
     }
-}
-
-/// The platform's TLS: the Security framework and the Device's trust store on
-/// Apple (ADR-0023), rustls with the bundled public roots elsewhere.
-fn tls_config() -> ureq::tls::TlsConfig {
-    #[cfg(target_vendor = "apple")]
-    return ureq::tls::TlsConfig::builder()
-        .provider(ureq::tls::TlsProvider::NativeTls)
-        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-        .build();
-    #[cfg(not(target_vendor = "apple"))]
-    ureq::tls::TlsConfig::default()
 }
 
 impl WebDavStorage {
@@ -378,20 +367,6 @@ fn parse_listing(xml: &str) -> Result<Vec<Blob>, quick_xml::Error> {
     }
 }
 
-/// Percent-encodes a path segment: everything but unreserved characters.
-fn encode(part: &str) -> String {
-    let mut out = String::with_capacity(part.len());
-    for byte in part.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(byte as char);
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
-
 /// The `Authorization` header value for Basic auth (RFC 7617).
 fn basic_auth(username: &str, password: &str) -> String {
     format!(
@@ -611,11 +586,6 @@ mod tests {
         let expected = [("a b&c", 12), ("x", 7)];
         let listed: Vec<_> = blobs.iter().map(|b| (b.name.as_str(), b.size)).collect();
         assert_eq!(listed, expected);
-    }
-
-    #[test]
-    fn names_are_percent_encoded_in_urls() {
-        assert_eq!(encode("a b/ü"), "a%20b%2F%C3%BC");
     }
 
     #[test]

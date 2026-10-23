@@ -529,6 +529,7 @@ dependencies = [
  "libc",
  "miniz_oxide",
  "quick-xml",
+ "serde_json",
  "sha2",
  "unicode-normalization",
  "ureq",

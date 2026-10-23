@@ -14,9 +14,11 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub(crate) mod chunks;
+pub(crate) mod cloud_http;
 pub mod details;
 pub(crate) mod doc_cache;
 pub mod epub;
+pub mod google_drive;
 pub mod library;
 pub(crate) mod library_doc;
 pub mod listing;
