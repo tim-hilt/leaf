@@ -49,10 +49,12 @@ pub enum ConnectError {
 
 impl ConnectError {
     /// Why connecting to a Cloud Provider behind OAuth failed with `error`:
-    /// refused access, or no answer.
+    /// refused access (`PermissionDenied`), a kind of account it doesn't
+    /// support (`Unsupported`), or no answer.
     pub fn of_cloud(error: &io::Error) -> Self {
         match error.kind() {
             io::ErrorKind::PermissionDenied => Self::AccessDenied,
+            io::ErrorKind::Unsupported => Self::UnsupportedAccount,
             _ => Self::Unreachable,
         }
     }
@@ -519,6 +521,10 @@ mod tests {
         assert_eq!(
             error(io::ErrorKind::PermissionDenied),
             ConnectError::AccessDenied
+        );
+        assert_eq!(
+            error(io::ErrorKind::Unsupported),
+            ConnectError::UnsupportedAccount
         );
         for kind in [io::ErrorKind::ConnectionRefused, io::ErrorKind::TimedOut] {
             assert_eq!(error(kind), ConnectError::Unreachable);

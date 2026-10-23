@@ -23,6 +23,7 @@ pub mod library;
 pub(crate) mod library_doc;
 pub mod listing;
 pub mod markup;
+pub mod onedrive;
 pub(crate) mod percent;
 pub mod preferences;
 pub mod progress;

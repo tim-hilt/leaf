@@ -7,11 +7,15 @@
 
 use crate::percent::encode;
 use crate::storage::RefreshTokenCallback;
+use serde_json::Value;
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use ureq::http::{Request, Response};
 use ureq::{Agent, Body};
+
+#[cfg(test)]
+pub(crate) mod fake;
 
 /// The platform's TLS: the Security framework and the Device's trust store on
 /// Apple (ADR-0023), rustls with the bundled public roots elsewhere.
@@ -23,6 +27,42 @@ pub(crate) fn tls_config() -> ureq::tls::TlsConfig {
         .build();
     #[cfg(not(target_vendor = "apple"))]
     ureq::tls::TlsConfig::default()
+}
+
+/// Where a Cloud Provider's API is and how uploads are cut.
+pub(crate) struct Config {
+    pub api: String,
+    pub token_url: String,
+    /// Whether http URLs work, which they do only in tests against a fake.
+    allow_http: bool,
+    /// Blobs up to this many bytes upload in one request, held in memory.
+    pub simple_limit: usize,
+    /// The size of a part of a chunked upload.
+    pub chunk_size: usize,
+}
+
+impl Config {
+    /// The provider's API at `api`, with its token endpoint at `token_url`.
+    pub(crate) fn new(api: &str, token_url: &str, simple_limit: usize, chunk_size: usize) -> Self {
+        Self {
+            api: api.to_owned(),
+            token_url: token_url.to_owned(),
+            allow_http: false,
+            simple_limit,
+            chunk_size,
+        }
+    }
+
+    /// A fake provider served at `base`, see `fake::Server`.
+    #[cfg(test)]
+    pub(crate) fn fake(base: &str, simple_limit: usize, chunk_size: usize) -> Self {
+        let token_url = format!("{base}/token");
+        let config = Self::new(base, &token_url, simple_limit, chunk_size);
+        Self {
+            allow_http: true,
+            ..config
+        }
+    }
 }
 
 /// A request to a Cloud Provider's API on behalf of the user, authorized by an
@@ -53,17 +93,15 @@ struct Tokens {
 impl OAuthClient {
     /// A client of a public OAuth client `client_id` (PKCE, no secret) that
     /// holds `refresh_token`, and reports each new one to `on_new_refresh_token`.
-    /// Contacts nobody. Only https URLs work, unless `allow_http`, which is
-    /// for tests against a local fake.
+    /// Contacts nobody. Only https URLs work, except in tests.
     pub(crate) fn new(
-        token_url: &str,
+        config: &Config,
         client_id: &str,
         refresh_token: &str,
         on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
-        allow_http: bool,
     ) -> Self {
-        let config = Agent::config_builder()
-            .https_only(!allow_http)
+        let agent = Agent::config_builder()
+            .https_only(!config.allow_http)
             .http_status_as_error(false)
             // A resumable upload answers 308 for "send the next chunk".
             .max_redirects(0)
@@ -73,8 +111,8 @@ impl OAuthClient {
             .timeout_recv_response(Some(Duration::from_secs(30)))
             .build();
         Self {
-            agent: Agent::new_with_config(config),
-            token_url: token_url.to_owned(),
+            agent: Agent::new_with_config(agent),
+            token_url: config.token_url.clone(),
             client_id: client_id.to_owned(),
             tokens: Mutex::new(Tokens {
                 access: None,
@@ -94,26 +132,48 @@ impl OAuthClient {
         body: &[u8],
     ) -> io::Result<Response<Body>> {
         let token = self.access_token()?;
-        let mut response = self.send_with(&token, method, url, headers, body)?;
+        let mut response = self.send_with(Some(&token), method, url, headers, body)?;
         if response.status().as_u16() == 401 {
             let token = self.refresh(&token)?;
-            response = self.send_with(&token, method, url, headers, body)?;
+            response = self.send_with(Some(&token), method, url, headers, body)?;
         }
         check(response)
     }
 
-    fn send_with(
+    /// The JSON answer to a request that must succeed, with `body` as JSON.
+    pub(crate) fn json(&self, method: &str, url: &str, body: Option<&Value>) -> io::Result<Value> {
+        let body = body.map(Value::to_string).unwrap_or_default();
+        let headers = [("Content-Type", "application/json; charset=UTF-8")];
+        let response = self.send(method, url, &headers, body.as_bytes())?;
+        succeeded(method, &response)?;
+        read_json(response)
+    }
+
+    /// Sends a request to a URL the provider has handed out for one job, like
+    /// an upload or a download. It is authorized already, and may refuse a
+    /// token on top, so none is sent. Answers are told apart as for `send`.
+    pub(crate) fn send_to_handed_out_url(
         &self,
-        token: &str,
         method: &str,
         url: &str,
         headers: &[(&str, &str)],
         body: &[u8],
     ) -> io::Result<Response<Body>> {
-        let mut request = Request::builder()
-            .method(method)
-            .uri(url)
-            .header("Authorization", format!("Bearer {token}"));
+        check(self.send_with(None, method, url, headers, body)?)
+    }
+
+    fn send_with(
+        &self,
+        token: Option<&str>,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> io::Result<Response<Body>> {
+        let mut request = Request::builder().method(method).uri(url);
+        if let Some(token) = token {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
         for (name, value) in headers {
             request = request.header(*name, *value);
         }
@@ -207,15 +267,18 @@ fn refuse(status: u16, body: &str) -> io::Result<()> {
     match status {
         401 => Err(denied(status)),
         403 => {
-            // Google says why in the body: a full quota or too many requests
-            // are not a lost permission.
+            // The body says why: a full quota or too many requests are not a
+            // lost permission.
             let reason = body.to_lowercase();
             if reason.contains("quota") {
                 Err(io::Error::new(
                     io::ErrorKind::QuotaExceeded,
                     "quota exceeded",
                 ))
-            } else if reason.contains("ratelimit") || reason.contains("dailylimit") {
+            } else if ["ratelimit", "dailylimit", "activitylimit"]
+                .iter()
+                .any(|throttled| reason.contains(throttled))
+            {
                 Err(failed(status))
             } else {
                 Err(denied(status))
@@ -235,6 +298,37 @@ pub(crate) fn unexpected(what: &str, status: u16) -> io::Error {
     io::Error::other(format!("{what} answered with status {status}"))
 }
 
+/// An error unless `response` has a 2xx status.
+pub(crate) fn succeeded(what: &str, response: &Response<Body>) -> io::Result<()> {
+    match response.status().as_u16() {
+        200..=299 => Ok(()),
+        status => Err(unexpected(what, status)),
+    }
+}
+
+/// The JSON in the body of `response`.
+pub(crate) fn read_json(mut response: Response<Body>) -> io::Result<Value> {
+    let answer = response
+        .body_mut()
+        .read_to_string()
+        .map_err(io::Error::other)?;
+    Ok(serde_json::from_str(&answer)?)
+}
+
+/// `name` split into its directory (`""` for the root) and the blob's own name.
+pub(crate) fn split(name: &str) -> (&str, &str) {
+    name.rsplit_once('/').unwrap_or(("", name))
+}
+
+/// The first `limit` bytes of `data` at most, read to tell small blobs, which
+/// are held in memory and uploaded in one request, from large ones. More
+/// than `limit` bytes means `data` has more to give.
+pub(crate) fn read_head(data: &mut dyn Read, limit: usize) -> io::Result<Vec<u8>> {
+    let mut head = Vec::new();
+    data.take(limit as u64 + 1).read_to_end(&mut head)?;
+    Ok(head)
+}
+
 /// A part of an upload.
 pub(crate) struct Chunk<'a> {
     /// Where the bytes start in the whole.
@@ -242,6 +336,19 @@ pub(crate) struct Chunk<'a> {
     pub bytes: &'a [u8],
     /// The size of the whole, known only for the last chunk.
     pub total: Option<u64>,
+}
+
+impl Chunk<'_> {
+    /// The `Content-Range` header of the chunk, for a whole of `total` bytes,
+    /// if that is known.
+    pub(crate) fn content_range(&self, total: Option<u64>) -> String {
+        let total = total.map_or("*".to_owned(), |total| total.to_string());
+        if self.bytes.is_empty() {
+            return format!("bytes */{total}");
+        }
+        let last = self.offset + self.bytes.len() as u64 - 1;
+        format!("bytes {}-{last}/{total}", self.offset)
+    }
 }
 
 /// Reads `data` in chunks of `size` bytes and hands each to `send`, in order,
@@ -304,6 +411,18 @@ mod tests {
     }
 
     #[test]
+    fn a_chunk_says_where_it_belongs_in_the_whole() {
+        let chunk = |offset, bytes| Chunk {
+            offset,
+            bytes,
+            total: None,
+        };
+        assert_eq!(chunk(0, b"abc").content_range(None), "bytes 0-2/*");
+        assert_eq!(chunk(3, b"d").content_range(Some(4)), "bytes 3-3/4");
+        assert_eq!(chunk(4, b"").content_range(Some(4)), "bytes */4");
+    }
+
+    #[test]
     fn data_that_fills_the_chunks_exactly_ends_with_a_full_chunk() {
         assert_eq!(
             chunks(b"abcdef", 3),
@@ -356,12 +475,17 @@ mod tests {
             PermissionDenied
         );
         assert_eq!(
+            kind(403, r#"{"error":{"code":"quotaLimitReached"}}"#),
+            io::ErrorKind::QuotaExceeded
+        );
+        assert_eq!(
             kind(403, r#"{"reason":"storageQuotaExceeded"}"#),
             io::ErrorKind::QuotaExceeded
         );
         assert!(crate::storage::is_full(&refuse(507, "").unwrap_err()));
         for (status, body) in [
             (403, r#"{"reason":"userRateLimitExceeded"}"#),
+            (403, r#"{"error":{"code":"activityLimitReached"}}"#),
             (429, ""),
             (500, ""),
             (503, ""),

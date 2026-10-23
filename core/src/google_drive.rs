@@ -7,16 +7,16 @@
 //! resumable upload, which is never resumed: an interrupted `put` starts over
 //! the next time. Deletes are permanent (ADR-0016).
 
-use crate::cloud_http::{OAuthClient, unexpected, upload_chunks};
+use crate::cloud_http::{
+    Config, OAuthClient, read_head, split, succeeded, unexpected, upload_chunks,
+};
 use crate::percent::encode;
 use crate::storage::{Blob, RefreshTokenCallback, Storage, check_name, unique_name};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
-use ureq::Body;
-use ureq::http::Response;
 
 const API: &str = "https://www.googleapis.com";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -29,25 +29,8 @@ const SIMPLE_LIMIT: usize = 5 << 20;
 /// The size of a part of a resumable upload. Drive wants a multiple of 256 KiB.
 const CHUNK_SIZE: usize = 8 << 20;
 
-/// Where the API is and how uploads are cut. Tests point it at a fake.
-struct Config {
-    api: String,
-    token_url: String,
-    allow_http: bool,
-    simple_limit: usize,
-    chunk_size: usize,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            api: API.to_owned(),
-            token_url: TOKEN_URL.to_owned(),
-            allow_http: false,
-            simple_limit: SIMPLE_LIMIT,
-            chunk_size: CHUNK_SIZE,
-        }
-    }
+fn production() -> Config {
+    Config::new(API, TOKEN_URL, SIMPLE_LIMIT, CHUNK_SIZE)
 }
 
 /// A file or folder in Drive.
@@ -94,7 +77,7 @@ impl GoogleDriveStorage {
         refresh_token: &str,
         on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
     ) -> io::Result<(Self, String)> {
-        let config = Config::default();
+        let config = production();
         Self::connect_with(client_id, refresh_token, on_new_refresh_token, config)
     }
 
@@ -109,7 +92,7 @@ impl GoogleDriveStorage {
         refresh_token: &str,
         on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
     ) -> Self {
-        let config = Config::default();
+        let config = production();
         Self::resume_with(client_id, refresh_token, on_new_refresh_token, config)
     }
 
@@ -123,7 +106,7 @@ impl GoogleDriveStorage {
         storage.root()?;
         // Needs no scope beyond `drive.file`.
         let url = format!("{}/drive/v3/about?fields=user(emailAddress)", storage.api);
-        let about = storage.json("GET", &url, None)?;
+        let about = storage.oauth.json("GET", &url, None)?;
         let account = about["user"]["emailAddress"].as_str().unwrap_or_default();
         Ok((storage, account.to_owned()))
     }
@@ -162,32 +145,13 @@ impl GoogleDriveStorage {
         config: Config,
     ) -> Self {
         Self {
-            oauth: OAuthClient::new(
-                &config.token_url,
-                client_id,
-                refresh_token,
-                on_new_refresh_token,
-                config.allow_http,
-            ),
+            oauth: OAuthClient::new(&config, client_id, refresh_token, on_new_refresh_token),
             api: config.api,
             simple_limit: config.simple_limit,
             chunk_size: config.chunk_size,
             root: Mutex::new(root.map(str::to_owned)),
             folders: Mutex::default(),
         }
-    }
-
-    /// The JSON answer to a request that must succeed.
-    fn json(&self, method: &str, url: &str, body: Option<&Value>) -> io::Result<Value> {
-        let body = body.map(Value::to_string).unwrap_or_default();
-        let headers = [("Content-Type", "application/json; charset=UTF-8")];
-        let mut response = self.oauth.send(method, url, &headers, body.as_bytes())?;
-        succeeded(method, &response)?;
-        let answer = response
-            .body_mut()
-            .read_to_string()
-            .map_err(io::Error::other)?;
-        Ok(serde_json::from_str(&answer)?)
     }
 
     /// The not trashed folders, or the other files, directly in the folder
@@ -213,7 +177,7 @@ impl GoogleDriveStorage {
                 encode(fields),
                 encode(&page)
             );
-            let answer = self.json("GET", &url, None)?;
+            let answer = self.oauth.json("GET", &url, None)?;
             for file in answer["files"].as_array().into_iter().flatten() {
                 let text = |key| file[key].as_str().unwrap_or_default().to_owned();
                 items.push(Item {
@@ -271,7 +235,7 @@ impl GoogleDriveStorage {
     /// wins, and a loser deletes its folder, which is still empty.
     fn make_folder(&self, parent: &str, name: &str) -> io::Result<String> {
         let url = format!("{}/drive/v3/files?fields=id", self.api);
-        let made = self.json(
+        let made = self.oauth.json(
             "POST",
             &url,
             Some(&json!({"name": name, "mimeType": FOLDER_MIME, "parents": [parent]})),
@@ -370,15 +334,7 @@ impl GoogleDriveStorage {
             .to_owned();
 
         upload_chunks(data, self.chunk_size, |chunk| {
-            let total = chunk
-                .total
-                .map_or("*".to_owned(), |total| total.to_string());
-            let range = if chunk.bytes.is_empty() {
-                format!("bytes */{total}")
-            } else {
-                let last = chunk.offset + chunk.bytes.len() as u64 - 1;
-                format!("bytes {}-{last}/{total}", chunk.offset)
-            };
+            let range = chunk.content_range(chunk.total);
             let response =
                 self.oauth
                     .send("PUT", &session, &[("Content-Range", &range)], chunk.bytes)?;
@@ -390,27 +346,12 @@ impl GoogleDriveStorage {
     }
 }
 
-/// An error unless `response` has a 2xx status.
-fn succeeded(what: &str, response: &Response<Body>) -> io::Result<()> {
-    match response.status().as_u16() {
-        200..=299 => Ok(()),
-        status => Err(unexpected(what, status)),
-    }
-}
-
-/// `name` split into its directory (`""` for the root) and the blob's own name.
-fn split(name: &str) -> (&str, &str) {
-    name.rsplit_once('/').unwrap_or(("", name))
-}
-
 impl Storage for GoogleDriveStorage {
     fn put(&self, name: &str, data: &mut dyn Read) -> io::Result<()> {
         check_name(name)?;
         let (dir, leaf) = split(name);
         // A source that fails does so before Drive hears of the blob.
-        let mut head = Vec::new();
-        data.take(self.simple_limit as u64 + 1)
-            .read_to_end(&mut head)?;
+        let head = read_head(data, self.simple_limit)?;
 
         let parent = self.folder(dir, true)?.unwrap_or_default();
         let existing = self.items(&parent, false, Some(leaf))?.into_iter().next();
@@ -476,16 +417,12 @@ impl Storage for GoogleDriveStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cloud_http::fake::{Api, Auth, Recorder, Reply, Request, Server, nothing, reply};
     use crate::library::{ImportResult, Library};
     use crate::storage::contract::{Scratch, put_bytes, storage_contract_tests};
     use crate::storage::{get_bytes, is_full};
-    use std::collections::HashSet;
+    use serde_json::Value;
     use std::fs;
-    use std::io::{BufRead, BufReader, Write};
-    use std::net::{SocketAddr, TcpListener, TcpStream};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
-    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const CLIENT: &str = "client-id";
@@ -503,16 +440,6 @@ mod tests {
         trashed: bool,
     }
 
-    /// Keeps the refresh tokens it is told about.
-    #[derive(Default)]
-    struct Recorder(Mutex<Vec<String>>);
-
-    impl RefreshTokenCallback for Recorder {
-        fn new_refresh_token(&self, token: &str) {
-            self.0.lock().unwrap().push(token.to_owned());
-        }
-    }
-
     /// An upload that waits for its chunks: a new file, or the content of `update`.
     struct Upload {
         update: Option<String>,
@@ -521,54 +448,17 @@ mod tests {
         received: Vec<u8>,
     }
 
-    #[derive(Default)]
     struct State {
+        auth: Auth,
         items: Vec<Stored>,
         uploads: HashMap<String, Upload>,
-        /// The access tokens that work.
-        tokens: HashSet<String>,
         counter: u64,
-        /// The refresh token that works.
-        refresh: String,
-        /// The next refresh gives this one, which replaces the old.
-        rotate_to: Option<String>,
-        revoked: bool,
         /// Drive is full: nothing can be created or changed.
         full: bool,
         /// Another Device creates a `LeafPDF` folder just before this one's.
         race: bool,
         /// Every API request fails like this: status and reason.
         outage: Option<(u16, &'static str)>,
-    }
-
-    struct Request {
-        method: String,
-        path: String,
-        query: HashMap<String, String>,
-        headers: HashMap<String, String>,
-        body: Vec<u8>,
-    }
-
-    struct Reply {
-        status: u16,
-        headers: Vec<(&'static str, String)>,
-        body: Vec<u8>,
-    }
-
-    fn reply(status: u16, body: Value) -> Reply {
-        Reply {
-            status,
-            headers: vec![("Content-Type", "application/json".to_owned())],
-            body: body.to_string().into_bytes(),
-        }
-    }
-
-    fn nothing(status: u16) -> Reply {
-        Reply {
-            status,
-            headers: Vec::new(),
-            body: Vec::new(),
-        }
     }
 
     fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -592,6 +482,18 @@ mod tests {
     }
 
     impl State {
+        fn new() -> Self {
+            Self {
+                auth: Auth::new(CLIENT, REFRESH),
+                items: Vec::new(),
+                uploads: HashMap::new(),
+                counter: 0,
+                full: false,
+                race: false,
+                outage: None,
+            }
+        }
+
         fn next_id(&mut self) -> String {
             self.counter += 1;
             format!("id{}", self.counter)
@@ -753,16 +655,14 @@ mod tests {
                 }
             }
         }
+    }
+
+    impl Api for State {
+        fn auth(&mut self) -> &mut Auth {
+            &mut self.auth
+        }
 
         fn route(&mut self, request: &Request, base: &str) -> Reply {
-            if request.path == "/token" {
-                return self.token(&String::from_utf8_lossy(&request.body));
-            }
-            let bearer = request.headers.get("authorization");
-            let bearer = bearer.and_then(|value| value.strip_prefix("Bearer "));
-            if !bearer.is_some_and(|token| self.tokens.contains(token)) {
-                return reply(401, json!({"error": {"code": 401}}));
-            }
             if let Some((status, reason)) = self.outage {
                 return reply(status, json!({"error": {"errors": [{"reason": reason}]}}));
             }
@@ -823,136 +723,32 @@ mod tests {
                 _ => nothing(404),
             }
         }
-
-        fn token(&mut self, form: &str) -> Reply {
-            let form: HashMap<_, _> = form
-                .split('&')
-                .filter_map(|pair| pair.split_once('='))
-                .map(|(key, value)| (key, crate::percent::decode(value)))
-                .collect();
-            let valid = form.get("grant_type").is_some_and(|g| g == "refresh_token")
-                && form.get("client_id").is_some_and(|c| c == CLIENT)
-                && form
-                    .get("refresh_token")
-                    .is_some_and(|t| *t == self.refresh)
-                && !self.revoked;
-            if !valid {
-                return reply(400, json!({"error": "invalid_grant"}));
-            }
-            let token = format!("access-{}", self.next_id());
-            self.tokens.insert(token.clone());
-            let mut answer =
-                json!({"access_token": token, "expires_in": 3600, "token_type": "Bearer"});
-            if let Some(rotated) = self.rotate_to.take() {
-                answer["refresh_token"] = json!(rotated);
-                self.refresh = rotated;
-            }
-            reply(200, answer)
-        }
-    }
-
-    fn read_request(stream: &TcpStream) -> Option<Request> {
-        let mut input = BufReader::new(stream);
-        let mut line = String::new();
-        input.read_line(&mut line).ok()?;
-        let mut parts = line.split_whitespace();
-        let (method, target) = (parts.next()?.to_owned(), parts.next()?.to_owned());
-        let (path, query) = target.split_once('?').unwrap_or((&target, ""));
-        let query = query
-            .split('&')
-            .filter_map(|pair| pair.split_once('='))
-            .map(|(key, value)| (key.to_owned(), crate::percent::decode(value)))
-            .collect();
-        let mut headers = HashMap::new();
-        loop {
-            line.clear();
-            input.read_line(&mut line).ok()?;
-            let Some((name, value)) = line.trim_end().split_once(':') else {
-                break;
-            };
-            headers.insert(name.to_lowercase(), value.trim().to_owned());
-        }
-        let length = headers
-            .get("content-length")
-            .and_then(|l| l.parse().ok())
-            .unwrap_or(0);
-        let mut body = vec![0; length];
-        input.read_exact(&mut body).ok()?;
-        Some(Request {
-            method,
-            path: path.to_owned(),
-            query,
-            headers,
-            body,
-        })
     }
 
     /// A local fake of the parts of the Drive and OAuth APIs the storage
     /// uses, over plain HTTP. Lists come in pages of two.
     struct Fake {
-        base: String,
-        addr: SocketAddr,
-        state: Arc<Mutex<State>>,
-        stop: Arc<AtomicBool>,
+        server: Server<State>,
         /// The refresh tokens the storages made here were told about.
         reported: Arc<Recorder>,
     }
 
     impl Fake {
         fn start() -> Self {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = listener.local_addr().unwrap();
-            let base = format!("http://{addr}");
-            let state = Arc::new(Mutex::new(State::default()));
-            state.lock().unwrap().refresh = REFRESH.to_owned();
-            state.lock().unwrap().add(ROOT, "", true, Vec::new());
-            let stop = Arc::new(AtomicBool::new(false));
-            let (served, halt, address) = (state.clone(), stop.clone(), base.clone());
-            thread::spawn(move || {
-                for stream in listener.incoming() {
-                    if halt.load(Relaxed) {
-                        break;
-                    }
-                    let (Ok(mut stream), served, address) =
-                        (stream, served.clone(), address.clone())
-                    else {
-                        continue;
-                    };
-                    thread::spawn(move || {
-                        let Some(request) = read_request(&stream) else {
-                            return;
-                        };
-                        let answer = served.lock().unwrap().route(&request, &address);
-                        let mut head = format!("HTTP/1.1 {} X\r\n", answer.status);
-                        for (name, value) in &answer.headers {
-                            head.push_str(&format!("{name}: {value}\r\n"));
-                        }
-                        head.push_str(&format!(
-                            "Content-Length: {}\r\nConnection: close\r\n\r\n",
-                            answer.body.len()
-                        ));
-                        let _ = stream.write_all(head.as_bytes());
-                        let _ = stream.write_all(&answer.body);
-                    });
-                }
-            });
+            let mut state = State::new();
+            state.add(ROOT, "", true, Vec::new());
             Self {
-                base,
-                addr,
-                state,
-                stop,
+                server: Server::start(state),
                 reported: Arc::default(),
             }
         }
 
+        fn state(&self) -> std::sync::MutexGuard<'_, State> {
+            self.server.state.lock().unwrap()
+        }
+
         fn config(&self, simple_limit: usize, chunk_size: usize) -> Config {
-            Config {
-                api: self.base.clone(),
-                token_url: format!("{}/token", self.base),
-                allow_http: true,
-                simple_limit,
-                chunk_size,
-            }
+            Config::fake(&self.server.base, simple_limit, chunk_size)
         }
 
         fn storage_with(&self, simple_limit: usize, chunk_size: usize) -> GoogleDriveStorage {
@@ -978,13 +774,13 @@ mod tests {
 
         /// A folder `LeafPDF` in My Drive's root, created at second `created`.
         fn add_app_folder(&self, created: u64, trashed: bool) -> String {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state();
             state.add_at(APP_FOLDER, "root", true, Vec::new(), created, trashed)
         }
 
         /// How many not trashed `LeafPDF` folders are in My Drive's root.
         fn app_folders(&self) -> usize {
-            let state = self.state.lock().unwrap();
+            let state = self.state();
             let named = |i: &&Stored| i.parent == "root" && i.name == APP_FOLDER && !i.trashed;
             state.items.iter().filter(named).count()
         }
@@ -993,25 +789,16 @@ mod tests {
             self.storage_with(SIMPLE_LIMIT, CHUNK_SIZE)
         }
 
-        /// The access tokens given so far stop working, as after an hour.
         fn expire_access_tokens(&self) {
-            self.state.lock().unwrap().tokens.clear();
+            self.state().auth.expire_access_tokens();
         }
 
         fn revoke_access(&self) {
-            self.state.lock().unwrap().revoked = true;
-            self.expire_access_tokens();
+            self.state().auth.revoke();
         }
 
         fn fail_with(&self, status: u16, reason: &'static str) {
-            self.state.lock().unwrap().outage = Some((status, reason));
-        }
-    }
-
-    impl Drop for Fake {
-        fn drop(&mut self) {
-            self.stop.store(true, Relaxed);
-            let _ = TcpStream::connect(self.addr);
+            self.state().outage = Some((status, reason));
         }
     }
 
@@ -1065,7 +852,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let at = |root| {
-            let (callback, config) = (Arc::<Recorder>::default(), Config::default());
+            let (callback, config) = (Arc::<Recorder>::default(), production());
             GoogleDriveStorage::at(&client, &token, Some(root), callback, config)
         };
         let admin = at("root");
@@ -1243,7 +1030,7 @@ mod tests {
     #[test]
     fn a_duplicate_folder_made_at_the_same_moment_is_deleted_by_its_creator() {
         let fake = Fake::start();
-        fake.state.lock().unwrap().race = true;
+        fake.state().race = true;
 
         let (storage, _) = fake.connect().unwrap();
         assert_eq!(fake.app_folders(), 1);
@@ -1274,13 +1061,7 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 
         // Even with the server gone: that is Offline, and the next use tries again.
-        let gone = "http://127.0.0.1:1".to_owned();
-        let config = Config {
-            api: gone.clone(),
-            token_url: gone,
-            allow_http: true,
-            ..Config::default()
-        };
+        let config = Config::fake("http://127.0.0.1:1", SIMPLE_LIMIT, CHUNK_SIZE);
         let callback = Arc::<Recorder>::default();
         let storage = GoogleDriveStorage::resume_with(CLIENT, REFRESH, callback, config);
         let error = storage.list("").unwrap_err();
@@ -1290,7 +1071,7 @@ mod tests {
     #[test]
     fn a_full_drive_cannot_create_the_folder_but_opens_an_existing_one() {
         let fake = Fake::start();
-        fake.state.lock().unwrap().full = true;
+        fake.state().full = true;
         assert!(is_full(&fake.connect().map(|_| ()).unwrap_err()));
         assert!(is_full(&fake.resume().list("").unwrap_err()));
         assert_eq!(fake.app_folders(), 0);
@@ -1306,7 +1087,7 @@ mod tests {
         let (storage, _) = fake.connect().unwrap();
         assert!(fake.reported.0.lock().unwrap().is_empty());
 
-        fake.state.lock().unwrap().rotate_to = Some("rotated".to_owned());
+        fake.state().auth.rotate_to = Some("rotated".to_owned());
         fake.expire_access_tokens();
         put_bytes(&storage, "blob", b"1");
         assert_eq!(*fake.reported.0.lock().unwrap(), ["rotated"]);
@@ -1320,7 +1101,7 @@ mod tests {
     #[test]
     fn a_refresh_token_rotated_while_connecting_is_reported() {
         let fake = Fake::start();
-        fake.state.lock().unwrap().rotate_to = Some("rotated".to_owned());
+        fake.state().auth.rotate_to = Some("rotated".to_owned());
 
         fake.connect().unwrap();
 
