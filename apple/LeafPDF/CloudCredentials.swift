@@ -13,9 +13,9 @@ enum CloudCredential: Equatable, Sendable {
     case webDAV(WebDAVAccount)
     /// The grant of iCloud Drive: what `ICloudGrant` needs to get its access back.
     case iCloudDrive(bookmark: Data)
-    /// The refresh token of the OAuth client, and the account it belongs to
-    /// (empty if Google didn't tell), which Settings shows.
-    case googleDrive(refreshToken: String, account: String)
+    /// Google Drive or OneDrive: the refresh token of the OAuth client, and the
+    /// account it belongs to (empty if the provider didn't tell), which Settings shows.
+    case oauth(CloudProvider, refreshToken: String, account: String)
 }
 
 /// Where the credentials of the Connected Cloud Provider are kept on this
@@ -29,15 +29,23 @@ struct CloudCredentials {
     private static let urlKey = "cloud.webdav.url"
     private static let usernameKey = "cloud.webdav.username"
     private static let bookmarkKey = "cloud.icloud.bookmark"
-    private static let googleAccountKey = "cloud.google.account"
     private static let webDAVPassword = "WebDAV password"
-    private static let googleRefreshToken = "Google refresh token"
+
+    /// Where a provider behind OAuth keeps its account (in `defaults`) and its
+    /// refresh token (in the Keychain). Providers have their own, so a left-over
+    /// of one never passes for another's.
+    private static let oauthKeys: [CloudProvider: (accountKey: String, tokenName: String)] = [
+        .googleDrive: ("cloud.google.account", "Google refresh token"),
+        .oneDrive: ("cloud.onedrive.account", "OneDrive refresh token"),
+    ]
 
     /// What `save` kept; nil if there is none or a part is missing.
     func load() -> CloudCredential? {
         if let bookmark = defaults.data(forKey: Self.bookmarkKey) { return .iCloudDrive(bookmark: bookmark) }
-        if let account = defaults.string(forKey: Self.googleAccountKey) {
-            return secret(Self.googleRefreshToken).map { .googleDrive(refreshToken: $0, account: account) }
+        for (provider, keys) in Self.oauthKeys {
+            if let account = defaults.string(forKey: keys.accountKey) {
+                return secret(keys.tokenName).map { .oauth(provider, refreshToken: $0, account: account) }
+            }
         }
         guard let url = defaults.string(forKey: Self.urlKey),
             let username = defaults.string(forKey: Self.usernameKey),
@@ -60,9 +68,9 @@ struct CloudCredentials {
         case .iCloudDrive(let bookmark):
             defaults.set(bookmark, forKey: Self.bookmarkKey)
             return true
-        case .googleDrive(let refreshToken, let account):
-            guard store(refreshToken, as: Self.googleRefreshToken) else { return false }
-            defaults.set(account, forKey: Self.googleAccountKey)
+        case .oauth(let provider, let refreshToken, let account):
+            guard let keys = Self.oauthKeys[provider], store(refreshToken, as: keys.tokenName) else { return false }
+            defaults.set(account, forKey: keys.accountKey)
             return true
         }
     }
@@ -72,9 +80,11 @@ struct CloudCredentials {
         defaults.removeObject(forKey: Self.urlKey)
         defaults.removeObject(forKey: Self.usernameKey)
         defaults.removeObject(forKey: Self.bookmarkKey)
-        defaults.removeObject(forKey: Self.googleAccountKey)
         SecItemDelete(query(Self.webDAVPassword) as CFDictionary)
-        SecItemDelete(query(Self.googleRefreshToken) as CFDictionary)
+        for keys in Self.oauthKeys.values {
+            defaults.removeObject(forKey: keys.accountKey)
+            SecItemDelete(query(keys.tokenName) as CFDictionary)
+        }
     }
 
     private func store(_ secret: String, as name: String) -> Bool {

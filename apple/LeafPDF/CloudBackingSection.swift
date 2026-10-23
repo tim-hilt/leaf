@@ -50,10 +50,12 @@ struct CloudBackingSection: View {
             } else if choosing == .iCloudDrive {
                 errorText
                 Button("Connect", action: pickICloudDrive).disabled(isConnecting)
-            } else if choosing == .googleDrive {
+            } else if let choosing, let service = OAuthSignIn.Service.of(choosing) {
                 errorText
-                Button("Connect") { attempt { try await library.connectGoogleDrive(refreshToken: signInToGoogle()) } }
-                    .disabled(isConnecting)
+                Button("Connect") {
+                    attempt { try await library.connectOAuth(choosing, refreshToken: signIn(to: service)) }
+                }
+                .disabled(isConnecting)
             }
         }
         .fileImporter(isPresented: $isPickingFolder, allowedContentTypes: [.folder]) { picked in
@@ -103,7 +105,7 @@ struct CloudBackingSection: View {
     }
 
     /// Connected, but access was lost: a new password for WebDAV, granting
-    /// iCloud Drive again for iCloud Drive, signing in again for Google Drive.
+    /// iCloud Drive again for iCloud Drive, signing in again for Google Drive and OneDrive.
     /// Sync resumes without Disconnecting.
     @ViewBuilder private func reconnect(_ provider: CloudProvider) -> some View {
         switch provider {
@@ -120,17 +122,21 @@ struct CloudBackingSection: View {
         case .iCloudDrive:
             errorText
             Button("Reconnect", action: pickICloudDrive).disabled(isConnecting)
-        case .googleDrive:
+        case .googleDrive, .oneDrive:
             errorText
-            Button("Reconnect") { attempt { try await library.reconnectGoogleDrive(refreshToken: signInToGoogle()) } }
-                .disabled(isConnecting)
+            if let service = OAuthSignIn.Service.of(provider) {
+                Button("Reconnect") { attempt { try await library.reconnectOAuth(refreshToken: signIn(to: service)) } }
+                    .disabled(isConnecting)
+            }
         }
     }
 
-    /// Opens Google's sign-in page and returns the refresh token it leads to.
+    /// Opens the provider's sign-in page and returns the refresh token it leads to.
     /// Backing out of the page is `Cancelled`, which says nothing.
-    private func signInToGoogle() async throws -> String {
-        guard let signIn = GoogleSignIn.configured else { throw GoogleSignInError.notConfigured }
+    private func signIn(to service: OAuthSignIn.Service) async throws -> String {
+        guard let signIn = OAuthSignIn.configured(service) else {
+            throw OAuthSignInError.notConfigured(service.provider)
+        }
         let callback: URL
         do {
             callback = try await webAuthentication.authenticate(

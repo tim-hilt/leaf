@@ -68,6 +68,7 @@ enum CloudProvider: CaseIterable, Hashable {
     case webDAV
     case iCloudDrive
     case googleDrive
+    case oneDrive
 
     /// What the picker calls it.
     var name: String {
@@ -75,6 +76,7 @@ enum CloudProvider: CaseIterable, Hashable {
         case .webDAV: "WebDAV"
         case .iCloudDrive: "iCloud Drive"
         case .googleDrive: "Google Drive"
+        case .oneDrive: "OneDrive"
         }
     }
 
@@ -84,6 +86,7 @@ enum CloudProvider: CaseIterable, Hashable {
         case .webDAV: .symbol("server.rack")
         case .iCloudDrive: .symbol("icloud")
         case .googleDrive: .logo("GoogleDrive")
+        case .oneDrive: .logo("OneDrive")
         }
     }
 
@@ -92,7 +95,16 @@ enum CloudProvider: CaseIterable, Hashable {
         switch self {
         case .webDAV: "Server"
         case .iCloudDrive: "Folder"
-        case .googleDrive: "Account"
+        case .googleDrive, .oneDrive: "Account"
+        }
+    }
+
+    /// What Settings shows as the account when the provider doesn't tell it.
+    var unnamedAccount: String {
+        switch self {
+        case .googleDrive: "Google Account"
+        case .oneDrive: "Microsoft Account"
+        case .webDAV, .iCloudDrive: "Account"
         }
     }
 
@@ -108,7 +120,7 @@ enum CloudProvider: CaseIterable, Hashable {
 struct CloudConnection: Equatable {
     let provider: CloudProvider
     /// What Settings shows of it, labelled `provider.detailLabel`: the Server URL
-    /// for WebDAV, the folder for iCloud Drive, the account for Google Drive,
+    /// for WebDAV, the folder for iCloud Drive, the account for Google Drive and OneDrive,
     /// or the directory of a test.
     let detail: String
 }
@@ -121,7 +133,7 @@ extension ConnectError {
         case .AccessDenied: "Access denied"
         case .ICloudDriveUnavailable: "Turn on iCloud Drive in Settings"
         case .WrongFolder: "Choose iCloud Drive"
-        case .UnsupportedAccount: "Only personal accounts are supported"
+        case .UnsupportedAccount: "Only personal Microsoft accounts are supported"
         case .WrongCredentials: "Wrong username or password"
         case .Unreachable: "Server not reachable"
         case .NotHttps: "URL must start with https://"
