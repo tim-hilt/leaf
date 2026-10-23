@@ -14,14 +14,15 @@ extension LibraryModelTests {
     private var cloud: URL { root.deletingLastPathComponent().appending(path: "\(root.lastPathComponent)-cloud") }
 
     /// A second Device with a Library of its own.
-    private func openOtherDevice() throws -> LibraryModel {
+    private func openOtherDevice(iCloudDrive: ICloudDrive = .system) throws -> LibraryModel {
         let name = "\(root.lastPathComponent)-other"
         let parent = root.deletingLastPathComponent()
         let defaults = UserDefaults(suiteName: name)!
         return try LibraryModel(
             root: parent.appending(path: name, directoryHint: .isDirectory),
             coversFolder: parent.appending(path: "\(name)-covers"), defaults: defaults,
-            credentials: CloudCredentials(defaults: defaults, service: "leafpdf-test-\(name)"), syncIntervals: Self.fast
+            credentials: CloudCredentials(defaults: defaults, service: "leafpdf-test-\(name)"),
+            iCloudDrive: iCloudDrive, syncIntervals: Self.fast
         )
     }
 
@@ -182,10 +183,196 @@ extension LibraryModelTests {
     }
 
     @Test func eachCloudProviderHasANameAnIconAndALabelForWhatSettingsShows() {
-        #expect(CloudProvider.allCases == [.webDAV])
+        #expect(CloudProvider.allCases == [.webDAV, .iCloudDrive])
         #expect(CloudProvider.webDAV.name == "WebDAV")
         #expect(CloudProvider.webDAV.icon == "server.rack")
         #expect(CloudProvider.webDAV.detailLabel == "Server")
+        #expect(CloudProvider.iCloudDrive.name == "iCloud Drive")
+        #expect(CloudProvider.iCloudDrive.icon == "icloud")
+        #expect(CloudProvider.iCloudDrive.detailLabel == "Folder")
+    }
+
+    // MARK: iCloud Drive
+
+    /// Stands in for the system's iCloud Drive: a folder of this test, which can be turned off.
+    private final class FakeICloudDrive: @unchecked Sendable {
+        let root: URL
+        private let lock = NSLock()
+        private var available = true
+        private var requested: [URL] = []
+
+        init(root: URL) throws {
+            self.root = root
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        }
+
+        var isAvailable: Bool {
+            get { lock.withLock { available } }
+            set { lock.withLock { available = newValue } }
+        }
+
+        /// The files the Library asked the system to download.
+        var downloads: [URL] { lock.withLock { requested } }
+
+        var system: ICloudDrive {
+            ICloudDrive(
+                isAvailable: { self.isAvailable },
+                isRoot: { $0.resolvingSymlinksInPath() == self.root.resolvingSymlinksInPath() },
+                requestDownload: { url in self.lock.withLock { self.requested.append(url) } })
+        }
+    }
+
+    private func fakeICloudDrive() throws -> FakeICloudDrive {
+        try FakeICloudDrive(root: root.deletingLastPathComponent().appending(path: "\(root.lastPathComponent)-icloud"))
+    }
+
+    private static let iCloudConnection = CloudConnection(provider: .iCloudDrive, detail: "iCloud Drive/LeafPDF")
+
+    @Test func connectingToICloudDriveShowsTheFolderAndSyncsThroughIt() async throws {
+        let icloud = try fakeICloudDrive()
+        let library = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+
+        try await library.connectICloudDrive(granting: icloud.root)
+
+        #expect(library.connection == Self.iCloudConnection)
+        #expect(try await eventually { if case .synced = library.syncState { true } else { false } })
+        #expect(FileManager.default.fileExists(atPath: icloud.root.appending(path: "LeafPDF").path))
+    }
+
+    @Test func anImportOnOneDeviceAppearsOnTheOtherThroughICloudDrive() async throws {
+        let icloud = try fakeICloudDrive()
+        let a = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        let b = try openOtherDevice(iCloudDrive: icloud.system)
+        try await a.connectICloudDrive(granting: icloud.root)
+        try await b.connectICloudDrive(granting: icloud.root)
+
+        let id = try await importedID(a, titled: "Paper")
+
+        #expect(try await eventually { ids(b) == [id] })
+    }
+
+    @Test func aFolderOtherThanICloudDriveIsRefused() async throws {
+        let icloud = try fakeICloudDrive()
+        let library = try openLibrary(iCloudDrive: icloud.system)
+        let elsewhere = icloud.root.appending(path: "Documents", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+
+        await #expect(throws: ConnectError.WrongFolder) {
+            try await library.connectICloudDrive(granting: elsewhere)
+        }
+        #expect(library.connection == nil)
+        #expect(credentials.load() == nil)
+    }
+
+    @Test func connectingWhileICloudDriveIsOffAsksToTurnItOn() async throws {
+        let icloud = try fakeICloudDrive()
+        icloud.isAvailable = false
+        let library = try openLibrary(iCloudDrive: icloud.system)
+
+        await #expect(throws: ConnectError.ICloudDriveUnavailable) {
+            try await library.connectICloudDrive(granting: icloud.root)
+        }
+        #expect(library.connection == nil)
+        #expect(library.iCloudDriveIsAvailable == false)
+    }
+
+    @Test func theGrantSurvivesARelaunchAndIsForgottenOnDisconnect() async throws {
+        let icloud = try fakeICloudDrive()
+        let first = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        try await first.connectICloudDrive(granting: icloud.root)
+        let id = try await importedID(first, titled: "Paper")
+        let other = try openOtherDevice(iCloudDrive: icloud.system)
+        try await other.connectICloudDrive(granting: icloud.root)
+        #expect(try await eventually { ids(other) == [id] })
+
+        // Relaunch.
+        let library = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        #expect(library.connection == Self.iCloudConnection)
+        let more = try await importedID(other, titled: "More")
+        #expect(try await eventually { Set(ids(library)) == [id, more] })
+
+        await library.disconnect()
+
+        #expect(library.connection == nil)
+        #expect(credentials.load() == nil)
+        #expect(try openLibrary(iCloudDrive: icloud.system).connection == nil)
+    }
+
+    @Test func aLostGrantIsAccessLostAndReconnectingGrantsAgain() async throws {
+        let icloud = try fakeICloudDrive()
+        let first = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        try await first.connectICloudDrive(granting: icloud.root)
+        try FileManager.default.removeItem(at: icloud.root)
+
+        let library = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+
+        #expect(library.connection == Self.iCloudConnection)
+        #expect(library.syncState == .accessLost)
+        #expect(library.syncIndicator == .failed(canRetry: false))
+        try FileManager.default.createDirectory(at: icloud.root, withIntermediateDirectories: true)
+        try await library.connectICloudDrive(granting: icloud.root)
+        #expect(library.connection == Self.iCloudConnection)
+        #expect(try await eventually { if case .synced = library.syncState { true } else { false } })
+        #expect(try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system).syncState != .accessLost)
+    }
+
+    @Test func iCloudDriveTurnedOffIsAccessLostOnLaunchAndWhenTheAppReturns() async throws {
+        let icloud = try fakeICloudDrive()
+        let first = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        try await first.connectICloudDrive(granting: icloud.root)
+        #expect(try await eventually { if case .synced = first.syncState { true } else { false } })
+
+        icloud.isAvailable = false
+        first.foreground()
+        #expect(first.syncState == .accessLost)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(first.syncState == .accessLost)
+
+        let relaunched = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        #expect(relaunched.connection == Self.iCloudConnection)
+        #expect(relaunched.syncState == .accessLost)
+
+        icloud.isAvailable = true
+        try await relaunched.connectICloudDrive(granting: icloud.root)
+        #expect(try await eventually { if case .synced = relaunched.syncState { true } else { false } })
+    }
+
+    @Test func filesICloudHasNotDownloadedYetAreRequested() async throws {
+        let icloud = try fakeICloudDrive()
+        let remote = icloud.root.appending(path: "LeafPDF/v1", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
+        try Data().write(to: remote.appending(path: ".chunk.icloud"))
+        let library = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+
+        try await library.connectICloudDrive(granting: icloud.root)
+
+        #expect(
+            try await eventually {
+                icloud.downloads.map(\.lastPathComponent).contains("chunk")
+            })
+    }
+
+    @Test func onlyICloudDrivesOwnRootCountsAsICloudDrive() {
+        let root = "/Users/a/Library/Mobile Documents/com~apple~CloudDocs"
+        #expect(ICloudDrive.system.isRoot(URL(filePath: root)))
+        #expect(ICloudDrive.system.isRoot(URL(filePath: root, directoryHint: .isDirectory)))
+        #expect(!ICloudDrive.system.isRoot(URL(filePath: root + "/LeafPDF")))
+        #expect(!ICloudDrive.system.isRoot(URL(filePath: "/Users/a/Library/Mobile Documents")))
+        #expect(!ICloudDrive.system.isRoot(URL(filePath: "/Users/a/Documents")))
+    }
+
+    @Test func theICloudDriveGrantIsKeptAndTheLatestConnectionWins() {
+        let bookmark = Data([1, 2, 3])
+        credentials.save(.webDAV(WebDAVAccount(url: "https://a.example", username: "a", password: "1")))
+
+        credentials.save(.iCloudDrive(bookmark: bookmark))
+
+        #expect(credentials.load() == .iCloudDrive(bookmark: bookmark))
+        credentials.save(.webDAV(WebDAVAccount(url: "https://b.example", username: "b", password: "2")))
+        #expect(credentials.load() == .webDAV(WebDAVAccount(url: "https://b.example", username: "b", password: "2")))
+        credentials.save(.iCloudDrive(bookmark: bookmark))
+        credentials.forget()
+        #expect(credentials.load() == nil)
     }
 
     @Test func credentialsSurviveARelaunchAndAreGoneAfterDisconnect() async throws {

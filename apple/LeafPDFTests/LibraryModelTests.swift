@@ -22,11 +22,11 @@ import UniformTypeIdentifiers
     /// Opens the Library at `root`, keeping its Covers in `coversFolder`, its
     /// sort choice in `defaults` and its Cloud Backing credentials in `credentials`.
     func openLibrary(
-        syncIntervals: SyncIntervals = .standard, inbox: URL? = nil
+        syncIntervals: SyncIntervals = .standard, inbox: URL? = nil, iCloudDrive: ICloudDrive = .system
     ) throws -> LibraryModel {
         try LibraryModel(
             root: root, coversFolder: coversFolder, defaults: defaults,
-            credentials: credentials, syncIntervals: syncIntervals, inbox: inbox)
+            credentials: credentials, iCloudDrive: iCloudDrive, syncIntervals: syncIntervals, inbox: inbox)
     }
 
     /// Imports a PDF with the given Title, oldest first when called in sequence.

@@ -198,6 +198,9 @@ final class LibraryModel {
     @ObservationIgnored private let covers: CoverStore
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let credentials: CloudCredentials
+    @ObservationIgnored private let iCloudDrive: ICloudDrive
+    /// The access to iCloud Drive that a Connection to it holds, until it ends.
+    @ObservationIgnored private var iCloudGrant: ICloudGrant?
     @ObservationIgnored private let syncIntervals: SyncIntervals
     /// Where the system hands over temporary copies of Files; they are deleted
     /// after their Import. Nil where the system hands over the Files themselves.
@@ -229,12 +232,13 @@ final class LibraryModel {
     /// copies, deleted after `importFiles`.
     init(
         root: URL, coversFolder: URL, defaults: UserDefaults, credentials: CloudCredentials,
-        syncIntervals: SyncIntervals = .standard, inbox: URL? = nil
+        iCloudDrive: ICloudDrive = .system, syncIntervals: SyncIntervals = .standard, inbox: URL? = nil
     ) throws {
         core = try LeafCore.Library.open(root: root.path)
         covers = CoverStore(folder: coversFolder)
         self.defaults = defaults
         self.credentials = credentials
+        self.iCloudDrive = iCloudDrive
         self.syncIntervals = syncIntervals
         self.inbox = inbox
         sort = LibrarySort(from: defaults)
@@ -254,6 +258,10 @@ final class LibraryModel {
                         url: account.url, username: account.username, password: account.password,
                         observer: relay(for: id), intervals: syncIntervals)
                     connection = CloudConnection(provider: .webDAV, detail: account.url)
+                case .iCloudDrive(let bookmark):
+                    connection = Self.iCloudConnection
+                    // Without the grant or iCloud Drive there is nothing to sync with until Reconnect.
+                    if !resumeICloudDrive(bookmark: bookmark, id: id) { loseAccess() }
                 }
             } catch {
                 connectionID = nil
@@ -325,6 +333,62 @@ final class LibraryModel {
         credentials.save(.webDAV(WebDAVAccount(url: account.url, username: account.username, password: password)))
     }
 
+    /// Whether iCloud Drive is on and the user is signed in to iCloud: if not,
+    /// Connecting to it has to wait.
+    var iCloudDriveIsAvailable: Bool { iCloudDrive.isAvailable() }
+
+    private static let iCloudConnection = CloudConnection(
+        provider: .iCloudDrive, detail: ICloudDrive.folderDescription)
+
+    /// Connects to iCloud Drive and starts syncing, which first merges this
+    /// Library with the one in the cloud. `granted` is the folder the user chose
+    /// in the system's folder picker: iCloud Drive itself, else this throws
+    /// `WrongFolder`; `ICloudDriveUnavailable` while iCloud Drive is off. Keeps
+    /// the grant until `disconnect`, and holds the access meanwhile. Replaces any
+    /// earlier Connection, and also serves to Reconnect when access was lost.
+    func connectICloudDrive(granting granted: URL) async throws {
+        guard iCloudDrive.isAvailable() else { throw ConnectError.ICloudDriveUnavailable }
+        guard iCloudDrive.isRoot(granted) else { throw ConnectError.WrongFolder }
+        let grant = try ICloudGrant(granting: granted)
+        let id = newConnection()
+        let folder = grant.folder.path
+        let (core, observer, intervals) = (core, relay(for: id), syncIntervals)
+        let downloads = DownloadRequests(iCloudDrive.requestDownload)
+        do {
+            try await Task.detached {
+                try core.connectIcloudDrive(
+                    folder: folder, downloads: downloads, observer: observer, intervals: intervals)
+            }.value
+        } catch {
+            if connectionID == id { connectionID = nil }
+            throw error
+        }
+        iCloudGrant = grant
+        connection = Self.iCloudConnection
+        credentials.save(.iCloudDrive(bookmark: grant.bookmark))
+    }
+
+    /// Resumes syncing with the iCloud Drive that `bookmark` gives access to.
+    /// False if it can't be resumed: access is lost.
+    private func resumeICloudDrive(bookmark: Data, id: UUID) -> Bool {
+        guard iCloudDrive.isAvailable(), let grant = ICloudGrant(bookmark: bookmark),
+            (try? core.connectIcloudDrive(
+                folder: grant.folder.path, downloads: DownloadRequests(iCloudDrive.requestDownload),
+                observer: relay(for: id), intervals: syncIntervals)) != nil
+        else { return false }
+        iCloudGrant = grant
+        return true
+    }
+
+    /// Sync can't go on until the user gives access again: Reconnect.
+    private func loseAccess() {
+        // Reports of the Connection that was running no longer count.
+        connectionID = nil
+        iCloudGrant = nil
+        transfer = nil
+        syncState = .accessLost
+    }
+
     /// Connects to the directory `directory` as if it were a cloud, for tests.
     /// Not remembered.
     func connect(directory: URL) async throws {
@@ -344,13 +408,20 @@ final class LibraryModel {
         connectionID = nil
         connection = nil
         transfer = nil
+        iCloudGrant = nil
         credentials.forget()
         let core = core
         await Task.detached { core.disconnect() }.value
     }
 
     /// The app is in the foreground: Syncs at once, then regularly.
-    func foreground() { core.foreground() }
+    func foreground() {
+        if connection?.provider == .iCloudDrive, syncState != .accessLost, !iCloudDrive.isAvailable() {
+            loseAccess()
+        } else {
+            core.foreground()
+        }
+    }
 
     /// The app goes to the background: Syncs once more, then stops.
     func background() { core.background() }

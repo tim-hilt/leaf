@@ -9,6 +9,7 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 /// A blob in a storage directory.
@@ -171,10 +172,34 @@ pub(crate) fn write_atomically(staging: &Path, path: &Path, data: &mut dyn Read)
     written
 }
 
+/// Asked to download the file at a path, see `DirStorage::on_download_needed`.
+type DownloadRequest = Arc<dyn Fn(&Path) + Send + Sync>;
+
 /// A storage in a directory of the file system.
-#[derive(Debug)]
 pub struct DirStorage {
     root: PathBuf,
+    download: Option<DownloadRequest>,
+}
+
+impl fmt::Debug for DirStorage {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("DirStorage")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The placeholder iCloud Drive leaves for the file `name`, until it has
+/// downloaded it.
+fn placeholder(name: &str) -> String {
+    format!(".{name}.icloud")
+}
+
+/// The file a placeholder stands for, if `name` is one.
+fn placeholder_of(name: &str) -> Option<&str> {
+    name.strip_prefix('.')?
+        .strip_suffix(".icloud")
+        .filter(|file| !file.is_empty())
 }
 
 /// Where blobs are written before they are renamed into place. Starts with a
@@ -196,7 +221,31 @@ impl DirStorage {
                 ignore_not_found(fs::remove_file(entry.path()))?;
             }
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            download: None,
+        })
+    }
+
+    /// Makes the storage recognize files that iCloud Drive has not downloaded
+    /// yet, which it leaves as `.name.icloud` placeholders: they count as not
+    /// there, and `request` is called with the path of the file, so a later
+    /// call finds it.
+    pub fn on_download_needed(mut self, request: impl Fn(&Path) + Send + Sync + 'static) -> Self {
+        self.download = Some(Arc::new(request));
+        self
+    }
+
+    /// Asks for the file at `path` to be downloaded if it is only a placeholder.
+    fn request_if_placeholder(&self, path: &Path) -> io::Result<()> {
+        let (Some(download), Some(name)) = (&self.download, path.file_name()) else {
+            return Ok(());
+        };
+        let stand_in = path.with_file_name(placeholder(&name.to_string_lossy()));
+        if stand_in.try_exists()? {
+            download(path);
+        }
+        Ok(())
     }
 
     /// The path of `name`, which may not exist.
@@ -216,10 +265,14 @@ impl Storage for DirStorage {
     }
 
     fn get(&self, name: &str) -> io::Result<Option<Box<dyn Read + Send>>> {
-        match File::open(self.path(name)?) {
+        let path = self.path(name)?;
+        match File::open(&path) {
             Ok(file) if file.metadata()?.is_file() => Ok(Some(Box::new(file))),
             Ok(_) => Ok(None),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                self.request_if_placeholder(&path)?;
+                Ok(None)
+            }
             Err(e) => Err(e),
         }
     }
@@ -239,11 +292,16 @@ impl Storage for DirStorage {
             let entry = entry?;
             let meta = entry.metadata()?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            if meta.is_file() && !name.starts_with('.') {
+            if !meta.is_file() {
+                continue;
+            }
+            if !name.starts_with('.') {
                 blobs.push(Blob {
                     name,
                     size: meta.len(),
                 });
+            } else if let (Some(download), Some(file)) = (&self.download, placeholder_of(&name)) {
+                download(&entry.path().with_file_name(file));
             }
         }
         Ok(blobs)
@@ -424,6 +482,7 @@ pub(crate) mod contract {
 mod tests {
     use super::contract::{Scratch, storage_contract_tests};
     use super::*;
+    use std::sync::Mutex;
 
     fn scratch_storage() -> (Scratch, DirStorage) {
         let scratch = Scratch::new("storage");
@@ -465,6 +524,61 @@ mod tests {
 
         assert!(is_full(&error));
         assert!(storage.list("").unwrap().is_empty());
+    }
+
+    /// Records the files the storage asks to have downloaded.
+    fn with_downloads(dir: &Path) -> (DirStorage, Arc<Mutex<Vec<PathBuf>>>) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let log = asked.clone();
+        let storage = DirStorage::open(dir)
+            .unwrap()
+            .on_download_needed(move |path| log.lock().unwrap().push(path.to_owned()));
+        (storage, asked)
+    }
+
+    #[test]
+    fn a_file_not_downloaded_yet_is_not_listed_and_is_requested() {
+        let scratch = Scratch::new("storage");
+        let (storage, asked) = with_downloads(&scratch.0);
+        fs::create_dir(scratch.0.join("d")).unwrap();
+        fs::write(scratch.0.join("d/.later.icloud"), b"placeholder").unwrap();
+        contract::put_bytes(&storage, "d/now", b"1");
+
+        assert_eq!(contract::names(&storage, "d"), ["now"]);
+
+        assert_eq!(*asked.lock().unwrap(), [scratch.0.join("d/later")]);
+    }
+
+    #[test]
+    fn reading_a_file_not_downloaded_yet_finds_nothing_and_requests_it() {
+        let scratch = Scratch::new("storage");
+        let (storage, asked) = with_downloads(&scratch.0);
+        fs::write(scratch.0.join(".later.icloud"), b"placeholder").unwrap();
+
+        assert!(get_bytes(&storage, "later").unwrap().is_none());
+
+        assert_eq!(*asked.lock().unwrap(), [scratch.0.join("later")]);
+    }
+
+    #[test]
+    fn a_file_that_has_arrived_is_listed_and_read_without_a_request() {
+        let scratch = Scratch::new("storage");
+        let (storage, asked) = with_downloads(&scratch.0);
+        contract::put_bytes(&storage, "here", b"1");
+
+        assert_eq!(contract::names(&storage, ""), ["here"]);
+        assert_eq!(get_bytes(&storage, "here").unwrap().unwrap(), b"1");
+
+        assert!(asked.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn without_a_download_callback_placeholders_are_ignored() {
+        let (alive, storage) = scratch_storage();
+        fs::write(alive.0.join(".later.icloud"), b"placeholder").unwrap();
+
+        assert!(storage.list("").unwrap().is_empty());
+        assert!(get_bytes(&storage, "later").unwrap().is_none());
     }
 
     #[test]

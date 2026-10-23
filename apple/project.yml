@@ -70,6 +70,8 @@ targets:
         ENABLE_APP_SANDBOX: YES
         # Cloud Backing talks to the user's WebDAV server.
         ENABLE_OUTGOING_NETWORK_CONNECTIONS: YES
+        # The iCloud Drive grant: user-selected files and app-scoped bookmarks.
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Config/LeafPDF-macOS.entitlements
         ENABLE_HARDENED_RUNTIME: YES
         # The core is built for Apple silicon only (see docs/adr/0006).
         ARCHS: arm64

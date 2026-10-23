@@ -11,6 +11,8 @@ struct WebDAVAccount: Equatable, Sendable {
 /// What a Connection to a Cloud Provider needs to resume after a relaunch.
 enum CloudCredential: Equatable, Sendable {
     case webDAV(WebDAVAccount)
+    /// The grant of iCloud Drive: what `ICloudGrant` needs to get its access back.
+    case iCloudDrive(bookmark: Data)
 }
 
 /// Where the credentials of the Connected Cloud Provider are kept on this
@@ -23,10 +25,12 @@ struct CloudCredentials {
 
     private static let urlKey = "cloud.webdav.url"
     private static let usernameKey = "cloud.webdav.username"
+    private static let bookmarkKey = "cloud.icloud.bookmark"
     private static let webDAVPassword = "WebDAV password"
 
     /// What `save` kept; nil if there is none or a part is missing.
     func load() -> CloudCredential? {
+        if let bookmark = defaults.data(forKey: Self.bookmarkKey) { return .iCloudDrive(bookmark: bookmark) }
         guard let url = defaults.string(forKey: Self.urlKey),
             let username = defaults.string(forKey: Self.usernameKey),
             let password = secret(Self.webDAVPassword)
@@ -45,6 +49,9 @@ struct CloudCredentials {
             defaults.set(account.url, forKey: Self.urlKey)
             defaults.set(account.username, forKey: Self.usernameKey)
             return true
+        case .iCloudDrive(let bookmark):
+            defaults.set(bookmark, forKey: Self.bookmarkKey)
+            return true
         }
     }
 
@@ -52,6 +59,7 @@ struct CloudCredentials {
     func forget() {
         defaults.removeObject(forKey: Self.urlKey)
         defaults.removeObject(forKey: Self.usernameKey)
+        defaults.removeObject(forKey: Self.bookmarkKey)
         SecItemDelete(query(Self.webDAVPassword) as CFDictionary)
     }
 

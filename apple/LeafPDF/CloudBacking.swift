@@ -66,11 +66,13 @@ struct FileTransfer: Equatable {
 /// Where a Library can be backed up.
 enum CloudProvider: CaseIterable, Hashable {
     case webDAV
+    case iCloudDrive
 
     /// What the picker calls it.
     var name: String {
         switch self {
         case .webDAV: "WebDAV"
+        case .iCloudDrive: "iCloud Drive"
         }
     }
 
@@ -78,6 +80,7 @@ enum CloudProvider: CaseIterable, Hashable {
     var icon: String {
         switch self {
         case .webDAV: "server.rack"
+        case .iCloudDrive: "icloud"
         }
     }
 
@@ -85,6 +88,7 @@ enum CloudProvider: CaseIterable, Hashable {
     var detailLabel: String {
         switch self {
         case .webDAV: "Server"
+        case .iCloudDrive: "Folder"
         }
     }
 }
@@ -93,7 +97,7 @@ enum CloudProvider: CaseIterable, Hashable {
 struct CloudConnection: Equatable {
     let provider: CloudProvider
     /// What Settings shows of it, labelled `provider.detailLabel`: the Server URL
-    /// for WebDAV, or the directory of a test.
+    /// for WebDAV, the folder for iCloud Drive, or the directory of a test.
     let detail: String
 }
 

@@ -1,9 +1,9 @@
 import LeafCore
 import SwiftUI
 
-/// Settings' Cloud Backing: pick a Cloud Provider, Connect with Server URL,
-/// username and password, see how Sync stands, Reconnect with a new password
-/// when the server rejects the old one, Disconnect.
+/// Settings' Cloud Backing: pick a Cloud Provider, Connect (with Server URL,
+/// username and password for WebDAV, with one button for iCloud Drive), see
+/// how Sync stands, Reconnect when access was lost, Disconnect.
 struct CloudBackingSection: View {
     @Environment(LibraryModel.self) private var library
 
@@ -15,6 +15,7 @@ struct CloudBackingSection: View {
     @State private var error: String?
     @State private var isConnecting = false
     @State private var newPassword = ""
+    @State private var isPickingFolder = false
 
     var body: some View {
         Section("Cloud Backing") {
@@ -31,12 +32,19 @@ struct CloudBackingSection: View {
                     Label(connection.provider.detailLabel, systemImage: connection.provider.icon)
                 }
                 LabeledContent("Status", value: library.syncState.line(for: connection.provider))
-                if library.syncState == .accessLost { reconnectForm }
+                if library.syncState == .accessLost { reconnect(connection.provider) }
                 Button("Disconnect", role: .destructive) { Task { await library.disconnect() } }
             } else if choosing == .webDAV {
                 form
+            } else if choosing == .iCloudDrive {
+                errorText
+                Button("Connect", action: pickICloudDrive).disabled(isConnecting)
             }
         }
+        .fileImporter(isPresented: $isPickingFolder, allowedContentTypes: [.folder]) { picked in
+            connectICloudDrive(picked)
+        }
+        .fileDialogMessage("Choose iCloud Drive")
     }
 
     /// Picking None Disconnects, which keeps everything on this Device.
@@ -45,8 +53,15 @@ struct CloudBackingSection: View {
             get: { library.connection?.provider ?? choosing },
             set: { picked in
                 choosing = picked
+                error = nil
                 if picked == nil && library.connection != nil { Task { await library.disconnect() } }
             })
+    }
+
+    @ViewBuilder private var errorText: some View {
+        if let error {
+            Text(error).foregroundStyle(.red)
+        }
     }
 
     @ViewBuilder private var form: some View {
@@ -62,48 +77,69 @@ struct CloudBackingSection: View {
                 .textInputAutocapitalization(.never)
             #endif
         SecureField("Password", text: $password)
-        if let error {
-            Text(error).foregroundStyle(.red)
+        errorText
+        Button("Connect") {
+            attempt {
+                try await library.connect(url: url, username: username, password: password)
+                password = ""
+            }
         }
-        Button("Connect") { Task { await connect() } }
-            .disabled(isConnecting || url.isEmpty || username.isEmpty || password.isEmpty)
+        .disabled(isConnecting || url.isEmpty || username.isEmpty || password.isEmpty)
     }
 
-    /// Connected, but access was lost: for WebDAV, a new password resumes Sync.
-    @ViewBuilder private var reconnectForm: some View {
-        SecureField("New Password", text: $newPassword)
-        if let error {
-            Text(error).foregroundStyle(.red)
-        }
-        Button("Reconnect") { Task { await reconnect() } }
+    /// Connected, but access was lost: a new password for WebDAV, granting
+    /// iCloud Drive again for iCloud Drive. Sync resumes without Disconnecting.
+    @ViewBuilder private func reconnect(_ provider: CloudProvider) -> some View {
+        switch provider {
+        case .webDAV:
+            SecureField("New Password", text: $newPassword)
+            errorText
+            Button("Reconnect") {
+                attempt {
+                    try await library.reconnect(password: newPassword)
+                    newPassword = ""
+                }
+            }
             .disabled(isConnecting || newPassword.isEmpty)
-    }
-
-    private func reconnect() async {
-        isConnecting = true
-        defer { isConnecting = false }
-        do {
-            try await library.reconnect(password: newPassword)
-            error = nil
-            newPassword = ""
-        } catch let failure as ConnectError {
-            error = failure.message
-        } catch {
-            self.error = error.localizedDescription
+        case .iCloudDrive:
+            errorText
+            Button("Reconnect", action: pickICloudDrive).disabled(isConnecting)
         }
     }
 
-    private func connect() async {
-        isConnecting = true
-        defer { isConnecting = false }
-        do {
-            try await library.connect(url: url, username: username, password: password)
+    /// Opens the folder picker, unless iCloud Drive is off: then there is nothing to pick.
+    private func pickICloudDrive() {
+        if library.iCloudDriveIsAvailable {
             error = nil
-            password = ""
-        } catch let failure as ConnectError {
-            error = failure.message
-        } catch {
-            self.error = error.localizedDescription
+            isPickingFolder = true
+        } else {
+            error = ConnectError.ICloudDriveUnavailable.message
+        }
+    }
+
+    /// Backing out of the picker is no error.
+    private func connectICloudDrive(_ picked: Result<URL, any Error>) {
+        switch picked {
+        case .success(let folder):
+            attempt { try await library.connectICloudDrive(granting: folder) }
+        case .failure(let failure):
+            if (failure as? CocoaError)?.code != .userCancelled { error = failure.localizedDescription }
+        }
+    }
+
+    /// Runs `connecting`, shows why it failed, if it did.
+    private func attempt(_ connecting: @escaping () async throws -> Void) {
+        Task {
+            isConnecting = true
+            defer { isConnecting = false }
+            do {
+                try await connecting()
+                error = nil
+            } catch let failure as ConnectError {
+                error = failure.message
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
 }

@@ -368,6 +368,14 @@ pub trait SyncObserver: Send + Sync {
     fn transfer_progress(&self, done: u64, total: u64);
 }
 
+/// Asks the client to have the system download a file of iCloud Drive that is
+/// not on the Device yet. Implemented by the client and called from the Sync
+/// loop's thread.
+#[uniffi::export(with_foreign)]
+pub trait DownloadRequester: Send + Sync {
+    fn request_download(&self, path: String);
+}
+
 /// When Sync steps run, see `leafpdf_core::sync_loop::Intervals`.
 #[derive(uniffi::Record)]
 pub struct SyncIntervals {
@@ -516,6 +524,28 @@ impl Library {
         if let Some(sync) = &*self.sync() {
             sync.use_storage(Arc::new(storage));
         }
+        Ok(())
+    }
+
+    /// Connects to iCloud Drive and starts syncing with it: the first step
+    /// merges the Library with the cloud's. `folder` is `LeafPDF` in the
+    /// granted iCloud Drive, created if missing. Files other Devices wrote that
+    /// iCloud hasn't downloaded yet are not there for Sync until `downloads` has
+    /// fetched them. Contacts nobody, so it serves to resume a Connection too,
+    /// and to Reconnect after access was lost. Replaces any earlier Connection.
+    pub fn connect_icloud_drive(
+        &self,
+        folder: String,
+        downloads: Arc<dyn DownloadRequester>,
+        observer: Arc<dyn SyncObserver>,
+        intervals: SyncIntervals,
+    ) -> Result<(), ConnectError> {
+        let storage = DirStorage::open(folder)
+            .map_err(|_| ConnectError::AccessDenied)?
+            .on_download_needed(move |path| {
+                downloads.request_download(path.to_string_lossy().into_owned());
+            });
+        self.start_sync(Arc::new(storage), observer, intervals);
         Ok(())
     }
 
@@ -714,6 +744,71 @@ mod tests {
         fn library_changed(&self) {}
         fn markup_changed(&self, _: String) {}
         fn transfer_progress(&self, _: u64, _: u64) {}
+    }
+
+    struct Requests(Mutex<Vec<String>>);
+
+    impl DownloadRequester for Requests {
+        fn request_download(&self, path: String) {
+            self.0.lock().unwrap().push(path);
+        }
+    }
+
+    #[test]
+    fn icloud_drive_syncs_its_folder_and_asks_for_files_not_downloaded_yet() {
+        let dir = std::env::temp_dir().join(format!("leafpdf-ffi-icloud-{}", std::process::id()));
+        let folder = dir.join("LeafPDF");
+        std::fs::create_dir_all(folder.join("v1")).unwrap();
+        std::fs::write(folder.join("v1/.later.icloud"), b"placeholder").unwrap();
+        let library = Library::open(dir.join("library").display().to_string()).unwrap();
+        let (steps, requests) = (
+            Arc::new(Steps::default()),
+            Arc::new(Requests(Mutex::default())),
+        );
+        let hour = 3_600_000;
+
+        library
+            .connect_icloud_drive(
+                folder.display().to_string(),
+                requests.clone(),
+                steps.clone(),
+                SyncIntervals {
+                    debounce_ms: 10,
+                    progress_ms: 10,
+                    poll_ms: hour,
+                    idle_poll_ms: hour,
+                },
+            )
+            .unwrap();
+        another_step(&steps, 0, "connecting");
+
+        let asked = requests.0.lock().unwrap().clone();
+        assert_eq!(asked, [folder.join("v1/later").display().to_string()]);
+        library.disconnect();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_created_is_access_denied() {
+        let dir = std::env::temp_dir().join(format!("leafpdf-ffi-denied-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("LeafPDF"), b"a file").unwrap();
+        let library = Library::open(dir.join("library").display().to_string()).unwrap();
+
+        let result = library.connect_icloud_drive(
+            dir.join("LeafPDF").display().to_string(),
+            Arc::new(Requests(Mutex::default())),
+            Arc::new(Steps::default()),
+            SyncIntervals {
+                debounce_ms: 10,
+                progress_ms: 10,
+                poll_ms: 10,
+                idle_poll_ms: 10,
+            },
+        );
+
+        assert_eq!(result.unwrap_err(), ConnectError::AccessDenied);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
