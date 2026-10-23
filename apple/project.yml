@@ -35,6 +35,19 @@ targets:
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
             LSItemContentTypes: [org.idpf.epub-container]
+        # Cloud Provider OAuth: client IDs and redirect schemes come from
+        # Config/CloudClients.xcconfig (scripts/cloud-oauth-wizard.sh).
+        CFBundleURLTypes:
+          - CFBundleURLName: Google Drive sign-in
+            CFBundleTypeRole: Viewer
+            CFBundleURLSchemes: [$(GOOGLE_REDIRECT_SCHEME)]
+          - CFBundleURLName: OneDrive sign-in
+            CFBundleTypeRole: Viewer
+            CFBundleURLSchemes: [$(MICROSOFT_REDIRECT_SCHEME)]
+        GoogleClientID: $(GOOGLE_CLIENT_ID)
+        GoogleRedirectScheme: $(GOOGLE_REDIRECT_SCHEME)
+        MicrosoftClientID: $(MICROSOFT_CLIENT_ID)
+        MicrosoftRedirectScheme: $(MICROSOFT_REDIRECT_SCHEME)
         # One window per Device, all Tabs in it (docs/adr/0018); iPadOS gets one scene.
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

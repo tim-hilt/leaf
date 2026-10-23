@@ -41,6 +41,7 @@ open apple/LeafPDF.xcodeproj  # run the LeafPDF scheme on a simulator or "My Mac
 - Tests on an iOS Simulator, for iOS-only code: `make apple-test-ios` (`SIM=<device name>`)
 - Narrow either to a suite or test: `ONLY=LeafPDFTests/ReaderPDFViewTests`. Full log: `/tmp/leafpdf-test.log`
 - Debug build of the core: `make apple-core PROFILE=dev`
+- OAuth clients for Google Drive and OneDrive (maintainer, one-off, re-runnable): `scripts/cloud-oauth-wizard.sh`
 - Running on a device: create `apple/Config/Local.xcconfig` with `DEVELOPMENT_TEAM = <your team ID>`
 
 ### Install on an iPad without opening Xcode
