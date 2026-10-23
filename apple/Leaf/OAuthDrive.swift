@@ -1,5 +1,6 @@
 import Foundation
 import LeafCore
+import Synchronization
 
 /// What Cloud Backing asks of the core for a Cloud Provider behind OAuth
 /// (Google Drive, OneDrive); tests stand in.
@@ -45,20 +46,19 @@ struct OAuthDrive: Sendable {
 
 /// Keeps the latest refresh token of a Connection: the one it started with, or
 /// the one the core reported last. `changed` hears of each report, on the main actor.
-final class RefreshTokenKeeper: RefreshTokenObserver, @unchecked Sendable {
-    private let lock = NSLock()
-    private var token: String
+final class RefreshTokenKeeper: RefreshTokenObserver {
+    private let token: Mutex<String>
     private let changed: @Sendable @MainActor (String) -> Void
 
     init(_ token: String, changed: @escaping @Sendable @MainActor (String) -> Void) {
-        self.token = token
+        self.token = Mutex(token)
         self.changed = changed
     }
 
-    var latest: String { lock.withLock { token } }
+    var latest: String { token.withLock { $0 } }
 
     func newRefreshToken(token: String) {
-        lock.withLock { self.token = token }
+        self.token.withLock { $0 = token }
         Task { @MainActor [changed] in changed(token) }
     }
 }

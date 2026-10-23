@@ -162,7 +162,6 @@ private final class Running: NSObject {
         cachedPage = (page, text)
         return text
     }
-
 }
 
 extension DocumentSearch.Query {

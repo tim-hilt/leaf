@@ -2,6 +2,7 @@ import LeafCore
 import Network
 import Observation
 import PDFKit
+import Synchronization
 
 /// A Document in the Library, as the core last listed it. Holds no open PDF:
 /// the Reader opens `file`. Equal only with equal details, progress and Date
@@ -131,15 +132,14 @@ private final class ProgressRelay: ImportProgress {
 
     init(_ update: @escaping @Sendable @MainActor (Double) -> Void) { self.update = update }
 
-    /// The last whole percent forwarded; reported on the Import's thread only.
-    private nonisolated(unsafe) var forwarded = -1
+    /// The last whole percent forwarded.
+    private let forwarded = Atomic(-1)
 
     /// Forwards whole percent steps only, not every chunk copied.
     func report(copied: UInt64, total: UInt64) {
         let fraction = total == 0 ? 1 : Double(copied) / Double(total)
         let percent = Int(fraction * 100)
-        guard percent != forwarded else { return }
-        forwarded = percent
+        guard forwarded.exchange(percent, ordering: .relaxed) != percent else { return }
         Task { @MainActor [update] in update(fraction) }
     }
 }
@@ -787,11 +787,9 @@ final class LibraryModel {
         let id = document.id
         let rgb = defaultHighlightColor.rgb
         let milliseconds = created.millisecondsSince1970
-        let added = await inStateOrder {
-            try? $0.addHighlight(
-                id: id, anchor: anchor, quotedText: quotedText, color: rgb, created: milliseconds)
+        return await inStateOrder {
+            try? $0.addHighlight(id: id, anchor: anchor, quotedText: quotedText, color: rgb, created: milliseconds)
         }
-        return added
     }
 
     /// Sets the color of `highlight` of `document`. The core writes off the
@@ -829,8 +827,7 @@ final class LibraryModel {
     func addPageNote(at place: Place, to document: LibraryDocument, at created: Date = .now) async -> PageNote? {
         let id = document.id
         let milliseconds = created.millisecondsSince1970
-        let stored = await inStateOrder { try? $0.addPageNote(id: id, place: place, created: milliseconds) }
-        return stored
+        return await inStateOrder { try? $0.addPageNote(id: id, place: place, created: milliseconds) }
     }
 
     /// Sets the text of `note` of `document` to `text`; empty removes the page
@@ -983,9 +980,7 @@ final class LibraryModel {
     /// A PDF that can't be read is skipped and tried again at the next launch.
     private func readMissingDetails() {
         let missing = documents.filter { $0.format == .pdf && $0.pageCount == nil && !readingDetails.contains($0.id) }
-            .map {
-                ($0.id, $0.file)
-            }
+            .map { ($0.id, $0.file) }
         guard !missing.isEmpty else { return }
         readingDetails.formUnion(missing.map(\.0))
         Task(priority: .utility) { [weak self] in
@@ -1001,7 +996,7 @@ final class LibraryModel {
                     try? $0.setDetails(id, details)
                     return try? $0.document(id: id)
                 }
-                read += stored.map { [$0] } ?? []
+                if let stored { read.append(stored) }
                 if read.count >= 16 || published.duration(to: .now) > .milliseconds(500) {
                     update(read)
                     read = []

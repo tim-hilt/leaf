@@ -89,7 +89,7 @@ struct TableOfContentsView: View {
                         Text(pageNumber).foregroundStyle(.secondary).monospacedDigit()
                     }
                 }
-                .contentShape(Rectangle())
+                .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .disabled(entry.place == nil)

@@ -66,10 +66,7 @@ extension [HighlightColor] {
 
 extension RGB {
     /// The color as six hexadecimal digits, `rrggbb`.
-    var hex: String {
-        let byte = { (value: Double) in Int((min(max(value, 0), 1) * 255).rounded()) }
-        return String(format: "%02x%02x%02x", byte(r), byte(g), byte(b))
-    }
+    var hex: String { String(format: "%02x%02x%02x", r.colorByte, g.colorByte, b.colorByte) }
 
     /// The UI color of the core's byte color.
     init(_ stored: Rgb) { self.init(Double(stored.r) / 255, Double(stored.g) / 255, Double(stored.b) / 255) }
@@ -77,8 +74,10 @@ extension RGB {
 
 extension Rgb {
     /// The core's byte color of the UI color.
-    init(_ color: RGB) {
-        let byte = { (value: Double) in UInt8((min(max(value, 0), 1) * 255).rounded()) }
-        self.init(r: byte(color.r), g: byte(color.g), b: byte(color.b))
-    }
+    init(_ color: RGB) { self.init(r: color.r.colorByte, g: color.g.colorByte, b: color.b.colorByte) }
+}
+
+extension Double {
+    /// This color component, clamped to 0...1, as a byte.
+    fileprivate var colorByte: UInt8 { UInt8((min(max(self, 0), 1) * 255).rounded()) }
 }

@@ -154,7 +154,8 @@ struct TabStrip: View {
         GeometryReader { geometry in
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    TabMarkerContainer {
+                    // Groups the Tabs so the marker's Liquid Glass slides between them.
+                    GlassEffectContainer {
                         HStack(spacing: 0) {
                             ForEach(documents) { document in
                                 TabItem(
@@ -185,15 +186,6 @@ struct TabStrip: View {
         } else {
             proxy.scrollTo(id)
         }
-    }
-}
-
-/// Groups the Tabs so the marker's Liquid Glass slides between them.
-private struct TabMarkerContainer<Content: View>: View {
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        GlassEffectContainer { content }
     }
 }
 
@@ -235,7 +227,7 @@ private struct TabItem: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .frame(width: 24, height: 24)
-                .contentShape(Rectangle())
+                .contentShape(.rect)
                 .accessibilityHidden(true)
         }
         .padding(.leading, 12)
@@ -244,7 +236,7 @@ private struct TabItem: View {
         .modifier(TabMarker(isActive: isActive, namespace: marker))
         .padding(.horizontal, 2)
         .padding(.vertical, 3)
-        .contentShape(Rectangle())
+        .contentShape(.rect)
         .onTapGesture { tabs.select(document.id) }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(document.title)

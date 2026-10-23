@@ -405,28 +405,26 @@ extension ImportProblem.Failure {
 /// offering to try again. While Sync
 /// is blocked (access lost, full, update needed) trying again can't help, so it
 /// names the reason and opens Settings instead.
-
-/// The glyph cut out of a filled sync icon: white in light mode, black in dark
-/// mode. An explicit dynamic color, since `.background` resolves against the
-/// toolbar and can end up matching the fill.
-#if os(iOS)
-    private let glyphColorInAppearance = Color(
-        uiColor: UIColor { traits in
-            traits.userInterfaceStyle == .dark ? .black : .white
-        })
-#else
-    private let glyphColorInAppearance = Color(
-        nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .black : .white
-        })
-#endif
-
 struct SyncStatusButton: View {
     @Environment(LibraryModel.self) private var library
     let indicator: SyncIndicator
     @Binding var isShowingSettings: Bool
 
-    static let glyphColor = glyphColorInAppearance
+    /// The glyph cut out of a filled sync icon: white in light mode, black in dark
+    /// mode. An explicit dynamic color, since `.background` resolves against the
+    /// toolbar and can end up matching the fill.
+    #if os(iOS)
+        static let glyphColor = Color(
+            uiColor: UIColor { traits in
+                traits.userInterfaceStyle == .dark ? .black : .white
+            })
+    #else
+        static let glyphColor = Color(
+            nsColor: NSColor(name: nil) { appearance in
+                appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .black : .white
+            })
+    #endif
+
     @State private var isShowingPopover = false
 
     var body: some View {

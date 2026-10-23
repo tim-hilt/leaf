@@ -269,7 +269,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
             case let position as [Int] where position.count == 2:
                 view.top = .epub(spineIndex: position[0], offset: position[1])
                 if view.isOpen { view.callbacks.onScroll() }
-            case let text as String where text == "opened":
+            case "opened" as String:
                 view.isOpen = true
                 view.history = JumpHistory(backPlace: view.restoredBackPlace)
                 view.syncTextSize()
@@ -277,7 +277,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
                 view.syncHighlights()
                 view.syncPageNotes()
                 view.callbacks.onOpen()
-            case let text as String where text == "tap":
+            case "tap" as String:
                 view.callbacks.onSingleTap()
             case let body as [String: Any]:
                 if let selecting = body["selection"] as? Bool {

@@ -40,7 +40,7 @@ enum SyncIndicator: Equatable {
     /// What its popover says.
     var message: String {
         switch self {
-        case .syncing: "Syncing\u{2026}"
+        case .syncing: "Syncing…"
         case .failed: "Error while syncing"
         case .noConnection: "No internet connection. Connect to the internet to resume syncing."
         case .synced(let date):

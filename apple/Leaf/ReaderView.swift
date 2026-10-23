@@ -156,20 +156,16 @@ struct ReaderView: View {
             .background(BackShortcut())
             .focusedSceneValue(\.reader, handle)
             .focusedSceneValue(\.backTarget, backTarget)
-            .focusedSceneValue(\.switchPageStyle, switchPageStyle)
+            .focusedSceneValue(\.readerColorScheme, colorScheme)
             .focusedSceneValue(\.showTableOfContents, availableContents == nil ? nil : $isShowingContents)
             .windowToolbarFullScreenVisibility(.onHover)
         #endif
     }
 
-    private func switchPageStyle() {
-        settings.switchToOppositePageStyle(systemScheme: colorScheme)
-    }
-
     #if os(iOS)
         /// Invisible button giving ⇧⌘D to iPad keyboards; on macOS the View menu has it.
         private var switchPageStyleShortcut: some View {
-            Button("Switch Light and Dark Pages", action: switchPageStyle)
+            Button("Switch Light and Dark Pages") { settings.switchToOppositePageStyle(systemScheme: colorScheme) }
                 .keyboardShortcut("d", modifiers: [.shift, .command])
                 .opacity(0)
                 .accessibilityHidden(true)
@@ -390,7 +386,7 @@ private struct BackCapsule: View {
             .font(.subheadline.weight(.medium))
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(.regularMaterial, in: Capsule())
+            .background(.regularMaterial, in: .capsule)
             .buttonStyle(.plain)
             .accessibilityLabel("Back to \(target.spokenName)")
     }

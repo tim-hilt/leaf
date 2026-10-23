@@ -17,7 +17,7 @@ struct ImportProgressModal: View {
                 }
                 .padding(20)
                 .frame(maxWidth: 320)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .background(.regularMaterial, in: .rect(cornerRadius: 14))
             }
         }
         .task {

@@ -10,7 +10,7 @@ struct ReaderPDFContent {
     let inputs: ReaderInputs
 
     @MainActor
-    fileprivate func makePDFView() -> PDFView {
+    fileprivate func makePDFView() -> ReaderPDFView {
         let view = ReaderPDFView(handle: inputs.handle, results: inputs.results)
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
@@ -30,23 +30,22 @@ struct ReaderPDFContent {
     }
 
     @MainActor
-    fileprivate func update(_ view: PDFView) {
-        guard let reader = view as? ReaderPDFView else { return }
-        reader.pageAppearance = inputs.appearance
-        reader.highlights = inputs.highlights
-        reader.pageNotes = inputs.pageNotes
-        reader.pageNoteColor = inputs.pageNoteColor
+    fileprivate func update(_ view: ReaderPDFView) {
+        view.pageAppearance = inputs.appearance
+        view.highlights = inputs.highlights
+        view.pageNotes = inputs.pageNotes
+        view.pageNoteColor = inputs.pageNoteColor
     }
 }
 
 #if os(iOS)
     extension ReaderPDFContent: UIViewRepresentable {
-        func makeUIView(context: Context) -> PDFView { makePDFView() }
-        func updateUIView(_ view: PDFView, context: Context) { update(view) }
+        func makeUIView(context: Context) -> ReaderPDFView { makePDFView() }
+        func updateUIView(_ view: ReaderPDFView, context: Context) { update(view) }
     }
 #else
     extension ReaderPDFContent: NSViewRepresentable {
-        func makeNSView(context: Context) -> PDFView { makePDFView() }
-        func updateNSView(_ view: PDFView, context: Context) { update(view) }
+        func makeNSView(context: Context) -> ReaderPDFView { makePDFView() }
+        func updateNSView(_ view: ReaderPDFView, context: Context) { update(view) }
     }
 #endif

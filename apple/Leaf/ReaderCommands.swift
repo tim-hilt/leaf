@@ -8,8 +8,9 @@
         @Entry var backTarget: BackTarget?
         /// Opens the focused Reader's Table of Contents; nil when it has none.
         @Entry var showTableOfContents: Binding<Bool>?
-        /// Switches the focused Reader's pages to the opposite of what is showing (⇧⌘D).
-        @Entry var switchPageStyle: (() -> Void)?
+        /// The color scheme the focused Reader shows in, which ⇧⌘D switches its pages
+        /// against; nil when no Reader is showing.
+        @Entry var readerColorScheme: ColorScheme?
     }
 
     /// View menu zoom and Page Style commands, Edit > Highlight and Find and the Go menu, acting on the focused window's Reader.
@@ -17,7 +18,7 @@
         @FocusedValue(\.reader) private var reader
         @FocusedValue(\.showTableOfContents) private var showTableOfContents
         @FocusedValue(\.backTarget) private var backTarget
-        @FocusedValue(\.switchPageStyle) private var switchPageStyle
+        @FocusedValue(\.readerColorScheme) private var readerColorScheme
         let settings: AppSettings
 
         var body: some Commands {
@@ -37,9 +38,11 @@
                         style.title,
                         isOn: Binding(get: { settings.pageStyle == style }, set: { _ in settings.pageStyle = style }))
                 }
-                Button("Switch Light and Dark Pages") { switchPageStyle?() }
-                    .keyboardShortcut("d", modifiers: [.shift, .command])
-                    .disabled(switchPageStyle == nil)
+                Button("Switch Light and Dark Pages") {
+                    if let readerColorScheme { settings.switchToOppositePageStyle(systemScheme: readerColorScheme) }
+                }
+                .keyboardShortcut("d", modifiers: [.shift, .command])
+                .disabled(readerColorScheme == nil)
             }
             CommandGroup(after: .textEditing) {
                 Button("Highlight") { reader?.view?.highlightSelection() }
