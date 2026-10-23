@@ -88,9 +88,16 @@ Files can also be Imported from outside: the share sheet on iOS and iPadOS, "Ope
 
 Same Cloud Backing as section 8, other storage, in order:
 
-1. Folder: a folder picked in Files or Finder, e.g. in iCloud Drive (no paid Apple Developer membership needed)
-2. Google Drive
-3. OneDrive: reuses the HTTP + OAuth groundwork from Google Drive
+1. iCloud Drive: always `iCloud Drive/LeafPDF`; Connect asks once to grant iCloud Drive itself (other folders are refused), or says "Turn on iCloud Drive in Settings"
+2. Google Drive: `My Drive/LeafPDF`, only files LeafPDF created (ADR-0011)
+3. OneDrive: `Apps/LeafPDF`, personal accounts only; reuses the HTTP + OAuth groundwork from Google Drive
+
+- Settings shows each Cloud Provider's icon in the picker and on the Connected row. These three have one "Connect" button (the provider's sign-in page for Google Drive and OneDrive); cancelling is silent. WebDAV keeps its form.
+- Connected shows the folder (iCloud Drive) or account (Google Drive, OneDrive).
+- Lost access (revoked sign-in, changed password, lost grant) shows "Access lost" with Reconnect. A full cloud shows "<Cloud Provider> is full". Both add the Gallery's warning icon; "full" clears itself once there is space.
+- Disconnect only forgets the credentials on this Device. Interrupted uploads start over.
+
+The icons of the respective providers should be used and shown in the UI
 
 ## 11. Tabs
 

@@ -149,12 +149,16 @@ Keeping the Library in the user's cloud storage so all their Devices share it.
 _Avoid_: Cloud sync, backup
 
 **Cloud Provider**:
-The service that holds the Library for Cloud Backing, such as iCloud or Google Drive.
+The service that holds the Library for Cloud Backing: WebDAV, iCloud Drive, Google Drive or OneDrive.
 _Avoid_: Backend, storage, service
 
 **Connect**:
 Starting Cloud Backing with a Cloud Provider. Its opposite is **Disconnect**, which stops it and keeps everything on the Device.
 _Avoid_: Sign in, link, log out
+
+**Reconnect**:
+Giving a Connected Cloud Provider access again after it lost it, e.g. a revoked sign-in or a changed password.
+_Avoid_: Sign in again, re-authenticate
 
 **Sync**:
 Exchanging changes to the Library, Reading Progress, Markup and Highlight Colors with the Cloud Provider.
