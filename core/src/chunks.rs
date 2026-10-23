@@ -23,6 +23,7 @@
 use crate::storage::{Blob, Storage, get_bytes};
 use automerge::{AutoCommit, ChangeHash};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::io;
 
 /// How many chunks of one document a Device leaves in the storage before it
@@ -217,10 +218,14 @@ impl Cursor {
     /// The cursor as stored: a line `sent <number>`, a line `heads <hash>…`
     /// and a line `seen <device> <number>` per other Device.
     pub fn encode(&self) -> String {
-        let heads: String = self.sent_heads.iter().map(|h| format!(" {h}")).collect();
-        let mut text = format!("sent {}\nheads{heads}\n", self.sent);
+        // Writing to a `String` can't fail.
+        let mut text = format!("sent {}\nheads", self.sent);
+        for head in &self.sent_heads {
+            _ = write!(text, " {head}");
+        }
+        text.push('\n');
         for (device, number) in &self.seen {
-            text.push_str(&format!("seen {device} {number}\n"));
+            _ = writeln!(text, "seen {device} {number}");
         }
         text
     }

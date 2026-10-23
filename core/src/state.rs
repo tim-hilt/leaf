@@ -70,13 +70,10 @@ pub(crate) fn remake(bytes: &[u8], actor: &ActorId) -> Option<Vec<u8>> {
 /// concurrently, 0 if none.
 pub(crate) fn version(doc: &AutoCommit) -> u64 {
     doc.get_all(ROOT, "version")
-        .map(|values| {
-            values
-                .into_iter()
-                .filter_map(|(value, _)| value.as_u64())
-                .max()
-                .unwrap_or(0)
-        })
+        .into_iter()
+        .flatten()
+        .filter_map(|(value, _)| value.as_u64())
+        .max()
         .unwrap_or(0)
 }
 
@@ -96,15 +93,10 @@ pub(crate) fn check_schema(doc: &AutoCommit, known: u64) -> io::Result<()> {
 /// last. Devices that first write to it concurrently each create their own.
 pub(crate) fn maps(doc: &AutoCommit, key: &str) -> Vec<ObjId> {
     doc.get_all(ROOT, key)
-        .map(|values| {
-            values
-                .into_iter()
-                .filter_map(|(value, id)| {
-                    matches!(value, Value::Object(ObjType::Map)).then_some(id)
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .filter_map(|(value, id)| matches!(value, Value::Object(ObjType::Map)).then_some(id))
+        .collect()
 }
 
 /// The map at the root key `key` of `doc` to add entries to: Automerge's winner

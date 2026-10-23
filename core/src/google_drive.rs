@@ -14,7 +14,7 @@ use crate::percent::encode;
 use crate::storage::{Blob, RefreshTokenCallback, Storage, check_name, unique_name};
 use serde_json::json;
 use std::collections::HashMap;
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
 
@@ -155,7 +155,7 @@ impl GoogleDriveStorage {
         );
         if let Some(name) = name {
             let name = name.replace('\\', "\\\\").replace('\'', "\\'");
-            query.push_str(&format!(" and name = '{name}'"));
+            _ = write!(query, " and name = '{name}'");
         }
         let fields = "nextPageToken,files(id,name,size,createdTime)";
         let mut items = Vec::new();

@@ -95,13 +95,13 @@ impl Document {
     /// The Title: the title stored in the File, or else its name without
     /// extension.
     pub fn title(&self) -> String {
-        match self.details.as_ref().and_then(|d| d.title.clone()) {
-            Some(title) => title,
-            None => self
-                .path
-                .file_stem()
-                .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
-        }
+        self.details
+            .as_ref()
+            .and_then(|d| d.title.clone())
+            .unwrap_or_else(|| {
+                let stem = self.path.file_stem().unwrap_or_default();
+                stem.to_string_lossy().into_owned()
+            })
     }
 
     /// How far the user has got, in whole percent rounded down. For a PDF it
@@ -494,14 +494,17 @@ impl Library {
         for import in doc.imports().iter().filter(|i| !i.removed) {
             by_hash.entry(&import.hash).or_default().push(import);
         }
-        by_hash.into_values().map(Entry::new).collect()
+        by_hash
+            .values()
+            .map(|imports| Entry::new(imports))
+            .collect()
     }
 
     /// The Document `id` the Library document lists, if any.
     fn entry(&self, id: &str) -> Option<Entry> {
         let doc = self.catalog();
         let imports: Vec<_> = doc.live(id).collect();
-        (!imports.is_empty()).then(|| Entry::new(imports))
+        (!imports.is_empty()).then(|| Entry::new(&imports))
     }
 
     /// Document `id`, as `documents` lists it; none if it isn't in the
@@ -935,7 +938,7 @@ impl Library {
 
 impl Entry {
     /// The Document of `imports`, its first Import first.
-    fn new(imports: Vec<&Import>) -> Self {
+    fn new(imports: &[&Import]) -> Self {
         let first = imports[0];
         Self {
             id: first.hash.clone(),

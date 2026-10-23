@@ -23,6 +23,7 @@ use miniz_oxide::inflate::decompress_to_vec_with_limit;
 use quick_xml::XmlVersion;
 use quick_xml::events::{BytesRef, BytesStart, Event};
 use quick_xml::reader::Reader;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
@@ -747,7 +748,7 @@ fn attribute(tag: &BytesStart<'_>, name: &str) -> Option<String> {
         .flatten()
         .find(|a| a.key.local_name().as_ref() == name)
         .and_then(|a| a.normalized_value(XmlVersion::Implicit1_0).ok())
-        .map(|value| value.into_owned())
+        .map(Cow::into_owned)
 }
 
 /// The zip folder of the entry `path`, without the trailing slash.
@@ -1376,7 +1377,7 @@ mod tests {
         ];
         assert!(open(&zip(&good, &[])).is_ok());
         let without = |name: &str| -> Vec<u8> {
-            let rest: Vec<_> = good.iter().filter(|(n, _)| *n != name).cloned().collect();
+            let rest: Vec<_> = good.iter().filter(|(n, _)| *n != name).copied().collect();
             zip(&rest, &[])
         };
         let wrong_mimetype = {

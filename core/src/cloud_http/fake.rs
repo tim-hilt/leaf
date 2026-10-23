@@ -5,6 +5,7 @@
 use crate::storage::RefreshTokenCallback;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -173,12 +174,13 @@ impl<S: Api> Server<S> {
                     let answer = answer(&mut *served.lock().unwrap(), &request, &address);
                     let mut head = format!("HTTP/1.1 {} X\r\n", answer.status);
                     for (name, value) in &answer.headers {
-                        head.push_str(&format!("{name}: {value}\r\n"));
+                        _ = write!(head, "{name}: {value}\r\n");
                     }
-                    head.push_str(&format!(
+                    _ = write!(
+                        head,
                         "Content-Length: {}\r\nConnection: close\r\n\r\n",
                         answer.body.len()
-                    ));
+                    );
                     let _ = stream.write_all(head.as_bytes());
                     let _ = stream.write_all(&answer.body);
                 });

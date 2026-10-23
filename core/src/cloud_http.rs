@@ -343,7 +343,7 @@ impl Chunk<'_> {
     /// The `Content-Range` header of the chunk, for a whole of `total` bytes,
     /// if that is known.
     pub(crate) fn content_range(&self, total: Option<u64>) -> String {
-        let total = total.map_or("*".to_owned(), |total| total.to_string());
+        let total = total.map_or_else(|| "*".to_owned(), |total| total.to_string());
         if self.bytes.is_empty() {
             return format!("bytes */{total}");
         }

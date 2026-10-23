@@ -1,5 +1,7 @@
 //! Percent-encoding and -decoding, as URLs and EPUB hrefs use them.
 
+use std::fmt::Write as _;
+
 /// Percent-encodes a path segment or query value: everything but unreserved
 /// characters.
 pub(crate) fn encode(part: &str) -> String {
@@ -9,7 +11,8 @@ pub(crate) fn encode(part: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
                 out.push(byte as char);
             }
-            _ => out.push_str(&format!("%{byte:02X}")),
+            // Writing to a `String` can't fail.
+            _ => _ = write!(out, "%{byte:02X}"),
         }
     }
     out

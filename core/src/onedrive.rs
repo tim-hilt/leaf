@@ -494,15 +494,16 @@ mod tests {
             match (method, action) {
                 ("GET", "") if path.is_empty() => self.root(),
                 ("GET", "/children") => self.children(path, request, base),
-                ("GET", "/content") => match self.files.contains_key(path) {
-                    true => {
+                ("GET", "/content") => {
+                    if self.files.contains_key(path) {
                         let mut answer = nothing(302);
                         let url = format!("{base}/download/{}", encode_path(path));
                         answer.headers.push(("Location", url));
                         answer
+                    } else {
+                        failure(404, "itemNotFound")
                     }
-                    false => failure(404, "itemNotFound"),
-                },
+                }
                 ("PUT", "/content") => self.store(path, request.body.clone()),
                 ("POST", "/createUploadSession") => self.start_session(path, base),
                 ("DELETE", "") => {
