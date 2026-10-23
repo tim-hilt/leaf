@@ -246,6 +246,17 @@ import Testing
         #expect(selection.pages.first.map { document.index(for: $0) } == 1)
     }
 
+    @Test func aRangeOnAPageIsPlacedInTheWholeText() {
+        let text = ChunkedText(["apple", "", "pie, banana"])
+        let onPage = NSRange(location: 5, length: 6)
+
+        let whole = text.range(onPage, inChunkAt: 2)
+
+        #expect(whole == NSRange(location: 10, length: 6))
+        #expect(text.inChunk(whole)?.chunkIndex == 2)
+        #expect(text.inChunk(whole)?.range == onPage)
+    }
+
     @Test func aDocumentWithoutTextIsEmpty() throws {
         let document = try makePDF(named: "Scan.pdf", pageCount: 2)
         let text = ChunkedText(document)

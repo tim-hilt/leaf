@@ -69,7 +69,7 @@ struct CloudBackingSection: View {
         .fileDialogMessage("Choose iCloud Drive")
         .confirmationDialog(
             "Disconnect from \(library.connection?.provider.name ?? "")?",
-            isPresented: Binding(get: { switchingTo != nil }, set: { if !$0 { switchingTo = nil } }),
+            isPresented: Binding(isPresenting: $switchingTo),
             titleVisibility: .visible, presenting: switchingTo
         ) { provider in
             Button("Disconnect and Choose \(provider.name)", role: .destructive) {

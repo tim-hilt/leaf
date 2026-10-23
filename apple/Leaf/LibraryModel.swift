@@ -201,7 +201,9 @@ final class LibraryModel {
     /// Reader that sees its Document's number change reads the Markup again.
     private var markupRevisions: [String: Int] = [:]
     @ObservationIgnored private let core: LeafCore.Library
-    @ObservationIgnored private let covers: CoverStore
+    @ObservationIgnored private let coversFolder: URL
+    /// Made per use, so new Covers suit the displays in use (see `CoverStore`).
+    private var covers: CoverStore { CoverStore(folder: coversFolder) }
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let credentials: CloudCredentials
     @ObservationIgnored private let iCloudDrive: ICloudDrive
@@ -245,7 +247,7 @@ final class LibraryModel {
         syncIntervals: SyncIntervals = .standard, inbox: URL? = nil
     ) throws {
         core = try LeafCore.Library.open(root: root.path)
-        covers = CoverStore(folder: coversFolder)
+        self.coversFolder = coversFolder
         self.defaults = defaults
         self.credentials = credentials
         self.iCloudDrive = iCloudDrive

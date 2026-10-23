@@ -1050,7 +1050,7 @@ extension ReaderEPUBViewTests {
             return abs(distance) < tolerance
         }
         let found = try #require(try await distance(reader, toParagraph: number, of: chapter))
-        #expect(abs(found) < tolerance)
+        #expect(abs(found) < tolerance, "Paragraph \(number) of Chapter \(chapter) is \(found) pt from the top")
     }
 
     @Test func aLongBookOpensDeepAtItsPlaceAndKeepsItsFullHeight() async throws {
@@ -1076,6 +1076,24 @@ extension ReaderEPUBViewTests {
         // As when its images or fonts arrive late.
         _ = try await reader.evaluate(
             "frame(9).body.prepend(Object.assign(frame(9).createElement('div'), { style: 'height: 1500px' }))")
+        try await expectParagraphAtTop(reader, 6, of: 9)
+        #expect(reader.topOfViewport == place)
+    }
+
+    @Test func aPinnedPlaceGoesBackWhenThePageIsScrolledBackRightAfterItMoved() async throws {
+        let book = try await longBook()
+        let place = try paragraph(6, of: 9, in: book)
+        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        try await expectParagraphAtTop(reader, 6, of: 9)
+
+        // The page moves to keep the place as the Chapter grows (resize observers run before the next
+        // frame); then, as iOS does for a moment, it is scrolled back to where its own scroll view was.
+        _ = try await reader.evaluate(
+            """
+            (() => { const before = window.scrollY; \
+            frame(9).body.prepend(Object.assign(frame(9).createElement('div'), { style: 'height: 1500px' })); \
+            requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo(0, before))); })()
+            """)
 
         try await expectParagraphAtTop(reader, 6, of: 9)
         #expect(reader.topOfViewport == place)

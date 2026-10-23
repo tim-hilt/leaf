@@ -10,7 +10,13 @@ final class EPUBMatches: DocumentMatches {
     let text: ChunkedText
     private var matches: [EPUBSearch.Match] = []
     var didChange: () -> Void = {}
-    private var isRefreshScheduled = false
+    /// Matches stream in one by one; the page takes all marks at once, and the
+    /// bar its count, so both are updated together.
+    private lazy var refresh = CoalescedUpdate { [weak self] in
+        guard let self else { return }
+        view?.markMatches(matches, current: results.current)
+        didChange()
+    }
 
     init(view: ReaderEPUBView, results: SearchResults) {
         self.view = view
@@ -28,7 +34,7 @@ final class EPUBMatches: DocumentMatches {
                 matches.append(match)
                 results.append(.init(match))
                 onMatch(matches.count - 1)
-                refreshSoon()
+                refresh.setNeeded()
             },
             onFinish: {})
     }
@@ -45,28 +51,13 @@ final class EPUBMatches: DocumentMatches {
         guard matches.indices.contains(number) else { return }
         results.current = number
         view?.reveal(matches[number])
-        refreshSoon()
+        refresh.setNeeded()
     }
 
     func range(ofMatch number: Int) -> NSRange {
-        let match = matches[number]
-        return NSRange(
-            location: text.range(ofChunkAt: match.spineIndex).location + match.range.location,
-            length: match.range.length)
+        text.range(matches[number].range, inChunkAt: matches[number].spineIndex)
     }
 
     func beginSession() { view?.beginSearchSession() }
     func endSession() { view?.endSearchSession() }
-
-    /// Matches stream in one by one; the page takes all marks at once, and the
-    /// bar its count, so both are updated together at the end of the turn.
-    private func refreshSoon() {
-        guard !isRefreshScheduled else { return }
-        isRefreshScheduled = true
-        Task { @MainActor in
-            isRefreshScheduled = false
-            view?.markMatches(matches, current: results.current)
-            didChange()
-        }
-    }
 }

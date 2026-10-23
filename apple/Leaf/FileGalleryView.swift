@@ -48,66 +48,28 @@ struct FileGalleryView: View {
     private var items: [GalleryItem] { [.importCell] + visibleDocuments.map { .document($0.id) } }
 
     var body: some View {
-        let visibleDocuments = visibleDocuments
         NavigationStack {
             ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: Layout.spacing) {
-                        LazyVGrid(
-                            columns: Array(
-                                repeating: GridItem(.flexible(), spacing: Layout.spacing, alignment: .top),
-                                count: columnCount),
-                            spacing: Layout.spacing
-                        ) {
-                            Button {
-                                open(.importCell)
-                            } label: {
-                                ImportCell()
-                            }
-                            .galleryHighlight(highlighted == .importCell)
-                            .id(GalleryItem.importCell)
-                            .accessibilityLabel("Import…")
-                            ForEach(visibleDocuments) { document in
-                                Button {
-                                    open(.document(document.id))
-                                } label: {
-                                    DocumentCell(document: document)
-                                }
-                                .galleryHighlight(highlighted == .document(document.id))
-                                .id(GalleryItem.document(document.id))
-                                .contextMenu {
-                                    Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
-                                }
-                                .accessibilityLabel(document.accessibilityLabel)
-                                .accessibilityAction(named: "Remove") { removal = document }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        // Animates a Document to its new place when the order changes.
-                        .animation(.default, value: visibleDocuments.map(\.id))
-                        if visibleDocuments.isEmpty && !searchText.isEmpty {
-                            Text("No Results for “\(searchText)”").foregroundStyle(.secondary)
-                        }
+                ScrollView { grid }
+                    // Only the Gallery takes drops, not the Reader on top of it.
+                    .onDrop(
+                        of: tabs.isShowingReader ? [] : ImportableTypes.all, isTargeted: $isDropTargeted, perform: drop
+                    )
+                    .overlay {
+                        if isDropTargeted { Rectangle().strokeBorder(.tint, lineWidth: 4).allowsHitTesting(false) }
                     }
-                    .padding(Layout.spacing)
-                }
-                // Only the Gallery takes drops, not the Reader on top of it.
-                .onDrop(of: tabs.isShowingReader ? [] : ImportableTypes.all, isTargeted: $isDropTargeted, perform: drop)
-                .overlay {
-                    if isDropTargeted { Rectangle().strokeBorder(.tint, lineWidth: 4).allowsHitTesting(false) }
-                }
-                .onGeometryChange(for: Int.self) {
-                    Layout.columnCount(forWidth: $0.size.width)
-                } action: {
-                    columnCount = $0
-                }
-                .focusable()
-                .focused($isGridFocused)
-                .focusEffectDisabled()
-                .onAppear { isGridFocused = true }
-                .onChange(of: highlighted) { _, item in
-                    if let item { proxy.scrollTo(item) }
-                }
+                    .onGeometryChange(for: Int.self) {
+                        Layout.columnCount(forWidth: $0.size.width)
+                    } action: {
+                        columnCount = $0
+                    }
+                    .focusable()
+                    .focused($isGridFocused)
+                    .focusEffectDisabled()
+                    .onAppear { isGridFocused = true }
+                    .onChange(of: highlighted) { _, item in
+                        if let item { proxy.scrollTo(item) }
+                    }
             }
             .onScrollPhaseChange { _, phase in scroll.scrollingChanged(isScrolling: phase != .idle) }
             .environment(scroll)
@@ -185,31 +147,49 @@ struct FileGalleryView: View {
                 await importFiles(urls, from: .openWithOrShare)
             }
         }
-        .alert(
-            rejection?.title ?? "", isPresented: Binding(get: { rejection != nil }, set: { _ in rejection = nil }),
-            presenting: rejection
-        ) { _ in
-        } message: { alert in
-            Text(alert.message)
+        .modifier(GalleryAlerts(rejection: $rejection, duplicate: $duplicate, removal: $removal))
+    }
+
+    /// The cells, "+" first, and "No Results" when a search matches no Document.
+    private var grid: some View {
+        let visibleDocuments = visibleDocuments
+        return VStack(alignment: .leading, spacing: Layout.spacing) {
+            LazyVGrid(
+                columns: Array(
+                    repeating: GridItem(.flexible(), spacing: Layout.spacing, alignment: .top), count: columnCount),
+                spacing: Layout.spacing
+            ) {
+                Button {
+                    open(.importCell)
+                } label: {
+                    ImportCell()
+                }
+                .galleryHighlight(highlighted == .importCell)
+                .id(GalleryItem.importCell)
+                .accessibilityLabel("Import…")
+                ForEach(visibleDocuments) { document in
+                    Button {
+                        open(.document(document.id))
+                    } label: {
+                        DocumentCell(document: document)
+                    }
+                    .galleryHighlight(highlighted == .document(document.id))
+                    .id(GalleryItem.document(document.id))
+                    .contextMenu {
+                        Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
+                    }
+                    .accessibilityLabel(document.accessibilityLabel)
+                    .accessibilityAction(named: "Remove") { removal = document }
+                }
+            }
+            .buttonStyle(.plain)
+            // Animates a Document to its new place when the order changes.
+            .animation(.default, value: visibleDocuments.map(\.id))
+            if visibleDocuments.isEmpty && !searchText.isEmpty {
+                Text("No Results for “\(searchText)”").foregroundStyle(.secondary)
+            }
         }
-        .confirmationDialog(
-            "Remove “\(removal?.title ?? "")”?",
-            isPresented: Binding(get: { removal != nil }, set: { _ in removal = nil }),
-            titleVisibility: .visible, presenting: removal
-        ) { document in
-            Button("Remove", role: .destructive) { library.remove(document) }
-        } message: { _ in
-            Text("The file, its markup and your reading progress are deleted on all your devices.")
-        }
-        .alert(
-            "Already in your Library", isPresented: Binding(get: { duplicate != nil }, set: { _ in duplicate = nil }),
-            presenting: duplicate
-        ) { existing in
-            Button("Open") { tabs.open([existing]) }
-            Button("Cancel", role: .cancel) {}
-        } message: { existing in
-            Text("“\(existing.title)” is already in your Library, so nothing was copied.")
-        }
+        .padding(Layout.spacing)
     }
 
     /// Opens the Reader on a Document, or starts an Import for the "+" cell.
@@ -295,6 +275,41 @@ struct FileGalleryView: View {
         case .alreadyInLibrary(let document): duplicate = document
         case .problems(let problems): rejection = ImportAlert(problems)
         }
+    }
+}
+
+/// The Gallery's alerts, each shown while its item is set: an Import that
+/// didn't happen, a File already in the Library (offering to open it), and
+/// the confirmation to Remove a Document.
+private struct GalleryAlerts: ViewModifier {
+    @Environment(LibraryModel.self) private var library
+    @Environment(Tabs.self) private var tabs
+    @Binding var rejection: ImportAlert?
+    @Binding var duplicate: LibraryDocument?
+    @Binding var removal: LibraryDocument?
+
+    func body(content: Content) -> some View {
+        content
+            .alert(rejection?.title ?? "", isPresented: Binding(isPresenting: $rejection), presenting: rejection) {
+                _ in
+            } message: { alert in
+                Text(alert.message)
+            }
+            .confirmationDialog(
+                "Remove “\(removal?.title ?? "")”?", isPresented: Binding(isPresenting: $removal),
+                titleVisibility: .visible, presenting: removal
+            ) { document in
+                Button("Remove", role: .destructive) { library.remove(document) }
+            } message: { _ in
+                Text("The file, its markup and your reading progress are deleted on all your devices.")
+            }
+            .alert("Already in your Library", isPresented: Binding(isPresenting: $duplicate), presenting: duplicate) {
+                existing in
+                Button("Open") { tabs.open([existing]) }
+                Button("Cancel", role: .cancel) {}
+            } message: { existing in
+                Text("“\(existing.title)” is already in your Library, so nothing was copied.")
+            }
     }
 }
 

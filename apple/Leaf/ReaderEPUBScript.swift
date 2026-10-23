@@ -453,6 +453,13 @@ enum ReaderEPUBScript {
                 window.scrollTo(0, to);
                 if (pinned) held();
               };
+              // Scrolls a pinned place back to its spot, if its chapter is loaded, without counting as
+              // the page moving it: the second after which other scrolling unpins it keeps running.
+              const goBack = () => {
+                if (!anchor || status[anchor[0]] !== 'loaded') return;
+                heldY = lineY(anchor) - anchorDrop;
+                if (Math.abs(heldY - window.scrollY) >= 1) window.scrollTo(0, heldY);
+              };
               const watchReader = target => ['touchstart', 'wheel', 'keydown', 'mousedown'].forEach(type =>
                 target.addEventListener(type, () => { pinned = false; }, { capture: true, passive: true }));
 
@@ -704,7 +711,10 @@ enum ReaderEPUBScript {
                 queued = true;
                 setTimeout(() => {
                   queued = false;
-                  if (pinned && Math.abs(window.scrollY - heldY) >= 1 && performance.now() - heldAt > 1000) pinned = false;
+                  if (pinned && Math.abs(window.scrollY - heldY) >= 1) {
+                    if (performance.now() - heldAt > 1000) pinned = false;
+                    else goBack();
+                  }
                   if (!pinned) anchorHere(false);
                   update();
                   if (ready) report();

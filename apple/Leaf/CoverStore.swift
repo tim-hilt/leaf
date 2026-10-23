@@ -27,15 +27,27 @@ enum CoverSource: Sendable {
 /// thread.
 struct CoverStore: Sendable {
     let folder: URL
-    /// A Cover is this wide: 300 pt at the screen scale. Smaller cells scale it down. (An EPUB's image is no wider.)
+    /// A Cover is this wide: 300 pt at the scale of the densest display the app
+    /// is on when the store is made. Smaller cells scale it down. (An EPUB's image is no wider.)
     private let pixelWidth: CGFloat
 
+    /// Make one per use rather than keeping it: Covers made later then suit the
+    /// displays in use by then.
     @MainActor init(folder: URL) {
         self.folder = folder
+        pixelWidth = 300 * Self.densestDisplayScale
+    }
+
+    /// The highest scale among the app's windows (iOS) or the attached screens
+    /// (macOS). The saved Covers serve all of them. Before any window exists,
+    /// that of the densest display of the platform.
+    @MainActor private static var densestDisplayScale: CGFloat {
         #if canImport(UIKit)
-            pixelWidth = 300 * UIScreen.main.scale
+            UIApplication.shared.connectedScenes
+                .compactMap { ($0 as? UIWindowScene)?.traitCollection.displayScale }
+                .max() ?? 3
         #else
-            pixelWidth = 300 * (NSScreen.main?.backingScaleFactor ?? 2)
+            NSScreen.screens.map(\.backingScaleFactor).max() ?? 2
         #endif
     }
 

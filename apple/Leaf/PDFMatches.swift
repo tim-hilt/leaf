@@ -19,7 +19,15 @@ final class PDFMatches: DocumentMatches {
     private(set) lazy var text = ChunkedText(view?.document)
     private var matches: [DocumentSearch.Match] = []
     var didChange: () -> Void = {}
-    private var isRefreshScheduled = false
+    /// Matches stream in one by one; PDFView takes all marks at once, and the
+    /// bar its count, so both are updated together.
+    private lazy var refresh = CoalescedUpdate { [weak self] in
+        guard let self else { return }
+        #if os(iOS)
+            view?.highlightedSelections = matches.map(\.selection)
+        #endif
+        didChange()
+    }
 
     init(view: ReaderPDFView, results: SearchResults) {
         self.view = view
@@ -38,7 +46,7 @@ final class PDFMatches: DocumentMatches {
                     match.selection.color = Self.otherColor
                 #endif
                 onMatch(matches.count - 1)
-                refreshSoon()
+                refresh.setNeeded()
             },
             onFinish: {})
     }
@@ -65,14 +73,11 @@ final class PDFMatches: DocumentMatches {
         #endif
         results.current = number
         view?.reveal(matches[number].selection)
-        refreshSoon()
+        refresh.setNeeded()
     }
 
     func range(ofMatch number: Int) -> NSRange {
-        let match = matches[number]
-        return NSRange(
-            location: text.range(ofChunkAt: match.pageIndex).location + match.range.location,
-            length: match.range.length)
+        text.range(matches[number].range, inChunkAt: matches[number].pageIndex)
     }
 
     func beginSession() { view?.beginSearchSession() }
@@ -82,20 +87,6 @@ final class PDFMatches: DocumentMatches {
         private static let otherColor = UIColor.systemYellow.withAlphaComponent(0.4)
         private static let currentColor = UIColor.systemOrange
     #endif
-
-    /// Matches stream in one by one; PDFView takes all marks at once, and the
-    /// bar its count, so both are updated together at the end of the turn.
-    private func refreshSoon() {
-        guard !isRefreshScheduled else { return }
-        isRefreshScheduled = true
-        Task { @MainActor in
-            isRefreshScheduled = false
-            #if os(iOS)
-                view?.highlightedSelections = matches.map(\.selection)
-            #endif
-            didChange()
-        }
-    }
 
     #if os(macOS)
         func rects(forCharacterRange range: NSRange) -> [CGRect]? {

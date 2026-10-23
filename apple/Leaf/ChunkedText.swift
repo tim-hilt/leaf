@@ -54,6 +54,12 @@ struct ChunkedText: Sendable {
         NSRange(location: starts[index], length: lengths[index])
     }
 
+    /// Where `range`, a range in the chunk at `index`, sits in the whole text.
+    /// The inverse of `inChunk`.
+    func range(_ range: NSRange, inChunkAt index: Int) -> NSRange {
+        NSRange(location: starts[index] + range.location, length: range.length)
+    }
+
     /// The text of the chunk holding the character at `index`, and where it sits
     /// in the whole text. `index` must be below `length`.
     func chunk(at index: Int) -> (string: String, range: NSRange) {
