@@ -9,17 +9,19 @@
 
 use crate::cloud_http::{OAuthClient, unexpected, upload_chunks};
 use crate::percent::encode;
-use crate::storage::{Blob, Storage, check_name, unique_name};
+use crate::storage::{Blob, RefreshTokenCallback, Storage, check_name, unique_name};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Read};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use ureq::Body;
 use ureq::http::Response;
 
 const API: &str = "https://www.googleapis.com";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+/// The folder in My Drive that holds everything.
+const APP_FOLDER: &str = "LeafPDF";
 const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 
 /// Blobs up to this many bytes upload in one request. They are held in memory.
@@ -57,7 +59,7 @@ struct Item {
     created: String,
 }
 
-/// A folder of a Google Drive and everything below it.
+/// The `LeafPDF` folder of a Google Drive and everything below it.
 ///
 /// Errors tell why a request failed, see `cloud_http::OAuthClient`: revoked
 /// access is `PermissionDenied`, a full Drive is `QuotaExceeded`.
@@ -83,19 +85,82 @@ impl fmt::Debug for GoogleDriveStorage {
 }
 
 impl GoogleDriveStorage {
-    /// The storage in the folder `root_folder_id`, for the public OAuth client
-    /// `client_id` that holds `refresh_token`. Contacts nobody, so it works
-    /// offline; errors show on use.
-    pub fn open(client_id: &str, refresh_token: &str, root_folder_id: &str) -> Self {
-        Self::with_config(client_id, refresh_token, root_folder_id, Config::default())
+    /// Connects to the Drive of the user who owns `refresh_token`, a token of
+    /// the public OAuth client `client_id`, and returns the storage with the
+    /// user's account (email, empty if Drive doesn't tell). See `resume`.
+    /// Rotated refresh tokens are reported to `on_new_refresh_token`.
+    pub fn connect(
+        client_id: &str,
+        refresh_token: &str,
+        on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
+    ) -> io::Result<(Self, String)> {
+        let config = Config::default();
+        Self::connect_with(client_id, refresh_token, on_new_refresh_token, config)
     }
 
-    fn with_config(client_id: &str, refresh_token: &str, root: &str, config: Config) -> Self {
+    /// The storage of a Drive that was connected before, e.g. at the last
+    /// launch. Looks up the `LeafPDF` folder in My Drive's root by name, so a
+    /// renamed or trashed one isn't found, and creates it if missing. Of
+    /// several, the oldest counts, then the lowest ID.
+    pub fn resume(
+        client_id: &str,
+        refresh_token: &str,
+        on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
+    ) -> io::Result<Self> {
+        let config = Config::default();
+        Self::resume_with(client_id, refresh_token, on_new_refresh_token, config)
+    }
+
+    fn connect_with(
+        client_id: &str,
+        refresh_token: &str,
+        on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
+        config: Config,
+    ) -> io::Result<(Self, String)> {
+        let storage = Self::resume_with(client_id, refresh_token, on_new_refresh_token, config)?;
+        // Needs no scope beyond `drive.file`.
+        let url = format!("{}/drive/v3/about?fields=user(emailAddress)", storage.api);
+        let about = storage.json("GET", &url, None)?;
+        let account = about["user"]["emailAddress"].as_str().unwrap_or_default();
+        Ok((storage, account.to_owned()))
+    }
+
+    fn resume_with(
+        client_id: &str,
+        refresh_token: &str,
+        on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
+        config: Config,
+    ) -> io::Result<Self> {
+        // Until the folder is found, the root is My Drive's, by Drive's alias.
+        let mut storage = Self::at(
+            client_id,
+            refresh_token,
+            "root",
+            on_new_refresh_token,
+            config,
+        );
+        let found = storage.items("root", true, Some(APP_FOLDER))?.into_iter();
+        storage.root = match found.map(|folder| folder.id).next() {
+            Some(id) => id,
+            None => storage.make_folder("root", APP_FOLDER)?,
+        };
+        Ok(storage)
+    }
+
+    /// The storage in the folder `root`, without any request.
+    fn at(
+        client_id: &str,
+        refresh_token: &str,
+        root: &str,
+        on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
+        config: Config,
+    ) -> Self {
         Self {
             oauth: OAuthClient::new(
                 &config.token_url,
                 client_id,
                 refresh_token,
+                on_new_refresh_token,
                 config.allow_http,
             ),
             api: config.api,
@@ -420,6 +485,7 @@ mod tests {
     const CLIENT: &str = "client-id";
     const REFRESH: &str = "refresh-token";
     const ROOT: &str = "root-folder";
+    const ACCOUNT: &str = "reader@example.com";
 
     struct Stored {
         id: String,
@@ -428,6 +494,17 @@ mod tests {
         folder: bool,
         data: Vec<u8>,
         created: u64,
+        trashed: bool,
+    }
+
+    /// Keeps the refresh tokens it is told about.
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<String>>);
+
+    impl RefreshTokenCallback for Recorder {
+        fn new_refresh_token(&self, token: &str) {
+            self.0.lock().unwrap().push(token.to_owned());
+        }
     }
 
     /// An upload that waits for its chunks: a new file, or the content of `update`.
@@ -445,7 +522,15 @@ mod tests {
         /// The access tokens that work.
         tokens: HashSet<String>,
         counter: u64,
+        /// The refresh token that works.
+        refresh: String,
+        /// The next refresh gives this one, which replaces the old.
+        rotate_to: Option<String>,
         revoked: bool,
+        /// Drive is full: nothing can be created or changed.
+        full: bool,
+        /// Another Device creates a `LeafPDF` folder just before this one's.
+        race: bool,
         /// Every API request fails like this: status and reason.
         outage: Option<(u16, &'static str)>,
     }
@@ -507,6 +592,19 @@ mod tests {
         }
 
         fn add(&mut self, name: &str, parent: &str, folder: bool, data: Vec<u8>) -> String {
+            let created = self.counter + 1;
+            self.add_at(name, parent, folder, data, created, false)
+        }
+
+        fn add_at(
+            &mut self,
+            name: &str,
+            parent: &str,
+            folder: bool,
+            data: Vec<u8>,
+            created: u64,
+            trashed: bool,
+        ) -> String {
             let id = self.next_id();
             self.items.push(Stored {
                 id: id.clone(),
@@ -514,7 +612,8 @@ mod tests {
                 parent: parent.to_owned(),
                 folder,
                 data,
-                created: self.counter,
+                created,
+                trashed,
             });
             id
         }
@@ -544,6 +643,7 @@ mod tests {
                 .items
                 .iter()
                 .filter(|i| i.parent == parent && i.folder == folders)
+                .filter(|i| !i.trashed || !query.contains("trashed = false"))
                 .filter(|i| name.as_ref().is_none_or(|name| *name == i.name))
                 .collect();
             let start = request
@@ -660,14 +760,25 @@ mod tests {
             if let Some((status, reason)) = self.outage {
                 return reply(status, json!({"error": {"errors": [{"reason": reason}]}}));
             }
+            if self.full && request.method != "GET" && request.method != "DELETE" {
+                let reason = "storageQuotaExceeded";
+                return reply(403, json!({"error": {"errors": [{"reason": reason}]}}));
+            }
             let path: Vec<_> = request.path.trim_matches('/').split('/').collect();
             let upload_type = request.query.get("uploadType").map(String::as_str);
             match (request.method.as_str(), &path[..], upload_type) {
                 ("GET", ["drive", "v3", "files"], _) => self.files(request),
+                ("GET", ["drive", "v3", "about"], _) => {
+                    reply(200, json!({"user": {"emailAddress": ACCOUNT}}))
+                }
                 ("POST", ["drive", "v3", "files"], _) => {
                     let folder: Value = serde_json::from_slice(&request.body).unwrap();
+                    let name = folder["name"].as_str().unwrap();
                     let parent = folder["parents"][0].as_str().unwrap();
-                    let id = self.add(folder["name"].as_str().unwrap(), parent, true, Vec::new());
+                    if std::mem::take(&mut self.race) {
+                        self.add(name, parent, true, Vec::new());
+                    }
+                    let id = self.add(name, parent, true, Vec::new());
                     reply(200, json!({ "id": id }))
                 }
                 ("GET", ["drive", "v3", "files", id], _) => {
@@ -715,17 +826,22 @@ mod tests {
                 .collect();
             let valid = form.get("grant_type").is_some_and(|g| g == "refresh_token")
                 && form.get("client_id").is_some_and(|c| c == CLIENT)
-                && form.get("refresh_token").is_some_and(|t| t == REFRESH)
+                && form
+                    .get("refresh_token")
+                    .is_some_and(|t| *t == self.refresh)
                 && !self.revoked;
             if !valid {
                 return reply(400, json!({"error": "invalid_grant"}));
             }
             let token = format!("access-{}", self.next_id());
             self.tokens.insert(token.clone());
-            reply(
-                200,
-                json!({"access_token": token, "expires_in": 3600, "token_type": "Bearer"}),
-            )
+            let mut answer =
+                json!({"access_token": token, "expires_in": 3600, "token_type": "Bearer"});
+            if let Some(rotated) = self.rotate_to.take() {
+                answer["refresh_token"] = json!(rotated);
+                self.refresh = rotated;
+            }
+            reply(200, answer)
         }
     }
 
@@ -772,6 +888,8 @@ mod tests {
         addr: SocketAddr,
         state: Arc<Mutex<State>>,
         stop: Arc<AtomicBool>,
+        /// The refresh tokens the storages made here were told about.
+        reported: Arc<Recorder>,
     }
 
     impl Fake {
@@ -780,6 +898,7 @@ mod tests {
             let addr = listener.local_addr().unwrap();
             let base = format!("http://{addr}");
             let state = Arc::new(Mutex::new(State::default()));
+            state.lock().unwrap().refresh = REFRESH.to_owned();
             state.lock().unwrap().add(ROOT, "", true, Vec::new());
             let stop = Arc::new(AtomicBool::new(false));
             let (served, halt, address) = (state.clone(), stop.clone(), base.clone());
@@ -816,18 +935,52 @@ mod tests {
                 addr,
                 state,
                 stop,
+                reported: Arc::default(),
             }
         }
 
-        fn storage_with(&self, simple_limit: usize, chunk_size: usize) -> GoogleDriveStorage {
-            let config = Config {
+        fn config(&self, simple_limit: usize, chunk_size: usize) -> Config {
+            Config {
                 api: self.base.clone(),
                 token_url: format!("{}/token", self.base),
                 allow_http: true,
                 simple_limit,
                 chunk_size,
-            };
-            GoogleDriveStorage::with_config(CLIENT, REFRESH, ROOT, config)
+            }
+        }
+
+        fn storage_with(&self, simple_limit: usize, chunk_size: usize) -> GoogleDriveStorage {
+            let config = self.config(simple_limit, chunk_size);
+            GoogleDriveStorage::at(CLIENT, REFRESH, ROOT, self.reported.clone(), config)
+        }
+
+        /// The storage in the folder `root`.
+        fn storage_in(&self, root: &str) -> GoogleDriveStorage {
+            let config = self.config(SIMPLE_LIMIT, CHUNK_SIZE);
+            GoogleDriveStorage::at(CLIENT, REFRESH, root, self.reported.clone(), config)
+        }
+
+        fn connect(&self) -> io::Result<(GoogleDriveStorage, String)> {
+            let config = self.config(SIMPLE_LIMIT, CHUNK_SIZE);
+            GoogleDriveStorage::connect_with(CLIENT, REFRESH, self.reported.clone(), config)
+        }
+
+        fn resume(&self) -> io::Result<GoogleDriveStorage> {
+            let config = self.config(SIMPLE_LIMIT, CHUNK_SIZE);
+            GoogleDriveStorage::resume_with(CLIENT, REFRESH, self.reported.clone(), config)
+        }
+
+        /// A folder `LeafPDF` in My Drive's root, created at second `created`.
+        fn add_app_folder(&self, created: u64, trashed: bool) -> String {
+            let mut state = self.state.lock().unwrap();
+            state.add_at(APP_FOLDER, "root", true, Vec::new(), created, trashed)
+        }
+
+        /// How many not trashed `LeafPDF` folders are in My Drive's root.
+        fn app_folders(&self) -> usize {
+            let state = self.state.lock().unwrap();
+            let named = |i: &&Stored| i.parent == "root" && i.name == APP_FOLDER && !i.trashed;
+            state.items.iter().filter(named).count()
         }
 
         fn storage(&self) -> GoogleDriveStorage {
@@ -905,11 +1058,15 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let admin = GoogleDriveStorage::open(&client, &token, "root");
+        let at = |root| {
+            let (callback, config) = (Arc::<Recorder>::default(), Config::default());
+            GoogleDriveStorage::at(&client, &token, root, callback, config)
+        };
+        let admin = at("root");
         let folder = admin
             .make_folder("root", &format!("leafpdf-test-{nanos}-{}", unique_name()))
             .unwrap();
-        let storage = GoogleDriveStorage::open(&client, &token, &folder);
+        let storage = at(&folder);
         Some((RealFolder(admin, folder), storage))
     }
 
@@ -1011,6 +1168,135 @@ mod tests {
         drop(fake);
         let error = storage.list("").unwrap_err();
         assert_ne!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    /// Marks `folder` by a blob, so a later connect shows which one it used.
+    fn mark(fake: &Fake, folder: &str) {
+        put_bytes(&fake.storage_in(folder), "mark", b"1");
+    }
+
+    fn marked(storage: &GoogleDriveStorage) -> bool {
+        crate::storage::contract::names(storage, "") == ["mark"]
+    }
+
+    #[test]
+    fn connecting_creates_the_folder_once_and_returns_the_account() {
+        let fake = Fake::start();
+
+        let (storage, account) = fake.connect().unwrap();
+        assert_eq!(account, ACCOUNT);
+        assert_eq!(fake.app_folders(), 1);
+        put_bytes(&storage, "d/blob", b"1");
+
+        let (again, _) = fake.connect().unwrap();
+        assert_eq!(fake.app_folders(), 1);
+        assert_eq!(get_bytes(&again, "d/blob").unwrap().unwrap(), b"1");
+        let resumed = fake.resume().unwrap();
+        assert_eq!(fake.app_folders(), 1);
+        assert_eq!(get_bytes(&resumed, "d/blob").unwrap().unwrap(), b"1");
+    }
+
+    #[test]
+    fn a_trashed_folder_is_ignored() {
+        let fake = Fake::start();
+        let trashed = fake.add_app_folder(1, true);
+        mark(&fake, &trashed);
+        let (storage, _) = fake.connect().unwrap();
+        assert!(!marked(&storage));
+        assert_eq!(fake.app_folders(), 1);
+
+        let fake = Fake::start();
+        let trashed = fake.add_app_folder(1, true);
+        mark(&fake, &trashed);
+        let live = fake.add_app_folder(2, false);
+        put_bytes(&fake.storage_in(&live), "live", b"1");
+        let (storage, _) = fake.connect().unwrap();
+        assert_eq!(crate::storage::contract::names(&storage, ""), ["live"]);
+    }
+
+    #[test]
+    fn of_several_folders_the_oldest_wins_then_the_lowest_id() {
+        let fake = Fake::start();
+        let newer = fake.add_app_folder(5, false);
+        let older = fake.add_app_folder(3, false);
+        mark(&fake, &older);
+        put_bytes(&fake.storage_in(&newer), "other", b"1");
+        assert!(marked(&fake.connect().unwrap().0));
+        assert!(marked(&fake.resume().unwrap()));
+        // Nothing is deleted: only a Device's own empty duplicate.
+        assert_eq!(fake.app_folders(), 2);
+
+        let fake = Fake::start();
+        let lowest = fake.add_app_folder(3, false);
+        let higher = fake.add_app_folder(3, false);
+        mark(&fake, &lowest);
+        put_bytes(&fake.storage_in(&higher), "other", b"1");
+        assert!(marked(&fake.connect().unwrap().0));
+    }
+
+    #[test]
+    fn a_duplicate_folder_made_at_the_same_moment_is_deleted_by_its_creator() {
+        let fake = Fake::start();
+        fake.state.lock().unwrap().race = true;
+
+        let (storage, _) = fake.connect().unwrap();
+        assert_eq!(fake.app_folders(), 1);
+        put_bytes(&storage, "blob", b"1");
+
+        let (other, _) = fake.connect().unwrap();
+        assert_eq!(get_bytes(&other, "blob").unwrap().unwrap(), b"1");
+    }
+
+    #[test]
+    fn connecting_with_revoked_access_is_a_lost_permission() {
+        let fake = Fake::start();
+        fake.connect().unwrap();
+        fake.revoke_access();
+
+        let error = fake.connect().map(|_| ()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        let error = fake.resume().map(|_| ()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn a_full_drive_cannot_create_the_folder_but_opens_an_existing_one() {
+        let fake = Fake::start();
+        fake.state.lock().unwrap().full = true;
+        assert!(is_full(&fake.connect().map(|_| ()).unwrap_err()));
+        assert!(is_full(&fake.resume().map(|_| ()).unwrap_err()));
+        assert_eq!(fake.app_folders(), 0);
+
+        fake.add_app_folder(1, false);
+        let (storage, _) = fake.connect().unwrap();
+        assert!(is_full(&storage.put("blob", &mut &b"1"[..]).unwrap_err()));
+    }
+
+    #[test]
+    fn a_rotated_refresh_token_is_reported_once() {
+        let fake = Fake::start();
+        let (storage, _) = fake.connect().unwrap();
+        assert!(fake.reported.0.lock().unwrap().is_empty());
+
+        fake.state.lock().unwrap().rotate_to = Some("rotated".to_owned());
+        fake.expire_access_tokens();
+        put_bytes(&storage, "blob", b"1");
+        assert_eq!(*fake.reported.0.lock().unwrap(), ["rotated"]);
+
+        // The new token is the one in use now.
+        fake.expire_access_tokens();
+        put_bytes(&storage, "blob", b"2");
+        assert_eq!(*fake.reported.0.lock().unwrap(), ["rotated"]);
+    }
+
+    #[test]
+    fn a_refresh_token_rotated_while_connecting_is_reported() {
+        let fake = Fake::start();
+        fake.state.lock().unwrap().rotate_to = Some("rotated".to_owned());
+
+        fake.connect().unwrap();
+
+        assert_eq!(*fake.reported.0.lock().unwrap(), ["rotated"]);
     }
 
     #[test]

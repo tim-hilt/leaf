@@ -56,6 +56,13 @@ impl fmt::Display for ConnectError {
 
 impl std::error::Error for ConnectError {}
 
+/// Told by a Cloud Provider behind OAuth that its refresh token changed. The
+/// client keeps the new one (in the Keychain) and resumes with it next time.
+/// Called while the storage renews its access, so it must not use the storage.
+pub trait RefreshTokenCallback: Send + Sync {
+    fn new_refresh_token(&self, token: &str);
+}
+
 /// Named blobs in `/`-separated directories, e.g. `v1/file.abc`.
 ///
 /// Names are plain: every part is non-empty, isn't `.` or `..`, and doesn't

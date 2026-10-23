@@ -6,8 +6,9 @@
 //! can be sent again after the access token expired.
 
 use crate::percent::encode;
+use crate::storage::RefreshTokenCallback;
 use std::io::{self, Read};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use ureq::http::{Request, Response};
 use ureq::{Agent, Body};
@@ -39,6 +40,7 @@ pub(crate) struct OAuthClient {
     token_url: String,
     client_id: String,
     tokens: Mutex<Tokens>,
+    on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
 }
 
 struct Tokens {
@@ -50,12 +52,14 @@ struct Tokens {
 
 impl OAuthClient {
     /// A client of a public OAuth client `client_id` (PKCE, no secret) that
-    /// holds `refresh_token`. Contacts nobody. Only https URLs work, unless
-    /// `allow_http`, which is for tests against a local fake.
+    /// holds `refresh_token`, and reports each new one to `on_new_refresh_token`.
+    /// Contacts nobody. Only https URLs work, unless `allow_http`, which is
+    /// for tests against a local fake.
     pub(crate) fn new(
         token_url: &str,
         client_id: &str,
         refresh_token: &str,
+        on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
         allow_http: bool,
     ) -> Self {
         let config = Agent::config_builder()
@@ -76,6 +80,7 @@ impl OAuthClient {
                 access: None,
                 refresh: refresh_token.to_owned(),
             }),
+            on_new_refresh_token,
         }
     }
 
@@ -163,8 +168,12 @@ impl OAuthClient {
             .as_str()
             .ok_or_else(|| io::Error::other("the token endpoint gave no access token"))?
             .to_owned();
-        if let Some(rotated) = answer["refresh_token"].as_str() {
-            tokens.refresh = rotated.to_owned();
+        match answer["refresh_token"].as_str() {
+            Some(rotated) if rotated != tokens.refresh => {
+                tokens.refresh = rotated.to_owned();
+                self.on_new_refresh_token.new_refresh_token(rotated);
+            }
+            _ => {}
         }
         tokens.access = Some(access.clone());
         Ok(access)
