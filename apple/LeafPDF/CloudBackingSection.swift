@@ -30,7 +30,7 @@ struct CloudBackingSection: View {
                 } label: {
                     Label(connection.provider.detailLabel, systemImage: connection.provider.icon)
                 }
-                LabeledContent("Status", value: library.syncState.line())
+                LabeledContent("Status", value: library.syncState.line(for: connection.provider))
                 if library.syncState == .accessLost { reconnectForm }
                 Button("Disconnect", role: .destructive) { Task { await library.disconnect() } }
             } else if choosing == .webDAV {

@@ -15,14 +15,15 @@
 //! A step that is blocked (`Status::is_blocked`) pauses the loop for good: it
 //! sends no request until `SyncLoop::use_storage` brings new credentials, and
 //! none at all after a newer schema version, which only an update of the app
-//! resolves.
+//! resolves. A full storage is blocked too, but doesn't pause: the loop keeps
+//! its schedule, and the next successful step clears the status.
 //!
 //! There is no async runtime: the thread sleeps on a condition variable until
 //! the next step is due. Dropping the `SyncLoop` is Disconnecting: running
 //! transfers are cancelled and the thread is joined.
 
 use crate::library::{Library, now};
-use crate::storage::{Blob, Storage};
+use crate::storage::{Blob, Storage, is_full};
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -41,6 +42,9 @@ pub enum Status {
     /// The storage rejected the credentials: a changed password, revoked
     /// access, a lost grant. Blocked, until `use_storage` (Reconnect).
     AccessLost,
+    /// The storage is out of space. Blocked until space is freed, which the
+    /// loop notices by itself.
+    Full,
     /// Another Device stored a newer schema version than this app knows.
     /// Blocked: nothing is written until the app is updated.
     UpdateNeeded,
@@ -50,7 +54,13 @@ impl Status {
     /// Whether the user has to act for Sync to go on. Being offline is not
     /// blocked.
     pub fn is_blocked(self) -> bool {
-        matches!(self, Self::AccessLost | Self::UpdateNeeded)
+        matches!(self, Self::AccessLost | Self::Full | Self::UpdateNeeded)
+    }
+
+    /// Whether the loop sends nothing more, until the storage is replaced.
+    /// Space may be freed any time, so a full storage is tried again.
+    fn pauses_loop(self) -> bool {
+        self.is_blocked() && self != Self::Full
     }
 }
 
@@ -115,7 +125,7 @@ struct State {
     storage: Arc<Cancellable>,
     /// How often the storage was replaced.
     storage_changes: u32,
-    /// The last step was blocked: no more steps until the storage is replaced.
+    /// The last step paused the loop: no more steps until the storage is replaced.
     blocked: bool,
     foreground: bool,
     /// A step is wanted at once: at start, `foreground` and `background`.
@@ -305,7 +315,7 @@ impl Shared {
                     let step = self.step(library, &*storage, observer, polls);
                     state = self.lock();
                     // New credentials since the step began aren't blocked yet.
-                    state.blocked = step.is_some_and(|(status, _)| status.is_blocked())
+                    state.blocked = step.is_some_and(|(status, _)| status.pauses_loop())
                         && state.storage_changes == storage_changes;
                     state.poll_interval = match step {
                         Some((_, false)) if polls => {
@@ -355,6 +365,7 @@ impl Shared {
         }
         let status = match result {
             Ok(()) => Status::Synced { at: now() },
+            Err(e) if is_full(&e) => Status::Full,
             Err(e) => match e.kind() {
                 io::ErrorKind::PermissionDenied => Status::AccessLost,
                 io::ErrorKind::Unsupported => Status::UpdateNeeded,
@@ -776,16 +787,17 @@ mod tests {
         eventually("syncing again", || ids(&a).contains(&other));
     }
 
-    /// A storage that can be down.
+    /// A storage that can be down, failing with `error`.
     struct Flaky {
         inner: Arc<DirStorage>,
+        error: io::ErrorKind,
         down: AtomicBool,
     }
 
     impl Flaky {
         fn up(&self) -> io::Result<()> {
             if self.down.load(Relaxed) {
-                Err(io::Error::from(io::ErrorKind::ConnectionRefused))
+                Err(io::Error::from(self.error))
             } else {
                 Ok(())
             }
@@ -818,6 +830,7 @@ mod tests {
         let id = home.import(&a, b"on a");
         let flaky = Arc::new(Flaky {
             inner: home.cloud(),
+            error: io::ErrorKind::ConnectionRefused,
             down: AtomicBool::new(true),
         });
         let (_loop, events) = start(&a, flaky.clone(), intervals(HOUR, 10 * MS));
@@ -830,6 +843,43 @@ mod tests {
         });
         b.sync(&*home.cloud()).unwrap();
         assert_eq!(ids(&b), [id]);
+    }
+
+    #[test]
+    fn a_full_storage_is_blocked_but_syncing_goes_on_and_clears_it() {
+        let home = Home::new();
+        let (a, b) = (home.device("a"), home.device("b"));
+        let id = home.import(&a, b"on a");
+        let full = Arc::new(Flaky {
+            inner: home.cloud(),
+            error: io::ErrorKind::StorageFull,
+            down: AtomicBool::new(true),
+        });
+        let (_loop, events) = start(&a, full.clone(), intervals(MS, MS));
+        eventually("being full", || events.last() == Some(Status::Full));
+        assert!(Status::Full.is_blocked());
+
+        // Unlike lost access, the loop keeps trying: space may be freed.
+        let steps = events.steps();
+        eventually("more steps", || events.steps() > steps + 2);
+        assert_eq!(events.last(), Some(Status::Full));
+
+        full.down.store(false, Relaxed);
+
+        eventually("being synced", || {
+            matches!(events.last(), Some(Status::Synced { .. }))
+        });
+        b.sync(&*home.cloud()).unwrap();
+        assert_eq!(ids(&b), [id]);
+    }
+
+    #[test]
+    fn exceeding_a_quota_is_full_too() {
+        let home = Home::new();
+        let a = home.device("a");
+        let quota = Failing::new(io::ErrorKind::QuotaExceeded);
+        let (_loop, events) = start(&a, quota, intervals(HOUR, 5 * MS));
+        eventually("being full", || events.last() == Some(Status::Full));
     }
 
     /// A storage whose Files upload slowly, counting the chunks taken.

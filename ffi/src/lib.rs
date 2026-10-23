@@ -199,6 +199,7 @@ pub enum Status {
     Synced { at: u64 },
     Offline,
     AccessLost,
+    Full,
     UpdateNeeded,
 }
 

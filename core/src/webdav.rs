@@ -27,8 +27,8 @@ const FOLDER: &str = "LeafPDF";
 const INCOMING: &str = ".incoming";
 
 /// The `LeafPDF` folder of a WebDAV server. A rejected login (HTTP 401) is an
-/// `io::ErrorKind::PermissionDenied` error, anything else that fails to
-/// connect is another kind.
+/// `io::ErrorKind::PermissionDenied` error, a full server (507) is
+/// `StorageFull`, anything else that fails to connect is another kind.
 pub struct WebDavStorage {
     agent: Agent,
     /// The Server URL, without a trailing slash.
@@ -173,12 +173,7 @@ impl WebDavStorage {
         }
         let request = request.body(body).map_err(io::Error::other)?;
         let response = self.agent.run(request).map_err(ureq::Error::into_io)?;
-        if response.status().as_u16() == 401 {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "401 Unauthorized",
-            ));
-        }
+        refuse(response.status().as_u16())?;
         Ok(response)
     }
 
@@ -247,6 +242,22 @@ impl WebDavStorage {
             200..=299 => Ok(()),
             status => Err(unexpected("MOVE", status)),
         }
+    }
+}
+
+/// The errors every request shares: 401 is `PermissionDenied`, and 507
+/// Insufficient Storage is `StorageFull`.
+fn refuse(status: u16) -> io::Result<()> {
+    match status {
+        401 => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "401 Unauthorized",
+        )),
+        507 => Err(io::Error::new(
+            io::ErrorKind::StorageFull,
+            "507 Insufficient Storage",
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -548,6 +559,17 @@ mod tests {
     mod webdav_storage {
         use super::*;
         storage_contract_tests!(webdav_storage);
+    }
+
+    #[test]
+    fn rejected_credentials_and_a_full_server_differ_from_being_offline() {
+        let rejected = refuse(401).unwrap_err();
+        assert_eq!(rejected.kind(), io::ErrorKind::PermissionDenied);
+        let full = refuse(507).unwrap_err();
+        assert!(crate::storage::is_full(&full));
+        for status in [200, 207, 404, 409, 500, 503] {
+            assert!(refuse(status).is_ok(), "{status}");
+        }
     }
 
     #[test]

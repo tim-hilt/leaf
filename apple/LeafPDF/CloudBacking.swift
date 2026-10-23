@@ -3,12 +3,13 @@ import LeafCore
 
 /// Where Sync stands, while Connected; the core's `Status`.
 extension Status {
-    /// What Settings says.
-    func line(now: Date = .now) -> String {
+    /// What Settings says of Sync with `provider`.
+    func line(for provider: CloudProvider, now: Date = .now) -> String {
         switch self {
         case .syncing: return "Syncing…"
         case .offline: return "Offline"
         case .accessLost: return "Access lost"
+        case .full: return "\(provider.name) is full"
         case .updateNeeded: return "Update LeafPDF to keep syncing"
         case .synced(let at):
             let date = Date(milliseconds: at)
@@ -30,7 +31,7 @@ enum SyncIndicator: Equatable {
         case .syncing: self = .syncing
         case .synced(let at): self = .synced(Date(milliseconds: at))
         case .offline: self = .failed(canRetry: true)
-        case .accessLost, .updateNeeded: self = .failed(canRetry: false)
+        case .accessLost, .full, .updateNeeded: self = .failed(canRetry: false)
         }
     }
 

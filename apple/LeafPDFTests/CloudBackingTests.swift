@@ -286,16 +286,21 @@ extension LibraryModelTests {
             .synced(at: UInt64(now.addingTimeInterval(-secondsAgo).timeIntervalSince1970 * 1000))
         }
 
-        #expect(Status.syncing.line(now: now) == "Syncing…")
-        #expect(Status.offline.line(now: now) == "Offline")
-        #expect(synced(5).line(now: now) == "Synced just now")
-        #expect(synced(300).line(now: now).hasPrefix("Synced "))
-        #expect(synced(300).line(now: now) != "Synced just now")
+        #expect(Status.syncing.line(for: .webDAV, now: now) == "Syncing…")
+        #expect(Status.offline.line(for: .webDAV, now: now) == "Offline")
+        #expect(synced(5).line(for: .webDAV, now: now) == "Synced just now")
+        #expect(synced(300).line(for: .webDAV, now: now).hasPrefix("Synced "))
+        #expect(synced(300).line(for: .webDAV, now: now) != "Synced just now")
     }
 
-    @Test func theStatusLineNamesBothBlockedStates() {
-        #expect(Status.accessLost.line() == "Access lost")
-        #expect(Status.updateNeeded.line() == "Update LeafPDF to keep syncing")
+    @Test func theStatusLineNamesTheBlockedStates() {
+        #expect(Status.accessLost.line(for: .webDAV) == "Access lost")
+        #expect(Status.full.line(for: .webDAV) == "WebDAV is full")
+        #expect(Status.updateNeeded.line(for: .webDAV) == "Update LeafPDF to keep syncing")
+    }
+
+    @Test func aFullCloudIsBlockedInTheGalleryAndNotRetryable() {
+        #expect(SyncIndicator(.full) == .failed(canRetry: false))
     }
 
     @Test func theIndicatorShowsHowSyncStandsWhileConnected() async throws {

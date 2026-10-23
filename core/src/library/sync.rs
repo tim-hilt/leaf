@@ -149,11 +149,11 @@ impl Library {
     /// A step with nothing new costs one listing and loads no document. A File whose bytes don't match its hash is not stored. The
     /// Library is tied to no storage: it sends everything to one that lacks it.
     ///
-    /// Two failures are not being offline, see `sync_loop::Status`: rejected
-    /// credentials are `PermissionDenied`, and a document of a newer schema
-    /// version than this app knows is `Unsupported`. The latter is found before
-    /// anything is written to the storage, and nothing of that document is
-    /// merged.
+    /// Three failures are not being offline, see `sync_loop::Status`: rejected
+    /// credentials are `PermissionDenied`, a storage without space is
+    /// `StorageFull`, and a document of a newer schema version than this app
+    /// knows is `Unsupported`. The latter is found before anything is written
+    /// to the storage, and nothing of that document is merged.
     pub fn sync(&self, storage: &dyn Storage) -> io::Result<()> {
         self.sync_reporting(storage, &|_, _| {})
     }

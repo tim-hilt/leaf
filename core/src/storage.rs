@@ -62,7 +62,9 @@ impl std::error::Error for ConnectError {}
 /// as a blob is in them; a missing one is empty.
 ///
 /// Errors are `io::Error`s. Credentials the storage rejects are
-/// `PermissionDenied`, so they can be told from being offline.
+/// `PermissionDenied`, and a storage without space left is `StorageFull` (or
+/// `QuotaExceeded`, see `is_full`), so both can be told from being offline.
+/// The directory storage passes the file system's errors on, so it does both.
 pub trait Storage: Send + Sync {
     /// Stores everything `data` yields as the blob `name`, replacing any
     /// previous one. A blob is never visible under `name` before all of it is
@@ -78,6 +80,14 @@ pub trait Storage: Send + Sync {
 
     /// Deletes blob `name`. Deleting a blob that isn't there does nothing.
     fn delete(&self, name: &str) -> io::Result<()>;
+}
+
+/// Whether `error` says the storage has no space left.
+pub(crate) fn is_full(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded
+    )
 }
 
 /// Checks that `name` is a plain blob name, see `Storage`.
@@ -439,6 +449,22 @@ mod tests {
             assert!(storage.get(name).is_err(), "{name}");
             assert!(storage.delete(name).is_err(), "{name}");
         }
+    }
+
+    #[test]
+    fn running_out_of_space_is_full_and_leaves_nothing_behind() {
+        struct NoSpace;
+        impl Read for NoSpace {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::from_raw_os_error(libc::ENOSPC))
+            }
+        }
+        let (_alive, storage) = scratch_storage();
+
+        let error = storage.put("blob", &mut NoSpace).unwrap_err();
+
+        assert!(is_full(&error));
+        assert!(storage.list("").unwrap().is_empty());
     }
 
     #[test]
