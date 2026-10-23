@@ -68,8 +68,8 @@ pub struct GoogleDriveStorage {
     api: String,
     simple_limit: usize,
     chunk_size: usize,
-    /// The ID of the folder that is `""`.
-    root: String,
+    /// The ID of the folder that is `""`; none until it is looked up.
+    root: Mutex<Option<String>>,
     /// Folders known to exist, by path below the root, so a request doesn't
     /// look them up each time.
     folders: Mutex<HashMap<String, String>>,
@@ -79,7 +79,7 @@ impl fmt::Debug for GoogleDriveStorage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // No credentials.
         f.debug_struct("GoogleDriveStorage")
-            .field("root", &self.root)
+            .field("root", &*self.root.lock().unwrap())
             .finish_non_exhaustive()
     }
 }
@@ -99,14 +99,16 @@ impl GoogleDriveStorage {
     }
 
     /// The storage of a Drive that was connected before, e.g. at the last
-    /// launch. Looks up the `LeafPDF` folder in My Drive's root by name, so a
-    /// renamed or trashed one isn't found, and creates it if missing. Of
-    /// several, the oldest counts, then the lowest ID.
+    /// launch. Contacts nobody, so it works offline: the first use looks up
+    /// the `LeafPDF` folder in My Drive's root by name, so a renamed or
+    /// trashed one isn't found, and creates it if missing. Of several, the
+    /// oldest counts, then the lowest ID. Until that works, uses fail as
+    /// requests do, see above.
     pub fn resume(
         client_id: &str,
         refresh_token: &str,
         on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
-    ) -> io::Result<Self> {
+    ) -> Self {
         let config = Config::default();
         Self::resume_with(client_id, refresh_token, on_new_refresh_token, config)
     }
@@ -117,7 +119,8 @@ impl GoogleDriveStorage {
         on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
         config: Config,
     ) -> io::Result<(Self, String)> {
-        let storage = Self::resume_with(client_id, refresh_token, on_new_refresh_token, config)?;
+        let storage = Self::resume_with(client_id, refresh_token, on_new_refresh_token, config);
+        storage.root()?;
         // Needs no scope beyond `drive.file`.
         let url = format!("{}/drive/v3/about?fields=user(emailAddress)", storage.api);
         let about = storage.json("GET", &url, None)?;
@@ -130,28 +133,31 @@ impl GoogleDriveStorage {
         refresh_token: &str,
         on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
         config: Config,
-    ) -> io::Result<Self> {
-        // Until the folder is found, the root is My Drive's, by Drive's alias.
-        let mut storage = Self::at(
-            client_id,
-            refresh_token,
-            "root",
-            on_new_refresh_token,
-            config,
-        );
-        let found = storage.items("root", true, Some(APP_FOLDER))?.into_iter();
-        storage.root = match found.map(|folder| folder.id).next() {
-            Some(id) => id,
-            None => storage.make_folder("root", APP_FOLDER)?,
-        };
-        Ok(storage)
+    ) -> Self {
+        Self::at(client_id, refresh_token, None, on_new_refresh_token, config)
     }
 
-    /// The storage in the folder `root`, without any request.
+    /// The ID of the `LeafPDF` folder, looked up the first time. "root" is My
+    /// Drive's, by Drive's alias.
+    fn root(&self) -> io::Result<String> {
+        let mut root = self.root.lock().unwrap();
+        if let Some(id) = &*root {
+            return Ok(id.clone());
+        }
+        let found = self.items("root", true, Some(APP_FOLDER))?.into_iter();
+        let id = match found.map(|folder| folder.id).next() {
+            Some(id) => id,
+            None => self.make_folder("root", APP_FOLDER)?,
+        };
+        *root = Some(id.clone());
+        Ok(id)
+    }
+
+    /// The storage in the folder `root`, if known, without any request.
     fn at(
         client_id: &str,
         refresh_token: &str,
-        root: &str,
+        root: Option<&str>,
         on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
         config: Config,
     ) -> Self {
@@ -166,7 +172,7 @@ impl GoogleDriveStorage {
             api: config.api,
             simple_limit: config.simple_limit,
             chunk_size: config.chunk_size,
-            root: root.to_owned(),
+            root: Mutex::new(root.map(str::to_owned)),
             folders: Mutex::default(),
         }
     }
@@ -232,7 +238,7 @@ impl GoogleDriveStorage {
 
     /// The ID of directory `dir`, created if `create`. None if it isn't there.
     fn folder(&self, dir: &str, create: bool) -> io::Result<Option<String>> {
-        let mut id = self.root.clone();
+        let mut id = self.root()?;
         let mut path = String::new();
         for part in dir.split('/').filter(|part| !part.is_empty()) {
             if !path.is_empty() {
@@ -951,13 +957,13 @@ mod tests {
 
         fn storage_with(&self, simple_limit: usize, chunk_size: usize) -> GoogleDriveStorage {
             let config = self.config(simple_limit, chunk_size);
-            GoogleDriveStorage::at(CLIENT, REFRESH, ROOT, self.reported.clone(), config)
+            GoogleDriveStorage::at(CLIENT, REFRESH, Some(ROOT), self.reported.clone(), config)
         }
 
         /// The storage in the folder `root`.
         fn storage_in(&self, root: &str) -> GoogleDriveStorage {
             let config = self.config(SIMPLE_LIMIT, CHUNK_SIZE);
-            GoogleDriveStorage::at(CLIENT, REFRESH, root, self.reported.clone(), config)
+            GoogleDriveStorage::at(CLIENT, REFRESH, Some(root), self.reported.clone(), config)
         }
 
         fn connect(&self) -> io::Result<(GoogleDriveStorage, String)> {
@@ -965,7 +971,7 @@ mod tests {
             GoogleDriveStorage::connect_with(CLIENT, REFRESH, self.reported.clone(), config)
         }
 
-        fn resume(&self) -> io::Result<GoogleDriveStorage> {
+        fn resume(&self) -> GoogleDriveStorage {
             let config = self.config(SIMPLE_LIMIT, CHUNK_SIZE);
             GoogleDriveStorage::resume_with(CLIENT, REFRESH, self.reported.clone(), config)
         }
@@ -1060,7 +1066,7 @@ mod tests {
             .as_nanos();
         let at = |root| {
             let (callback, config) = (Arc::<Recorder>::default(), Config::default());
-            GoogleDriveStorage::at(&client, &token, root, callback, config)
+            GoogleDriveStorage::at(&client, &token, Some(root), callback, config)
         };
         let admin = at("root");
         let folder = admin
@@ -1191,7 +1197,7 @@ mod tests {
         let (again, _) = fake.connect().unwrap();
         assert_eq!(fake.app_folders(), 1);
         assert_eq!(get_bytes(&again, "d/blob").unwrap().unwrap(), b"1");
-        let resumed = fake.resume().unwrap();
+        let resumed = fake.resume();
         assert_eq!(fake.app_folders(), 1);
         assert_eq!(get_bytes(&resumed, "d/blob").unwrap().unwrap(), b"1");
     }
@@ -1222,7 +1228,7 @@ mod tests {
         mark(&fake, &older);
         put_bytes(&fake.storage_in(&newer), "other", b"1");
         assert!(marked(&fake.connect().unwrap().0));
-        assert!(marked(&fake.resume().unwrap()));
+        assert!(marked(&fake.resume()));
         // Nothing is deleted: only a Device's own empty duplicate.
         assert_eq!(fake.app_folders(), 2);
 
@@ -1255,8 +1261,30 @@ mod tests {
 
         let error = fake.connect().map(|_| ()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        let error = fake.resume().map(|_| ()).unwrap_err();
+    }
+
+    #[test]
+    fn resuming_contacts_nobody_so_a_problem_shows_at_the_first_use() {
+        let fake = Fake::start();
+        fake.connect().unwrap();
+        fake.revoke_access();
+
+        let storage = fake.resume();
+        let error = storage.list("").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+
+        // Even with the server gone: that is Offline, and the next use tries again.
+        let gone = "http://127.0.0.1:1".to_owned();
+        let config = Config {
+            api: gone.clone(),
+            token_url: gone,
+            allow_http: true,
+            ..Config::default()
+        };
+        let callback = Arc::<Recorder>::default();
+        let storage = GoogleDriveStorage::resume_with(CLIENT, REFRESH, callback, config);
+        let error = storage.list("").unwrap_err();
+        assert!(!is_full(&error) && error.kind() != io::ErrorKind::PermissionDenied);
     }
 
     #[test]
@@ -1264,7 +1292,7 @@ mod tests {
         let fake = Fake::start();
         fake.state.lock().unwrap().full = true;
         assert!(is_full(&fake.connect().map(|_| ()).unwrap_err()));
-        assert!(is_full(&fake.resume().map(|_| ()).unwrap_err()));
+        assert!(is_full(&fake.resume().list("").unwrap_err()));
         assert_eq!(fake.app_folders(), 0);
 
         fake.add_app_folder(1, false);

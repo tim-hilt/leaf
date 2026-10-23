@@ -199,6 +199,7 @@ final class LibraryModel {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let credentials: CloudCredentials
     @ObservationIgnored private let iCloudDrive: ICloudDrive
+    @ObservationIgnored private let googleDrive: GoogleDrive
     /// The access to iCloud Drive that a Connection to it holds, until it ends.
     @ObservationIgnored private var iCloudGrant: ICloudGrant?
     @ObservationIgnored private let syncIntervals: SyncIntervals
@@ -232,13 +233,15 @@ final class LibraryModel {
     /// copies, deleted after `importFiles`.
     init(
         root: URL, coversFolder: URL, defaults: UserDefaults, credentials: CloudCredentials,
-        iCloudDrive: ICloudDrive = .system, syncIntervals: SyncIntervals = .standard, inbox: URL? = nil
+        iCloudDrive: ICloudDrive = .system, googleDrive: GoogleDrive = .system,
+        syncIntervals: SyncIntervals = .standard, inbox: URL? = nil
     ) throws {
         core = try LeafCore.Library.open(root: root.path)
         covers = CoverStore(folder: coversFolder)
         self.defaults = defaults
         self.credentials = credentials
         self.iCloudDrive = iCloudDrive
+        self.googleDrive = googleDrive
         self.syncIntervals = syncIntervals
         self.inbox = inbox
         sort = LibrarySort(from: defaults)
@@ -262,6 +265,10 @@ final class LibraryModel {
                     connection = Self.iCloudConnection
                     // Without the grant or iCloud Drive there is nothing to sync with until Reconnect.
                     if !resumeICloudDrive(bookmark: bookmark, id: id) { loseAccess() }
+                case .googleDrive(let token, let account):
+                    googleDrive.resume(
+                        core, token, refreshTokens(token, for: id), relay(for: id), syncIntervals)
+                    connection = Self.googleConnection(account)
                 }
             } catch {
                 connectionID = nil
@@ -378,6 +385,61 @@ final class LibraryModel {
         else { return false }
         iCloudGrant = grant
         return true
+    }
+
+    private static func googleConnection(_ account: String) -> CloudConnection {
+        CloudConnection(provider: .googleDrive, detail: account.isEmpty ? "Google Account" : account)
+    }
+
+    /// Keeps the latest refresh token of Connection `id`, and saves each one the core reports.
+    private func refreshTokens(_ token: String, for id: UUID) -> RefreshTokenKeeper {
+        RefreshTokenKeeper(token) { [weak self] rotated in
+            // While connecting, `connection` is nil: connecting saves the latest.
+            guard let self, connectionID == id, connection != nil,
+                case .googleDrive(_, let account) = credentials.load()
+            else { return }
+            credentials.save(.googleDrive(refreshToken: rotated, account: account))
+        }
+    }
+
+    /// Connects to the Google Drive of the user who owns `refreshToken`, which
+    /// the sign-in page handed out, and starts syncing, which first merges this
+    /// Library with the one in the cloud. Throws a `ConnectError` if Google
+    /// refuses it or can't be reached. Keeps the token, in the Keychain, until
+    /// `disconnect`; tokens that Google rotates replace it. Replaces any earlier
+    /// Connection.
+    func connectGoogleDrive(refreshToken: String) async throws {
+        let id = newConnection()
+        let tokens = refreshTokens(refreshToken, for: id)
+        let (core, observer, intervals, googleDrive) = (core, relay(for: id), syncIntervals, googleDrive)
+        let account: String
+        do {
+            account = try await Task.detached {
+                try googleDrive.connect(core, refreshToken, tokens, observer, intervals)
+            }.value
+        } catch {
+            if connectionID == id { connectionID = nil }
+            throw error
+        }
+        connection = Self.googleConnection(account)
+        credentials.save(.googleDrive(refreshToken: tokens.latest, account: account))
+    }
+
+    /// Gives the Connection access again, after it was lost, with the token of
+    /// a new sign-in: Sync resumes at once, without Disconnecting. Throws a
+    /// `ConnectError` if Google refuses it; the Connection and the saved token
+    /// then stay as they were. Does nothing unless a Google Drive Connection is saved.
+    func reconnectGoogleDrive(refreshToken: String) async throws {
+        guard case .googleDrive = credentials.load(), let id = connectionID else { return }
+        let tokens = refreshTokens(refreshToken, for: id)
+        let (core, googleDrive) = (core, googleDrive)
+        let account = try await Task.detached {
+            try googleDrive.reconnect(core, refreshToken, tokens)
+        }.value
+        // Disconnected meanwhile: nothing to keep.
+        guard connectionID == id else { return }
+        connection = Self.googleConnection(account)
+        credentials.save(.googleDrive(refreshToken: tokens.latest, account: account))
     }
 
     /// Sync can't go on until the user gives access again: Reconnect.

@@ -7,6 +7,7 @@
 
 use leafpdf_core::details::{Format, Size};
 use leafpdf_core::epub::{self, ContentsEntry};
+use leafpdf_core::google_drive::GoogleDriveStorage;
 use leafpdf_core::library::Document as CoreDocument;
 use leafpdf_core::library::{ImportError, ImportResult};
 use leafpdf_core::listing::{self, Sort, SortKey};
@@ -15,7 +16,7 @@ use leafpdf_core::markup::{
 };
 use leafpdf_core::preferences::{HighlightColor, HighlightColors};
 use leafpdf_core::progress::{Place, ReadingProgress};
-use leafpdf_core::storage::{ConnectError, DirStorage, Storage};
+use leafpdf_core::storage::{ConnectError, DirStorage, RefreshTokenCallback, Storage};
 use leafpdf_core::sync_loop::{self, Status, SyncLoop};
 use leafpdf_core::webdav::WebDavStorage;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -376,6 +377,23 @@ pub trait DownloadRequester: Send + Sync {
     fn request_download(&self, path: String);
 }
 
+/// Receives the refresh tokens that a Cloud Provider behind OAuth rotates.
+/// The client keeps the latest (in the Keychain) and resumes with it. Called
+/// from the Sync loop's thread, or from a thread that connects.
+#[uniffi::export(with_foreign)]
+pub trait RefreshTokenObserver: Send + Sync {
+    fn new_refresh_token(&self, token: String);
+}
+
+/// Adapts the client's observer of refresh tokens to the core's.
+struct RefreshTokens(Arc<dyn RefreshTokenObserver>);
+
+impl RefreshTokenCallback for RefreshTokens {
+    fn new_refresh_token(&self, token: &str) {
+        self.0.new_refresh_token(token.to_owned());
+    }
+}
+
 /// When Sync steps run, see `leafpdf_core::sync_loop::Intervals`.
 #[derive(uniffi::Record)]
 pub struct SyncIntervals {
@@ -547,6 +565,68 @@ impl Library {
             });
         self.start_sync(Arc::new(storage), observer, intervals);
         Ok(())
+    }
+
+    /// Connects to the Google Drive of the user who owns `refresh_token`, a
+    /// token of the public OAuth client `client_id`, and starts syncing with
+    /// it: the first step merges the Library with the cloud's. Finds or
+    /// creates the `LeafPDF` folder in My Drive; blocks while it talks to
+    /// Google. Returns the user's account, empty if Google doesn't tell. Every
+    /// token Google rotates later goes to `tokens`. Replaces any earlier
+    /// Connection.
+    pub fn connect_google_drive(
+        &self,
+        client_id: String,
+        refresh_token: String,
+        tokens: Arc<dyn RefreshTokenObserver>,
+        observer: Arc<dyn SyncObserver>,
+        intervals: SyncIntervals,
+    ) -> Result<String, ConnectError> {
+        let (storage, account) = GoogleDriveStorage::connect(
+            &client_id,
+            &refresh_token,
+            Arc::new(RefreshTokens(tokens)),
+        )
+        .map_err(|error| ConnectError::of_cloud(&error))?;
+        self.start_sync(Arc::new(storage), observer, intervals);
+        Ok(account)
+    }
+
+    /// Like `connect_google_drive` for a Drive connected before, e.g. at the
+    /// last launch: contacts nobody, so it works offline.
+    pub fn resume_google_drive(
+        &self,
+        client_id: String,
+        refresh_token: String,
+        tokens: Arc<dyn RefreshTokenObserver>,
+        observer: Arc<dyn SyncObserver>,
+        intervals: SyncIntervals,
+    ) {
+        let storage =
+            GoogleDriveStorage::resume(&client_id, &refresh_token, Arc::new(RefreshTokens(tokens)));
+        self.start_sync(Arc::new(storage), observer, intervals);
+    }
+
+    /// Reconnects the running Connection to Google Drive with the new
+    /// `refresh_token`, after its status became `AccessLost`: checks it like
+    /// `connect_google_drive` and, if it is right, resumes syncing at once.
+    /// Returns the account. Does nothing if not Connected.
+    pub fn reconnect_google_drive(
+        &self,
+        client_id: String,
+        refresh_token: String,
+        tokens: Arc<dyn RefreshTokenObserver>,
+    ) -> Result<String, ConnectError> {
+        let (storage, account) = GoogleDriveStorage::connect(
+            &client_id,
+            &refresh_token,
+            Arc::new(RefreshTokens(tokens)),
+        )
+        .map_err(|error| ConnectError::of_cloud(&error))?;
+        if let Some(sync) = &*self.sync() {
+            sync.use_storage(Arc::new(storage));
+        }
+        Ok(account)
     }
 
     /// Connects to the directory `path` as if it were a cloud, for tests.

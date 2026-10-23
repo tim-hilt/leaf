@@ -37,14 +37,25 @@ pub enum ConnectError {
     UnsupportedAccount,
     /// WebDAV: the server rejected the username or password.
     WrongCredentials,
-    /// WebDAV: no answer: wrong host, no network, a broken certificate or a
-    /// server that is down.
+    /// No answer: wrong host, no network, a broken certificate or a server
+    /// that is down.
     Unreachable,
     /// WebDAV: the URL doesn't start with `https://`. The password would
     /// travel in plain text.
     NotHttps,
     /// WebDAV: the server answers, but not as a WebDAV server.
     NotWebDav,
+}
+
+impl ConnectError {
+    /// Why connecting to a Cloud Provider behind OAuth failed with `error`:
+    /// refused access, or no answer.
+    pub fn of_cloud(error: &io::Error) -> Self {
+        match error.kind() {
+            io::ErrorKind::PermissionDenied => Self::AccessDenied,
+            _ => Self::Unreachable,
+        }
+    }
 }
 
 /// The variant's name; clients word the message for the user.
@@ -500,6 +511,18 @@ mod tests {
     mod dir_storage {
         use super::*;
         storage_contract_tests!(|| Some(scratch_storage()));
+    }
+
+    #[test]
+    fn a_cloud_that_refuses_connecting_is_access_denied_and_one_that_fails_is_unreachable() {
+        let error = |kind| ConnectError::of_cloud(&io::Error::from(kind));
+        assert_eq!(
+            error(io::ErrorKind::PermissionDenied),
+            ConnectError::AccessDenied
+        );
+        for kind in [io::ErrorKind::ConnectionRefused, io::ErrorKind::TimedOut] {
+            assert_eq!(error(kind), ConnectError::Unreachable);
+        }
     }
 
     #[test]

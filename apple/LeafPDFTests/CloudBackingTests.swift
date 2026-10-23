@@ -14,7 +14,9 @@ extension LibraryModelTests {
     private var cloud: URL { root.deletingLastPathComponent().appending(path: "\(root.lastPathComponent)-cloud") }
 
     /// A second Device with a Library of its own.
-    private func openOtherDevice(iCloudDrive: ICloudDrive = .system) throws -> LibraryModel {
+    private func openOtherDevice(
+        iCloudDrive: ICloudDrive = .system, googleDrive: GoogleDrive = .system
+    ) throws -> LibraryModel {
         let name = "\(root.lastPathComponent)-other"
         let parent = root.deletingLastPathComponent()
         let defaults = UserDefaults(suiteName: name)!
@@ -22,7 +24,7 @@ extension LibraryModelTests {
             root: parent.appending(path: name, directoryHint: .isDirectory),
             coversFolder: parent.appending(path: "\(name)-covers"), defaults: defaults,
             credentials: CloudCredentials(defaults: defaults, service: "leafpdf-test-\(name)"),
-            iCloudDrive: iCloudDrive, syncIntervals: Self.fast
+            iCloudDrive: iCloudDrive, googleDrive: googleDrive, syncIntervals: Self.fast
         )
     }
 
@@ -183,13 +185,25 @@ extension LibraryModelTests {
     }
 
     @Test func eachCloudProviderHasANameAnIconAndALabelForWhatSettingsShows() {
-        #expect(CloudProvider.allCases == [.webDAV, .iCloudDrive])
+        #expect(CloudProvider.allCases == [.webDAV, .iCloudDrive, .googleDrive])
         #expect(CloudProvider.webDAV.name == "WebDAV")
-        #expect(CloudProvider.webDAV.icon == "server.rack")
+        #expect(CloudProvider.webDAV.icon == .symbol("server.rack"))
         #expect(CloudProvider.webDAV.detailLabel == "Server")
         #expect(CloudProvider.iCloudDrive.name == "iCloud Drive")
-        #expect(CloudProvider.iCloudDrive.icon == "icloud")
+        #expect(CloudProvider.iCloudDrive.icon == .symbol("icloud"))
         #expect(CloudProvider.iCloudDrive.detailLabel == "Folder")
+        #expect(CloudProvider.googleDrive.name == "Google Drive")
+        #expect(CloudProvider.googleDrive.icon == .logo("GoogleDrive"))
+        #expect(CloudProvider.googleDrive.detailLabel == "Account")
+    }
+
+    @Test func theGoogleDriveLogoIsInTheApp() {
+        let app = Bundle(for: LibraryModel.self)
+        #if os(macOS)
+            #expect(app.image(forResource: "GoogleDrive") != nil)
+        #else
+            #expect(UIImage(named: "GoogleDrive", in: app, compatibleWith: nil) != nil)
+        #endif
     }
 
     // MARK: iCloud Drive
@@ -373,6 +387,272 @@ extension LibraryModelTests {
         credentials.save(.iCloudDrive(bookmark: bookmark))
         credentials.forget()
         #expect(credentials.load() == nil)
+    }
+
+    // MARK: Google Drive
+
+    /// Stands in for the core's Google Drive: the shared cloud directory is the Drive.
+    private final class FakeGoogleDrive: @unchecked Sendable {
+        let cloud: URL
+        private let lock = NSLock()
+        private var state = State()
+
+        private struct State {
+            var account = "reader@example.com"
+            var refusal: ConnectError?
+            var rotatesWhileConnecting: String?
+            var tokensGiven: [String] = []
+            var tokens: RefreshTokenObserver?
+        }
+
+        init(cloud: URL) { self.cloud = cloud }
+
+        var account: String {
+            get { lock.withLock { state.account } }
+            set { lock.withLock { state.account = newValue } }
+        }
+
+        /// Connecting and reconnecting fail like this, as when Google refuses the token.
+        var refusal: ConnectError? {
+            get { lock.withLock { state.refusal } }
+            set { lock.withLock { state.refusal = newValue } }
+        }
+
+        /// Google rotates the refresh token while Connecting.
+        var rotatesWhileConnecting: String? {
+            get { lock.withLock { state.rotatesWhileConnecting } }
+            set { lock.withLock { state.rotatesWhileConnecting = newValue } }
+        }
+
+        /// The refresh tokens that connecting, resuming and reconnecting got.
+        var tokensGiven: [String] { lock.withLock { state.tokensGiven } }
+
+        /// Google rotates the refresh token of the running Connection.
+        func rotate(to token: String) { lock.withLock { state.tokens }?.newRefreshToken(token: token) }
+
+        private func take(_ token: String, _ tokens: RefreshTokenObserver) throws -> String {
+            try lock.withLock {
+                if let refusal = state.refusal { throw refusal }
+                state.tokensGiven.append(token)
+                state.tokens = tokens
+                return state.account
+            }
+        }
+
+        var drive: GoogleDrive {
+            GoogleDrive(
+                connect: { core, token, tokens, observer, intervals in
+                    let account = try self.take(token, tokens)
+                    try core.connectDirectory(path: self.cloud.path, observer: observer, intervals: intervals)
+                    if let rotated = self.rotatesWhileConnecting { tokens.newRefreshToken(token: rotated) }
+                    return account
+                },
+                resume: { core, token, tokens, observer, intervals in
+                    _ = try? self.take(token, tokens)
+                    try? core.connectDirectory(path: self.cloud.path, observer: observer, intervals: intervals)
+                },
+                reconnect: { _, token, tokens in try self.take(token, tokens) })
+        }
+    }
+
+    private static func googleConnection(_ account: String = "reader@example.com") -> CloudConnection {
+        CloudConnection(provider: .googleDrive, detail: account)
+    }
+
+    private func isSynced(_ library: LibraryModel) -> Bool {
+        if case .synced = library.syncState { true } else { false }
+    }
+
+    @Test func connectingToGoogleDriveShowsTheAccountAndSyncsThroughIt() async throws {
+        let google = FakeGoogleDrive(cloud: cloud)
+        let a = try openLibrary(syncIntervals: Self.fast, googleDrive: google.drive)
+        let b = try openOtherDevice(googleDrive: google.drive)
+        try await a.connectGoogleDrive(refreshToken: "token")
+        try await b.connectGoogleDrive(refreshToken: "token")
+
+        let id = try await importedID(a, titled: "Paper")
+
+        #expect(a.connection == Self.googleConnection())
+        #expect(try await eventually { isSynced(a) })
+        #expect(try await eventually { ids(b) == [id] })
+    }
+
+    @Test func theTokenAndAccountSurviveARelaunchAndAreForgottenOnDisconnect() async throws {
+        let google = FakeGoogleDrive(cloud: cloud)
+        let first = try openLibrary(syncIntervals: Self.fast, googleDrive: google.drive)
+        try await first.connectGoogleDrive(refreshToken: "token")
+        #expect(credentials.load() == .googleDrive(refreshToken: "token", account: "reader@example.com"))
+
+        // Relaunch: Connected again with the saved token, without signing in.
+        let library = try openLibrary(syncIntervals: Self.fast, googleDrive: google.drive)
+        #expect(library.connection == Self.googleConnection())
+        #expect(google.tokensGiven == ["token", "token"])
+        #expect(try await eventually { isSynced(library) })
+
+        await library.disconnect()
+
+        #expect(library.connection == nil)
+        #expect(credentials.load() == nil)
+        #expect(try openLibrary(googleDrive: google.drive).connection == nil)
+    }
+
+    @Test func aRotatedRefreshTokenReplacesTheSavedOne() async throws {
+        let google = FakeGoogleDrive(cloud: cloud)
+        let library = try openLibrary(syncIntervals: Self.fast, googleDrive: google.drive)
+        try await library.connectGoogleDrive(refreshToken: "token")
+
+        google.rotate(to: "rotated")
+
+        #expect(
+            try await eventually {
+                credentials.load() == .googleDrive(refreshToken: "rotated", account: "reader@example.com")
+            })
+        // A relaunch resumes with it.
+        _ = try openLibrary(googleDrive: google.drive)
+        #expect(google.tokensGiven.last == "rotated")
+    }
+
+    @Test func aRefreshTokenRotatedWhileConnectingIsTheOneSaved() async throws {
+        let google = FakeGoogleDrive(cloud: cloud)
+        google.rotatesWhileConnecting = "rotated"
+        let library = try openLibrary(syncIntervals: Self.fast, googleDrive: google.drive)
+
+        try await library.connectGoogleDrive(refreshToken: "token")
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(credentials.load() == .googleDrive(refreshToken: "rotated", account: "reader@example.com"))
+    }
+
+    @Test func aTokenGoogleRefusesLeavesCloudBackingOff() async throws {
+        let google = FakeGoogleDrive(cloud: cloud)
+        google.refusal = .AccessDenied
+        let library = try openLibrary(googleDrive: google.drive)
+
+        await #expect(throws: ConnectError.AccessDenied) {
+            try await library.connectGoogleDrive(refreshToken: "token")
+        }
+
+        #expect(library.connection == nil)
+        #expect(credentials.load() == nil)
+    }
+
+    @Test func lostAccessToGoogleDriveIsReconnectedWithANewSignIn() async throws {
+        let google = FakeGoogleDrive(cloud: cloud)
+        let library = try openLibrary(syncIntervals: Self.fast, googleDrive: google.drive)
+        try await library.connectGoogleDrive(refreshToken: "old")
+        #expect(try await eventually { isSynced(library) })
+        // Google refuses access, as after the user revoked it.
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: cloud.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cloud.path) }
+        #expect(try await eventually { library.syncState == .accessLost })
+        #expect(library.syncIndicator == .failed(canRetry: false))
+
+        google.account = "other@example.com"
+        try await library.reconnectGoogleDrive(refreshToken: "new")
+
+        #expect(library.connection == Self.googleConnection("other@example.com"))
+        #expect(credentials.load() == .googleDrive(refreshToken: "new", account: "other@example.com"))
+    }
+
+    @Test func reconnectingWithATokenGoogleRefusesLeavesTheConnectionAndTheSavedTokenAlone() async throws {
+        let google = FakeGoogleDrive(cloud: cloud)
+        let library = try openLibrary(syncIntervals: Self.fast, googleDrive: google.drive)
+        try await library.connectGoogleDrive(refreshToken: "old")
+        google.refusal = .AccessDenied
+
+        await #expect(throws: ConnectError.AccessDenied) {
+            try await library.reconnectGoogleDrive(refreshToken: "new")
+        }
+
+        #expect(library.connection == Self.googleConnection())
+        #expect(credentials.load() == .googleDrive(refreshToken: "old", account: "reader@example.com"))
+    }
+
+    @Test func reconnectingGoogleDriveWithoutAGoogleDriveConnectionDoesNothing() async throws {
+        let google = FakeGoogleDrive(cloud: cloud)
+        let library = try openLibrary(syncIntervals: Self.fast, googleDrive: google.drive)
+        try await library.connect(directory: cloud)
+
+        try await library.reconnectGoogleDrive(refreshToken: "new")
+
+        #expect(google.tokensGiven.isEmpty)
+        #expect(credentials.load() == nil)
+    }
+
+    @Test func theGoogleTokenIsKeptAndTheLatestConnectionWins() {
+        let google = CloudCredential.googleDrive(refreshToken: "token", account: "a@example.com")
+        let webDAV = WebDAVAccount(url: "https://a.example", username: "a", password: "1")
+        credentials.save(.webDAV(webDAV))
+
+        #expect(credentials.save(google))
+
+        #expect(credentials.load() == google)
+        credentials.save(.webDAV(webDAV))
+        #expect(credentials.load() == .webDAV(webDAV))
+        credentials.save(google)
+        credentials.forget()
+        #expect(credentials.load() == nil)
+    }
+
+    @Test func aSavedAccountWithoutItsTokenIsNotConnected() {
+        defaults.set("a@example.com", forKey: "cloud.google.account")
+
+        #expect(credentials.load() == nil)
+    }
+
+    @Test func googleDriveSettingsSaySyncIsFull() {
+        #expect(Status.full.line(for: .googleDrive) == "Google Drive is full")
+        #expect(Status.accessLost.line(for: .googleDrive) == "Access lost")
+    }
+
+    // MARK: Google sign-in
+
+    private func signIn() -> GoogleSignIn {
+        // The verifier and challenge of RFC 7636, appendix B.
+        GoogleSignIn(
+            clientID: "123-abc.apps.googleusercontent.com",
+            redirectScheme: "com.googleusercontent.apps.123-abc",
+            verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk", state: "xyz")
+    }
+
+    @Test func theSignInPageAsksForTheFilesLeafPDFCreatesAndProvesItsCode() throws {
+        let signIn = signIn()
+        let page = try #require(URLComponents(url: signIn.url, resolvingAgainstBaseURL: false))
+        let query = Dictionary(uniqueKeysWithValues: (page.queryItems ?? []).map { ($0.name, $0.value) })
+
+        #expect(page.host == "accounts.google.com")
+        #expect(query["scope"] == "https://www.googleapis.com/auth/drive.file")
+        #expect(query["client_id"] == "123-abc.apps.googleusercontent.com")
+        #expect(query["redirect_uri"] == "com.googleusercontent.apps.123-abc:/oauth2redirect")
+        #expect(query["code_challenge"] == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+        #expect(query["code_challenge_method"] == "S256")
+        #expect(query["access_type"] == "offline")
+    }
+
+    @Test func theSignInRedirectGivesTheCodeAndDecliningCancelsSilently() throws {
+        let signIn = signIn()
+        let redirect = "com.googleusercontent.apps.123-abc:/oauth2redirect"
+
+        #expect(try signIn.code(from: URL(string: "\(redirect)?state=xyz&code=4%2F0Abc")!) == "4/0Abc")
+        #expect(throws: ConnectError.Cancelled) {
+            try signIn.code(from: URL(string: "\(redirect)?state=xyz&error=access_denied")!)
+        }
+        #expect(throws: ConnectError.AccessDenied) {
+            try signIn.code(from: URL(string: "\(redirect)?state=other&code=4%2F0Abc")!)
+        }
+    }
+
+    @Test func aConsentWithoutThePermissionForDriveFailsAndSaysWhy() throws {
+        let granted = Data(#"{"refresh_token": "r", "scope": "https://www.googleapis.com/auth/drive.file"}"#.utf8)
+        let declined = Data(#"{"refresh_token": "r", "scope": "openid"}"#.utf8)
+
+        #expect(try GoogleSignIn.refreshToken(fromTokenResponse: granted) == "r")
+        #expect(throws: GoogleSignInError.missingPermission) {
+            try GoogleSignIn.refreshToken(fromTokenResponse: declined)
+        }
+        #expect(
+            GoogleSignInError.missingPermission.errorDescription
+                == "Allow LeafPDF to access its files in Google Drive")
     }
 
     @Test func credentialsSurviveARelaunchAndAreGoneAfterDisconnect() async throws {

@@ -1,11 +1,13 @@
+import AuthenticationServices
 import LeafCore
 import SwiftUI
 
 /// Settings' Cloud Backing: pick a Cloud Provider, Connect (with Server URL,
-/// username and password for WebDAV, with one button for iCloud Drive), see
+/// username and password for WebDAV, with one button for the others), see
 /// how Sync stands, Reconnect when access was lost, Disconnect.
 struct CloudBackingSection: View {
     @Environment(LibraryModel.self) private var library
+    @Environment(\.webAuthenticationSession) private var webAuthentication
 
     /// The Cloud Provider picked, but not Connected yet.
     @State private var choosing: CloudProvider?
@@ -22,14 +24,23 @@ struct CloudBackingSection: View {
             Picker("Cloud Provider", selection: provider) {
                 Text("None").tag(CloudProvider?.none)
                 ForEach(CloudProvider.allCases, id: \.self) { provider in
-                    Label(provider.name, systemImage: provider.icon).tag(CloudProvider?.some(provider))
+                    Label {
+                        Text(provider.name)
+                    } icon: {
+                        provider.icon.image
+                    }
+                    .tag(CloudProvider?.some(provider))
                 }
             }
             if let connection = library.connection {
                 LabeledContent {
                     Text(connection.detail)
                 } label: {
-                    Label(connection.provider.detailLabel, systemImage: connection.provider.icon)
+                    Label {
+                        Text(connection.provider.detailLabel)
+                    } icon: {
+                        connection.provider.icon.image
+                    }
                 }
                 LabeledContent("Status", value: library.syncState.line(for: connection.provider))
                 if library.syncState == .accessLost { reconnect(connection.provider) }
@@ -39,6 +50,10 @@ struct CloudBackingSection: View {
             } else if choosing == .iCloudDrive {
                 errorText
                 Button("Connect", action: pickICloudDrive).disabled(isConnecting)
+            } else if choosing == .googleDrive {
+                errorText
+                Button("Connect") { attempt { try await library.connectGoogleDrive(refreshToken: signInToGoogle()) } }
+                    .disabled(isConnecting)
             }
         }
         .fileImporter(isPresented: $isPickingFolder, allowedContentTypes: [.folder]) { picked in
@@ -88,7 +103,8 @@ struct CloudBackingSection: View {
     }
 
     /// Connected, but access was lost: a new password for WebDAV, granting
-    /// iCloud Drive again for iCloud Drive. Sync resumes without Disconnecting.
+    /// iCloud Drive again for iCloud Drive, signing in again for Google Drive.
+    /// Sync resumes without Disconnecting.
     @ViewBuilder private func reconnect(_ provider: CloudProvider) -> some View {
         switch provider {
         case .webDAV:
@@ -104,7 +120,25 @@ struct CloudBackingSection: View {
         case .iCloudDrive:
             errorText
             Button("Reconnect", action: pickICloudDrive).disabled(isConnecting)
+        case .googleDrive:
+            errorText
+            Button("Reconnect") { attempt { try await library.reconnectGoogleDrive(refreshToken: signInToGoogle()) } }
+                .disabled(isConnecting)
         }
+    }
+
+    /// Opens Google's sign-in page and returns the refresh token it leads to.
+    /// Backing out of the page is `Cancelled`, which says nothing.
+    private func signInToGoogle() async throws -> String {
+        guard let signIn = GoogleSignIn.configured else { throw GoogleSignInError.notConfigured }
+        let callback: URL
+        do {
+            callback = try await webAuthentication.authenticate(
+                using: signIn.url, callback: .customScheme(signIn.redirectScheme), additionalHeaderFields: [:])
+        } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
+            throw ConnectError.Cancelled
+        }
+        return try await signIn.refreshToken(from: callback)
     }
 
     /// Opens the folder picker, unless iCloud Drive is off: then there is nothing to pick.
@@ -140,6 +174,18 @@ struct CloudBackingSection: View {
             } catch {
                 self.error = error.localizedDescription
             }
+        }
+    }
+}
+
+extension CloudProvider.Icon {
+    /// The icon as a view: a symbol follows the text, a logo is drawn unmodified.
+    @ViewBuilder var image: some View {
+        switch self {
+        case .symbol(let name):
+            Image(systemName: name)
+        case .logo(let name):
+            Image(name).renderingMode(.original).resizable().scaledToFit().frame(width: 20, height: 20)
         }
     }
 }

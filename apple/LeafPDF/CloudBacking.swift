@@ -67,20 +67,23 @@ struct FileTransfer: Equatable {
 enum CloudProvider: CaseIterable, Hashable {
     case webDAV
     case iCloudDrive
+    case googleDrive
 
     /// What the picker calls it.
     var name: String {
         switch self {
         case .webDAV: "WebDAV"
         case .iCloudDrive: "iCloud Drive"
+        case .googleDrive: "Google Drive"
         }
     }
 
-    /// The SF Symbol shown next to its name.
-    var icon: String {
+    /// The icon shown next to its name.
+    var icon: Icon {
         switch self {
-        case .webDAV: "server.rack"
-        case .iCloudDrive: "icloud"
+        case .webDAV: .symbol("server.rack")
+        case .iCloudDrive: .symbol("icloud")
+        case .googleDrive: .logo("GoogleDrive")
         }
     }
 
@@ -89,7 +92,15 @@ enum CloudProvider: CaseIterable, Hashable {
         switch self {
         case .webDAV: "Server"
         case .iCloudDrive: "Folder"
+        case .googleDrive: "Account"
         }
+    }
+
+    enum Icon: Equatable {
+        /// An SF Symbol.
+        case symbol(String)
+        /// The provider's official logo, an image in the asset catalog.
+        case logo(String)
     }
 }
 
@@ -97,7 +108,8 @@ enum CloudProvider: CaseIterable, Hashable {
 struct CloudConnection: Equatable {
     let provider: CloudProvider
     /// What Settings shows of it, labelled `provider.detailLabel`: the Server URL
-    /// for WebDAV, the folder for iCloud Drive, or the directory of a test.
+    /// for WebDAV, the folder for iCloud Drive, the account for Google Drive,
+    /// or the directory of a test.
     let detail: String
 }
 
