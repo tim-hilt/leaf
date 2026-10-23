@@ -188,21 +188,17 @@ struct TabStrip: View {
     }
 }
 
-/// Groups the Tabs so the marker's Liquid Glass (iOS 26+) slides between them.
+/// Groups the Tabs so the marker's Liquid Glass slides between them.
 private struct TabMarkerContainer<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        if #available(iOS 26, macOS 26, *) {
-            GlassEffectContainer { content }
-        } else {
-            content
-        }
+        GlassEffectContainer { content }
     }
 }
 
 /// The raised shape behind the active Tab, like the selected tab in native tab bars:
-/// Liquid Glass on iOS 26+, a plain system fill before.
+/// Liquid Glass.
 private struct TabMarker: ViewModifier {
     let isActive: Bool
     let namespace: Namespace.ID
@@ -212,15 +208,9 @@ private struct TabMarker: ViewModifier {
     private static let glassID = "active Tab"
 
     func body(content: Content) -> some View {
-        if #available(iOS 26, macOS 26, *) {
-            content
-                .glassEffect(isActive ? .regular : .identity, in: shape)
-                .glassEffectID(isActive ? Self.glassID : nil, in: namespace)
-        } else {
-            content.background {
-                if isActive { shape.fill(.quaternary) }
-            }
-        }
+        content
+            .glassEffect(isActive ? .regular : .identity, in: shape)
+            .glassEffectID(isActive ? Self.glassID : nil, in: namespace)
     }
 }
 

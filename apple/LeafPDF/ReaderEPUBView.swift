@@ -118,11 +118,9 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
             insetPage(by: height)
         }
 
-        /// Starts the page `top` points down, under the find bar. Before macOS 26 the bar covers the page.
+        /// Starts the page `top` points down, under the find bar.
         private func insetPage(by top: CGFloat) {
-            if #available(macOS 26, *) {
-                obscuredContentInsets = NSEdgeInsets(top: top, left: 0, bottom: 0, right: 0)
-            }
+            obscuredContentInsets = NSEdgeInsets(top: top, left: 0, bottom: 0, right: 0)
         }
     #endif
 

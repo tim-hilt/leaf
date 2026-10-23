@@ -4,8 +4,8 @@ name: LeafPDF
 options:
   bundleIdPrefix: com.timhilt
   deploymentTarget:
-    iOS: "18.0"
-    macOS: "15.0"
+    iOS: "26.0"
+    macOS: "27.0"
 packages:
   LeafCore:
     path: LeafCore
