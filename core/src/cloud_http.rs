@@ -268,18 +268,19 @@ fn refuse(status: u16, body: &str) -> io::Result<()> {
         401 => Err(denied(status)),
         403 => {
             // The body says why: a full quota or too many requests are not a
-            // lost permission.
+            // lost permission. Throttling comes first: Google words its rate
+            // limits as "Quota exceeded for quota metric ...".
             let reason = body.to_lowercase();
-            if reason.contains("quota") {
-                Err(io::Error::new(
-                    io::ErrorKind::QuotaExceeded,
-                    "quota exceeded",
-                ))
-            } else if ["ratelimit", "dailylimit", "activitylimit"]
+            if ["ratelimit", "dailylimit", "activitylimit"]
                 .iter()
                 .any(|throttled| reason.contains(throttled))
             {
                 Err(failed(status))
+            } else if reason.contains("quota") {
+                Err(io::Error::new(
+                    io::ErrorKind::QuotaExceeded,
+                    "quota exceeded",
+                ))
             } else {
                 Err(denied(status))
             }
@@ -485,6 +486,10 @@ mod tests {
         assert!(crate::storage::is_full(&refuse(507, "").unwrap_err()));
         for (status, body) in [
             (403, r#"{"reason":"userRateLimitExceeded"}"#),
+            (
+                403,
+                r#"{"message":"Quota exceeded for quota metric 'Queries'","reason":"rateLimitExceeded"}"#,
+            ),
             (403, r#"{"error":{"code":"activityLimitReached"}}"#),
             (429, ""),
             (500, ""),

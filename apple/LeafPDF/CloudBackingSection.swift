@@ -18,6 +18,8 @@ struct CloudBackingSection: View {
     @State private var isConnecting = false
     @State private var newPassword = ""
     @State private var isPickingFolder = false
+    /// Picked while Connected to another: waits for the user to confirm Disconnecting.
+    @State private var switchingTo: CloudProvider?
 
     var body: some View {
         Section("Cloud Backing") {
@@ -62,16 +64,37 @@ struct CloudBackingSection: View {
             connectICloudDrive(picked)
         }
         .fileDialogMessage("Choose iCloud Drive")
+        .confirmationDialog(
+            "Disconnect from \(library.connection?.provider.name ?? "")?",
+            isPresented: Binding(get: { switchingTo != nil }, set: { if !$0 { switchingTo = nil } }),
+            titleVisibility: .visible, presenting: switchingTo
+        ) { provider in
+            Button("Disconnect and Choose \(provider.name)", role: .destructive) {
+                choosing = provider
+                Task { await library.disconnect() }
+            }
+        } message: { _ in
+            Text("Everything stays on this Device.")
+        }
     }
 
-    /// Picking None Disconnects, which keeps everything on this Device.
+    /// Picking None Disconnects, which keeps everything on this Device. Picking
+    /// another Cloud Provider while Connected Disconnects too, after a confirmation.
     private var provider: Binding<CloudProvider?> {
         Binding(
             get: { library.connection?.provider ?? choosing },
             set: { picked in
-                choosing = picked
                 error = nil
-                if picked == nil && library.connection != nil { Task { await library.disconnect() } }
+                guard let connection = library.connection else {
+                    choosing = picked
+                    return
+                }
+                if picked == nil {
+                    choosing = nil
+                    Task { await library.disconnect() }
+                } else if picked != connection.provider {
+                    switchingTo = picked
+                }
             })
     }
 

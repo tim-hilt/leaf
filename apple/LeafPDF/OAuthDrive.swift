@@ -18,40 +18,28 @@ struct OAuthDrive: Sendable {
     /// Gives the running Connection a new token, after access was lost; returns the account.
     var reconnect: Reconnect
 
-    static func googleDrive(clientID: String) -> OAuthDrive {
+    /// The core's storage of `provider`, for the OAuth client `clientID`.
+    static func core(_ provider: OAuthProvider, clientID: String) -> OAuthDrive {
         OAuthDrive(
             connect: { core, token, tokens, observer, intervals in
-                try core.connectGoogleDrive(
-                    clientId: clientID, refreshToken: token, tokens: tokens, observer: observer, intervals: intervals)
+                try core.connectOauth(
+                    provider: provider, clientId: clientID, refreshToken: token, tokens: tokens, observer: observer,
+                    intervals: intervals)
             },
             resume: { core, token, tokens, observer, intervals in
-                core.resumeGoogleDrive(
-                    clientId: clientID, refreshToken: token, tokens: tokens, observer: observer, intervals: intervals)
+                core.resumeOauth(
+                    provider: provider, clientId: clientID, refreshToken: token, tokens: tokens, observer: observer,
+                    intervals: intervals)
             },
             reconnect: { core, token, tokens in
-                try core.reconnectGoogleDrive(clientId: clientID, refreshToken: token, tokens: tokens)
-            })
-    }
-
-    static func oneDrive(clientID: String) -> OAuthDrive {
-        OAuthDrive(
-            connect: { core, token, tokens, observer, intervals in
-                try core.connectOneDrive(
-                    clientId: clientID, refreshToken: token, tokens: tokens, observer: observer, intervals: intervals)
-            },
-            resume: { core, token, tokens, observer, intervals in
-                core.resumeOneDrive(
-                    clientId: clientID, refreshToken: token, tokens: tokens, observer: observer, intervals: intervals)
-            },
-            reconnect: { core, token, tokens in
-                try core.reconnectOneDrive(clientId: clientID, refreshToken: token, tokens: tokens)
+                try core.reconnectOauth(provider: provider, clientId: clientID, refreshToken: token, tokens: tokens)
             })
     }
 
     /// The OAuth clients of this app, from Info.plist (see `Config/CloudClients.xcconfig`).
     static let system: [CloudProvider: OAuthDrive] = [
-        .googleDrive: .googleDrive(clientID: OAuthSignIn.configured(.google)?.clientID ?? ""),
-        .oneDrive: .oneDrive(clientID: OAuthSignIn.configured(.microsoft)?.clientID ?? ""),
+        .googleDrive: .core(.googleDrive, clientID: OAuthSignIn.configured(.google)?.clientID ?? ""),
+        .oneDrive: .core(.oneDrive, clientID: OAuthSignIn.configured(.microsoft)?.clientID ?? ""),
     ]
 }
 

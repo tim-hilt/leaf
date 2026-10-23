@@ -20,7 +20,6 @@ use leafpdf_core::progress::{Place, ReadingProgress};
 use leafpdf_core::storage::{ConnectError, DirStorage, RefreshTokenCallback, Storage};
 use leafpdf_core::sync_loop::{self, Status, SyncLoop};
 use leafpdf_core::webdav::WebDavStorage;
-use std::io;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -396,6 +395,52 @@ impl RefreshTokenCallback for RefreshTokens {
     }
 }
 
+/// A Cloud Provider behind OAuth. Its storage, endpoints and errors are in the
+/// core; the client only signs in and keeps the refresh token.
+#[derive(uniffi::Enum, Clone, Copy)]
+pub enum OAuthProvider {
+    /// The `LeafPDF` folder in My Drive.
+    GoogleDrive,
+    /// `Apps/LeafPDF`, personal accounts only.
+    OneDrive,
+}
+
+impl OAuthProvider {
+    /// Its storage for the user who owns `refresh_token`, a token of the public
+    /// OAuth client `client_id`, with the user's account. Contacts the provider.
+    fn connect(
+        self,
+        client_id: &str,
+        refresh_token: &str,
+        tokens: Arc<dyn RefreshTokenObserver>,
+    ) -> Result<(Arc<dyn Storage>, String), ConnectError> {
+        let tokens = Arc::new(RefreshTokens(tokens));
+        let connected = match self {
+            Self::GoogleDrive => GoogleDriveStorage::connect(client_id, refresh_token, tokens)
+                .map(|(storage, account)| (Arc::new(storage) as Arc<dyn Storage>, account)),
+            Self::OneDrive => OneDriveStorage::connect(client_id, refresh_token, tokens)
+                .map(|(storage, account)| (Arc::new(storage) as Arc<dyn Storage>, account)),
+        };
+        connected.map_err(|error| ConnectError::of_cloud(&error))
+    }
+
+    /// Like `connect`, without contacting anyone.
+    fn resume(
+        self,
+        client_id: &str,
+        refresh_token: &str,
+        tokens: Arc<dyn RefreshTokenObserver>,
+    ) -> Arc<dyn Storage> {
+        let tokens = Arc::new(RefreshTokens(tokens));
+        match self {
+            Self::GoogleDrive => {
+                Arc::new(GoogleDriveStorage::resume(client_id, refresh_token, tokens))
+            }
+            Self::OneDrive => Arc::new(OneDriveStorage::resume(client_id, refresh_token, tokens)),
+        }
+    }
+}
+
 /// When Sync steps run, see `leafpdf_core::sync_loop::Intervals`.
 #[derive(uniffi::Record)]
 pub struct SyncIntervals {
@@ -461,32 +506,6 @@ impl Library {
             intervals.into(),
         );
         *self.sync() = Some(started);
-    }
-
-    /// Starts syncing with a Cloud Provider behind OAuth that was just
-    /// connected to. Returns its account.
-    fn connect_cloud<S: Storage + 'static>(
-        &self,
-        connected: io::Result<(S, String)>,
-        observer: Arc<dyn SyncObserver>,
-        intervals: SyncIntervals,
-    ) -> Result<String, ConnectError> {
-        let (storage, account) = connected.map_err(|error| ConnectError::of_cloud(&error))?;
-        self.start_sync(Arc::new(storage), observer, intervals);
-        Ok(account)
-    }
-
-    /// Makes the running Connection sync with a Cloud Provider behind OAuth
-    /// that was just connected to again. Returns its account.
-    fn reconnect_cloud<S: Storage + 'static>(
-        &self,
-        connected: io::Result<(S, String)>,
-    ) -> Result<String, ConnectError> {
-        let (storage, account) = connected.map_err(|error| ConnectError::of_cloud(&error))?;
-        if let Some(sync) = &*self.sync() {
-            sync.use_storage(Arc::new(storage));
-        }
-        Ok(account)
     }
 
     fn sync(&self) -> std::sync::MutexGuard<'_, Option<SyncLoop>> {
@@ -595,110 +614,59 @@ impl Library {
         Ok(())
     }
 
-    /// Connects to the Google Drive of the user who owns `refresh_token`, a
-    /// token of the public OAuth client `client_id`, and starts syncing with
-    /// it: the first step merges the Library with the cloud's. Finds or
-    /// creates the `LeafPDF` folder in My Drive; blocks while it talks to
-    /// Google. Returns the user's account, empty if Google doesn't tell. Every
-    /// token Google rotates later goes to `tokens`. Replaces any earlier
+    /// Connects to the Google Drive or OneDrive (`provider`) of the user who
+    /// owns `refresh_token`, a token of the public OAuth client `client_id`,
+    /// and starts syncing with it: the first step merges the Library with the
+    /// cloud's. Blocks while it talks to the provider. Returns the user's
+    /// account, empty if the provider doesn't tell. Fails with
+    /// `UnsupportedAccount` for a OneDrive work or school account. Every token
+    /// the provider rotates later goes to `tokens`. Replaces any earlier
     /// Connection.
-    pub fn connect_google_drive(
+    pub fn connect_oauth(
         &self,
+        provider: OAuthProvider,
         client_id: String,
         refresh_token: String,
         tokens: Arc<dyn RefreshTokenObserver>,
         observer: Arc<dyn SyncObserver>,
         intervals: SyncIntervals,
     ) -> Result<String, ConnectError> {
-        let connected = GoogleDriveStorage::connect(
-            &client_id,
-            &refresh_token,
-            Arc::new(RefreshTokens(tokens)),
-        );
-        self.connect_cloud(connected, observer, intervals)
+        let (storage, account) = provider.connect(&client_id, &refresh_token, tokens)?;
+        self.start_sync(storage, observer, intervals);
+        Ok(account)
     }
 
-    /// Like `connect_google_drive` for a Drive connected before, e.g. at the
-    /// last launch: contacts nobody, so it works offline.
-    pub fn resume_google_drive(
+    /// Like `connect_oauth` for a Connection made before, e.g. at the last
+    /// launch: contacts nobody, so it works offline.
+    pub fn resume_oauth(
         &self,
-        client_id: String,
-        refresh_token: String,
-        tokens: Arc<dyn RefreshTokenObserver>,
-        observer: Arc<dyn SyncObserver>,
-        intervals: SyncIntervals,
-    ) {
-        let storage =
-            GoogleDriveStorage::resume(&client_id, &refresh_token, Arc::new(RefreshTokens(tokens)));
-        self.start_sync(Arc::new(storage), observer, intervals);
-    }
-
-    /// Reconnects the running Connection to Google Drive with the new
-    /// `refresh_token`, after its status became `AccessLost`: checks it like
-    /// `connect_google_drive` and, if it is right, resumes syncing at once.
-    /// Returns the account. Does nothing if not Connected.
-    pub fn reconnect_google_drive(
-        &self,
-        client_id: String,
-        refresh_token: String,
-        tokens: Arc<dyn RefreshTokenObserver>,
-    ) -> Result<String, ConnectError> {
-        let connected = GoogleDriveStorage::connect(
-            &client_id,
-            &refresh_token,
-            Arc::new(RefreshTokens(tokens)),
-        );
-        self.reconnect_cloud(connected)
-    }
-
-    /// Connects to the OneDrive of the user who owns `refresh_token`, a token
-    /// of the public OAuth client `client_id`, and starts syncing with it: the
-    /// first step merges the Library with the cloud's. Uses `Apps/LeafPDF`;
-    /// blocks while it talks to Microsoft. Returns the user's account, empty
-    /// if Microsoft doesn't tell. Fails with `UnsupportedAccount` for a work
-    /// or school account. Every token Microsoft rotates later goes to
-    /// `tokens`. Replaces any earlier Connection.
-    pub fn connect_one_drive(
-        &self,
-        client_id: String,
-        refresh_token: String,
-        tokens: Arc<dyn RefreshTokenObserver>,
-        observer: Arc<dyn SyncObserver>,
-        intervals: SyncIntervals,
-    ) -> Result<String, ConnectError> {
-        let connected =
-            OneDriveStorage::connect(&client_id, &refresh_token, Arc::new(RefreshTokens(tokens)));
-        self.connect_cloud(connected, observer, intervals)
-    }
-
-    /// Like `connect_one_drive` for a OneDrive connected before, e.g. at the
-    /// last launch: contacts nobody, so it works offline.
-    pub fn resume_one_drive(
-        &self,
+        provider: OAuthProvider,
         client_id: String,
         refresh_token: String,
         tokens: Arc<dyn RefreshTokenObserver>,
         observer: Arc<dyn SyncObserver>,
         intervals: SyncIntervals,
     ) {
-        let storage =
-            OneDriveStorage::resume(&client_id, &refresh_token, Arc::new(RefreshTokens(tokens)));
-        self.start_sync(Arc::new(storage), observer, intervals);
+        let storage = provider.resume(&client_id, &refresh_token, tokens);
+        self.start_sync(storage, observer, intervals);
     }
 
-    /// Reconnects the running Connection to OneDrive with the new
-    /// `refresh_token`, after its status became `AccessLost`: checks it like
-    /// `connect_one_drive` and, if it is right, resumes syncing at once.
-    /// Returns the account. Does nothing if not Connected.
-    pub fn reconnect_one_drive(
+    /// Reconnects the running Connection with the new `refresh_token`, after
+    /// its status became `AccessLost`: checks it like `connect_oauth` and, if
+    /// it is right, resumes syncing at once. Returns the account. Does nothing
+    /// if not Connected.
+    pub fn reconnect_oauth(
         &self,
+        provider: OAuthProvider,
         client_id: String,
         refresh_token: String,
         tokens: Arc<dyn RefreshTokenObserver>,
     ) -> Result<String, ConnectError> {
-        let connected =
-            OneDriveStorage::connect(&client_id, &refresh_token, Arc::new(RefreshTokens(tokens)));
-        self.reconnect_cloud(connected)
+        let (storage, account) = provider.connect(&client_id, &refresh_token, tokens)?;
+        if let Some(sync) = &*self.sync() {
+            sync.use_storage(storage);
+        }
+        Ok(account)
     }
 
     /// Connects to the directory `path` as if it were a cloud, for tests.

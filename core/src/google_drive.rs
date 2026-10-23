@@ -93,7 +93,7 @@ impl GoogleDriveStorage {
         on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
     ) -> Self {
         let config = production();
-        Self::resume_with(client_id, refresh_token, on_new_refresh_token, config)
+        Self::at(client_id, refresh_token, None, on_new_refresh_token, config)
     }
 
     fn connect_with(
@@ -102,22 +102,13 @@ impl GoogleDriveStorage {
         on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
         config: Config,
     ) -> io::Result<(Self, String)> {
-        let storage = Self::resume_with(client_id, refresh_token, on_new_refresh_token, config);
+        let storage = Self::at(client_id, refresh_token, None, on_new_refresh_token, config);
         storage.root()?;
         // Needs no scope beyond `drive.file`.
         let url = format!("{}/drive/v3/about?fields=user(emailAddress)", storage.api);
         let about = storage.oauth.json("GET", &url, None)?;
         let account = about["user"]["emailAddress"].as_str().unwrap_or_default();
         Ok((storage, account.to_owned()))
-    }
-
-    fn resume_with(
-        client_id: &str,
-        refresh_token: &str,
-        on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
-        config: Config,
-    ) -> Self {
-        Self::at(client_id, refresh_token, None, on_new_refresh_token, config)
     }
 
     /// The ID of the `LeafPDF` folder, looked up the first time. "root" is My
@@ -769,7 +760,7 @@ mod tests {
 
         fn resume(&self) -> GoogleDriveStorage {
             let config = self.config(SIMPLE_LIMIT, CHUNK_SIZE);
-            GoogleDriveStorage::resume_with(CLIENT, REFRESH, self.reported.clone(), config)
+            GoogleDriveStorage::at(CLIENT, REFRESH, None, self.reported.clone(), config)
         }
 
         /// A folder `LeafPDF` in My Drive's root, created at second `created`.
@@ -1063,7 +1054,7 @@ mod tests {
         // Even with the server gone: that is Offline, and the next use tries again.
         let config = Config::fake("http://127.0.0.1:1", SIMPLE_LIMIT, CHUNK_SIZE);
         let callback = Arc::<Recorder>::default();
-        let storage = GoogleDriveStorage::resume_with(CLIENT, REFRESH, callback, config);
+        let storage = GoogleDriveStorage::at(CLIENT, REFRESH, None, callback, config);
         let error = storage.list("").unwrap_err();
         assert!(!is_full(&error) && error.kind() != io::ErrorKind::PermissionDenied);
     }
