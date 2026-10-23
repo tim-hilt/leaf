@@ -44,7 +44,10 @@ struct CloudBackingSection: View {
                         connection.provider.icon.image
                     }
                 }
-                LabeledContent("Status", value: library.syncState.line(for: connection.provider))
+                LabeledContent(
+                    "Status",
+                    value: library.isOnline
+                        ? library.syncState.line(for: connection.provider) : "No internet connection")
                 if library.syncState == .accessLost { reconnect(connection.provider) }
                 Button("Disconnect", role: .destructive) { Task { await library.disconnect() } }
             } else if choosing == .webDAV {

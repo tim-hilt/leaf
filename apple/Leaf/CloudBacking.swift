@@ -25,6 +25,8 @@ enum SyncIndicator: Equatable {
     case synced(Date)
     /// Trying again can help unless Sync is blocked; then Settings has to.
     case failed(canRetry: Bool)
+    /// The Device has no network: Sync rests until it is back.
+    case noConnection
 
     init(_ state: Status) {
         switch state {
@@ -40,6 +42,7 @@ enum SyncIndicator: Equatable {
         switch self {
         case .syncing: "Syncing\u{2026}"
         case .failed: "Error while syncing"
+        case .noConnection: "No internet connection. Connect to the internet to resume syncing."
         case .synced(let date):
             "Last synced at \(date.formatted(date: .omitted, time: .shortened)) \(date.formatted(date: .abbreviated, time: .omitted))"
         }

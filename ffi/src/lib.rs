@@ -18,6 +18,7 @@ use leaf_core::progress::{Place, ReadingProgress};
 use leaf_core::storage::{ConnectError, DirStorage, RefreshTokenCallback, Storage};
 use leaf_core::sync_loop::{self, Status, SyncLoop};
 use leaf_core::webdav::WebDavStorage;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -486,6 +487,9 @@ impl sync_loop::Observer for Observer {
 pub struct Library {
     core: Arc<leaf_core::library::Library>,
     sync: Mutex<Option<SyncLoop>>,
+    /// Whether the Device has a network, see `set_online`. Changed only while
+    /// `sync` is locked, so a starting loop can't miss a change.
+    online: AtomicBool,
 }
 
 impl Library {
@@ -497,13 +501,14 @@ impl Library {
         intervals: SyncIntervals,
     ) {
         self.disconnect();
-        let started = SyncLoop::start(
+        let mut sync = self.sync();
+        *sync = Some(SyncLoop::start(
             self.core.clone(),
             storage,
             Arc::new(Observer(observer)),
             intervals.into(),
-        );
-        *self.sync() = Some(started);
+            self.online.load(Relaxed),
+        ));
     }
 
     fn sync(&self) -> std::sync::MutexGuard<'_, Option<SyncLoop>> {
@@ -538,6 +543,7 @@ impl Library {
         Ok(Arc::new(Self {
             core: Arc::new(leaf_core::library::Library::open(root)?),
             sync: Mutex::new(None),
+            online: AtomicBool::new(true),
         }))
     }
 
@@ -698,6 +704,16 @@ impl Library {
     pub fn background(&self) {
         if let Some(sync) = &*self.sync() {
             sync.background();
+        }
+    }
+
+    /// Whether the Device has a network. Without one nothing syncs; when it
+    /// comes back, Sync runs at once. Online until told otherwise.
+    pub fn set_online(&self, online: bool) {
+        let sync = self.sync();
+        self.online.store(online, Relaxed);
+        if let Some(sync) = &*sync {
+            sync.set_online(online);
         }
     }
 

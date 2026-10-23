@@ -10,6 +10,9 @@
 //!   `Intervals::idle_poll` while polls find nothing new,
 //! - once more at `background`, to flush; then the loop idles.
 //!
+//! None runs while the Device has no network (`set_online`); the steps due
+//! meanwhile run as one once it is back.
+//!
 //! Polls report no `Status::Syncing`, so an idle loop stays quiet.
 //!
 //! A step that is blocked (`Status::is_blocked`) pauses the loop for good: it
@@ -127,6 +130,8 @@ struct State {
     storage_changes: u32,
     /// The last step paused the loop: no more steps until the storage is replaced.
     blocked: bool,
+    /// The Device has a network; no steps run without one.
+    online: bool,
     foreground: bool,
     /// A step is wanted at once: at start, `foreground` and `background`.
     immediate: bool,
@@ -144,7 +149,7 @@ struct State {
 impl State {
     /// When the next step is due; `None` for never.
     fn due(&self, now: Instant, intervals: &Intervals) -> Option<Instant> {
-        if self.blocked {
+        if self.blocked || !self.online {
             return None;
         }
         if self.immediate {
@@ -172,12 +177,13 @@ impl State {
 
 impl SyncLoop {
     /// Starts syncing `library` with `storage`, in the foreground: the first
-    /// step runs at once.
+    /// step runs at once, or once `online`.
     pub fn start(
         library: Arc<Library>,
         storage: Arc<dyn Storage>,
         observer: Arc<dyn Observer>,
         intervals: Intervals,
+        online: bool,
     ) -> Self {
         let cancelled = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
@@ -188,6 +194,7 @@ impl SyncLoop {
                 }),
                 storage_changes: 0,
                 blocked: false,
+                online,
                 foreground: true,
                 immediate: true,
                 changed: None,
@@ -245,6 +252,15 @@ impl SyncLoop {
         self.update(|state| {
             state.foreground = true;
             state.immediate = true;
+        });
+    }
+
+    /// Whether the Device has a network. Without one no step runs; when it
+    /// comes back, one runs at once. A step already running goes on.
+    pub fn set_online(&self, online: bool) {
+        self.update(|state| {
+            state.immediate |= online && !state.online;
+            state.online = online;
         });
     }
 
@@ -570,7 +586,7 @@ mod tests {
         intervals: Intervals,
     ) -> (SyncLoop, Arc<Events>) {
         let events = Arc::new(Events::default());
-        let sync_loop = SyncLoop::start(library.clone(), storage, events.clone(), intervals);
+        let sync_loop = SyncLoop::start(library.clone(), storage, events.clone(), intervals, true);
         (sync_loop, events)
     }
 
@@ -785,6 +801,40 @@ mod tests {
         sync_loop.foreground();
 
         eventually("syncing again", || ids(&a).contains(&other));
+    }
+
+    #[test]
+    fn no_step_runs_offline_and_coming_online_syncs_at_once() {
+        let home = Home::new();
+        let (a, b) = (home.device("a"), home.device("b"));
+        let events = Arc::new(Events::default());
+        let sync_loop = SyncLoop::start(
+            a.clone(),
+            home.cloud(),
+            events.clone(),
+            intervals(MS, 10 * MS),
+            false,
+        );
+        let id = home.import(&a, b"on a");
+        sync_loop.local_change();
+        sync_loop.foreground();
+        sleep(100 * MS);
+        assert_eq!(events.statuses.lock().unwrap().len(), 0, "no step offline");
+
+        sync_loop.set_online(true);
+
+        eventually("the step once online", || {
+            b.sync(&*home.cloud()).unwrap();
+            ids(&b) == [id.clone()]
+        });
+
+        sync_loop.set_online(false);
+        // A step running meanwhile ends.
+        sleep(100 * MS);
+        let steps = events.steps();
+        sync_loop.local_change();
+        sleep(100 * MS);
+        assert_eq!(events.steps(), steps, "no step offline");
     }
 
     /// A storage that can be down, failing with `error`.

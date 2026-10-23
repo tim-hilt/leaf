@@ -400,8 +400,9 @@ extension ImportProblem.Failure {
 }
 
 /// The toolbar icon showing how Sync stands: spinning arrows while syncing, a
-/// green check once synced, a red cross after an error. A click or tap opens a
-/// popover saying when Sync last succeeded, or offering to try again. While Sync
+/// green check once synced, a red cross after an error, a yellow warning without
+/// a network. A click or tap opens a popover saying when Sync last succeeded, or
+/// offering to try again. While Sync
 /// is blocked (access lost, full, update needed) trying again can't help, so it
 /// names the reason and opens Settings instead.
 
@@ -450,12 +451,17 @@ struct SyncStatusButton: View {
         case .failed:
             Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette)
                 .foregroundStyle(Self.glyphColor, .red)
+        case .noConnection:
+            Image(systemName: "exclamationmark.triangle.fill").symbolRenderingMode(.palette)
+                .foregroundStyle(Self.glyphColor, .yellow)
         }
     }
 
     @ViewBuilder private var popover: some View {
         switch indicator {
         case .syncing, .synced: Text(indicator.message)
+        // Wrapped: on one line the popover would be too wide.
+        case .noConnection: Text(indicator.message).frame(width: 240, alignment: .leading)
         case .failed(let canRetry):
             VStack(alignment: .leading, spacing: 8) {
                 Text(indicator.message)

@@ -911,6 +911,23 @@ extension LibraryModelTests {
         #expect(library.syncIndicator == nil)
     }
 
+    @Test func withoutANetworkNothingSyncsAndTheIndicatorWarns() async throws {
+        let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())
+        a.setOnline(false)
+        try await a.connect(directory: cloud)
+        try await b.connect(directory: cloud)
+        let id = try await importedID(a, titled: "Paper")
+
+        #expect(a.syncIndicator == .noConnection)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(ids(b).isEmpty)
+
+        a.setOnline(true)
+
+        #expect(try await eventually { ids(b) == [id] })
+        #expect(a.syncIndicator == SyncIndicator(a.syncState))
+    }
+
     @Test func theIndicatorsMessageSaysWhenSyncLastSucceeded() {
         let date = Date(timeIntervalSince1970: 1_000_000)
         let time = date.formatted(date: .omitted, time: .shortened)
@@ -920,6 +937,9 @@ extension LibraryModelTests {
         #expect(SyncIndicator.syncing.message == "Syncing…")
         #expect(SyncIndicator.failed(canRetry: true).message == "Error while syncing")
         #expect(SyncIndicator.failed(canRetry: false).message == "Error while syncing")
+        #expect(
+            SyncIndicator.noConnection.message
+                == "No internet connection. Connect to the internet to resume syncing.")
     }
 
     @Test func reconnectingWithAPasswordThatTheServerCantCheckLeavesTheConnectionAndTheSavedPasswordAlone() async throws

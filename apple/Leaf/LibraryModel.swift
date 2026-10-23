@@ -1,4 +1,5 @@
 import LeafCore
+import Network
 import Observation
 import PDFKit
 
@@ -186,8 +187,13 @@ final class LibraryModel {
     private(set) var connection: CloudConnection?
     /// Where Sync stands. Only meaningful while `connection` isn't nil.
     private(set) var syncState = Status.syncing
+    /// Whether the Device has a network; nothing Syncs without one.
+    private(set) var isOnline = true
     /// What the Gallery's toolbar shows of Sync; nil while not Connected.
-    var syncIndicator: SyncIndicator? { connection == nil ? nil : SyncIndicator(syncState) }
+    var syncIndicator: SyncIndicator? {
+        guard connection != nil else { return nil }
+        return isOnline ? SyncIndicator(syncState) : .noConnection
+    }
     /// The File transfers of the running Sync; nil while none runs. Reading
     /// Progress, Markup and Highlight Colors Sync without it.
     private(set) var transfer: FileTransfer?
@@ -203,6 +209,8 @@ final class LibraryModel {
     /// The access to iCloud Drive that a Connection to it holds, until it ends.
     @ObservationIgnored private var iCloudGrant: ICloudGrant?
     @ObservationIgnored private let syncIntervals: SyncIntervals
+    /// Tells `setOnline` how the system's network stands, once `followNetwork` runs.
+    @ObservationIgnored private var network: NWPathMonitor?
     /// Where the system hands over temporary copies of Files; they are deleted
     /// after their Import. Nil where the system hands over the Files themselves.
     @ObservationIgnored private let inbox: URL?
@@ -286,12 +294,14 @@ final class LibraryModel {
         let caches = try files.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         // Where details were kept before the core kept them; the background pass reads them again.
         try? files.removeItem(at: support.appending(path: "Details.json"))
-        return try LibraryModel(
+        let library = try LibraryModel(
             root: support.appending(path: "Library", directoryHint: .isDirectory),
             coversFolder: caches.appending(path: "Covers", directoryHint: .isDirectory),
             defaults: .standard,
             credentials: CloudCredentials(defaults: .standard, service: "com.timhilt.leaf.cloud"),
             inbox: Self.systemInbox)
+        library.followNetwork()
+        return library
     }
 
     private static var systemInbox: URL? {
@@ -492,6 +502,25 @@ final class LibraryModel {
 
     /// The app goes to the background: Syncs once more, then stops.
     func background() { core.background() }
+
+    /// Whether the Device has a network. Without one nothing Syncs; once it is
+    /// back, Sync runs at once.
+    func setOnline(_ online: Bool) {
+        guard online != isOnline else { return }
+        isOnline = online
+        core.setOnline(online: online)
+    }
+
+    /// Follows the system's network from now on, see `setOnline`.
+    func followNetwork() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let online = path.status == .satisfied
+            Task { @MainActor in self?.setOnline(online) }
+        }
+        monitor.start(queue: DispatchQueue(label: "com.timhilt.leaf.network"))
+        network = monitor
+    }
 
     private func newConnection() -> UUID {
         let id = UUID()
