@@ -222,8 +222,8 @@ final class LibraryModel {
     /// Opens the Library folder at `root`, creating it if needed, with Covers
     /// in `coversFolder` and the sort choice in `defaults`. Documents whose
     /// details the core lacks are listed by file name; a low-priority
-    /// background pass then reads them from the PDFs, one at a time. A WebDAV
-    /// server saved in `credentials` is Connected again, without contacting
+    /// background pass then reads them from the PDFs, one at a time. The Cloud
+    /// Provider saved in `credentials` is Connected again, without contacting
     /// it, so launching offline works;
     /// Sync steps run `syncIntervals` apart. Files in `inbox` are temporary
     /// copies, deleted after `importFiles`.
@@ -245,13 +245,16 @@ final class LibraryModel {
         // Built at once, so the Gallery opens in order rather than filling in.
         listing = try? core.listing(sort: sort.core)
         readMissingDetails()
-        if let account = credentials.load() {
+        if let saved = credentials.load() {
             let id = newConnection()
             do {
-                try core.resumeWebdav(
-                    url: account.url, username: account.username, password: account.password,
-                    observer: relay(for: id), intervals: syncIntervals)
-                connection = CloudConnection(server: account.url)
+                switch saved {
+                case .webDAV(let account):
+                    try core.resumeWebdav(
+                        url: account.url, username: account.username, password: account.password,
+                        observer: relay(for: id), intervals: syncIntervals)
+                    connection = CloudConnection(provider: .webDAV, detail: account.url)
+                }
             } catch {
                 connectionID = nil
             }
@@ -302,23 +305,24 @@ final class LibraryModel {
             if connectionID == id { connectionID = nil }
             throw error
         }
-        connection = CloudConnection(server: url)
-        credentials.save(WebDAVAccount(url: url, username: username, password: password))
+        connection = CloudConnection(provider: .webDAV, detail: url)
+        credentials.save(.webDAV(WebDAVAccount(url: url, username: username, password: password)))
     }
 
-    /// Gives the Connection a new password, after the server's has changed, without
-    /// Disconnecting: Sync resumes at once. Checks it first and throws a
-    /// `ConnectError` if it is wrong; the Connection and the saved password then
-    /// stay as they were. Does nothing unless Connected to a WebDAV server.
-    func updatePassword(_ password: String) async throws {
-        guard let account = credentials.load(), let id = connectionID else { return }
+    /// Gives the Connection access again, after it was lost, with a new password
+    /// for the WebDAV server: Sync resumes at once, without Disconnecting. Checks
+    /// it first and throws a `ConnectError` if it is wrong; the Connection and
+    /// the saved password then stay as they were. Does nothing unless a WebDAV
+    /// Connection is saved.
+    func reconnect(password: String) async throws {
+        guard case .webDAV(let account) = credentials.load(), let id = connectionID else { return }
         let core = core
         try await Task.detached {
-            try core.updateWebdavCredentials(url: account.url, username: account.username, password: password)
+            try core.reconnectWebdav(url: account.url, username: account.username, password: password)
         }.value
         // Disconnected meanwhile: nothing to keep.
         guard connectionID == id else { return }
-        credentials.save(WebDAVAccount(url: account.url, username: account.username, password: password))
+        credentials.save(.webDAV(WebDAVAccount(url: account.url, username: account.username, password: password)))
     }
 
     /// Connects to the directory `directory` as if it were a cloud, for tests.
@@ -331,11 +335,11 @@ final class LibraryModel {
         try await Task.detached {
             try core.connectDirectory(path: directory.path, observer: observer, intervals: intervals)
         }.value
-        connection = CloudConnection(server: directory.path)
+        connection = CloudConnection(provider: .webDAV, detail: directory.path)
     }
 
-    /// Stops syncing, cancelling running transfers, and forgets the URL,
-    /// username and password. Keeps the whole Library and leaves the cloud as it is.
+    /// Stops syncing, cancelling running transfers, and forgets the saved
+    /// credentials. Keeps the whole Library and leaves the cloud as it is.
     func disconnect() async {
         connectionID = nil
         connection = nil

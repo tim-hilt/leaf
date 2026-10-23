@@ -402,7 +402,7 @@ extension ImportProblem.Failure {
 /// The toolbar icon showing how Sync stands: spinning arrows while syncing, a
 /// green check once synced, a red cross after an error. A click or tap opens a
 /// popover saying when Sync last succeeded, or offering to try again. While Sync
-/// is blocked (wrong password, update needed) trying again can't help, so it
+/// is blocked (access lost, update needed) trying again can't help, so it
 /// names the reason and opens Settings instead.
 
 /// The glyph cut out of a filled sync icon: white in light mode, black in dark

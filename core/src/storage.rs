@@ -5,6 +5,7 @@
 //! transactions, no server logic (ADR-0017). Everything above it, from the
 //! remote layout to merging, is in the core.
 
+use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -19,6 +20,40 @@ pub struct Blob {
     /// the size also reveals an overwritten one.
     pub size: u64,
 }
+
+/// Why connecting to a Cloud Provider failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectError {
+    /// The user backed out of the provider's prompt or sign-in page.
+    Cancelled,
+    /// The provider refused access.
+    AccessDenied,
+    /// iCloud Drive is off, or not signed in to iCloud.
+    ICloudDriveUnavailable,
+    /// The granted folder isn't iCloud Drive itself.
+    WrongFolder,
+    /// A kind of account the provider doesn't support.
+    UnsupportedAccount,
+    /// WebDAV: the server rejected the username or password.
+    WrongCredentials,
+    /// WebDAV: no answer: wrong host, no network, a broken certificate or a
+    /// server that is down.
+    Unreachable,
+    /// WebDAV: the URL doesn't start with `https://`. The password would
+    /// travel in plain text.
+    NotHttps,
+    /// WebDAV: the server answers, but not as a WebDAV server.
+    NotWebDav,
+}
+
+/// The variant's name; clients word the message for the user.
+impl fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl std::error::Error for ConnectError {}
 
 /// Named blobs in `/`-separated directories, e.g. `v1/file.abc`.
 ///

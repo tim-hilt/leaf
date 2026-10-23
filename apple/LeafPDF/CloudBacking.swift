@@ -8,7 +8,7 @@ extension Status {
         switch self {
         case .syncing: return "Syncing…"
         case .offline: return "Offline"
-        case .wrongPassword: return "Wrong password"
+        case .accessLost: return "Access lost"
         case .updateNeeded: return "Update LeafPDF to keep syncing"
         case .synced(let at):
             let date = Date(milliseconds: at)
@@ -30,7 +30,7 @@ enum SyncIndicator: Equatable {
         case .syncing: self = .syncing
         case .synced(let at): self = .synced(Date(milliseconds: at))
         case .offline: self = .failed(canRetry: true)
-        case .wrongPassword, .updateNeeded: self = .failed(canRetry: false)
+        case .accessLost, .updateNeeded: self = .failed(canRetry: false)
         }
     }
 
@@ -62,16 +62,49 @@ struct FileTransfer: Equatable {
     var text: String { "Syncing \(done) of \(total) Documents" }
 }
 
+/// Where a Library can be backed up.
+enum CloudProvider: CaseIterable, Hashable {
+    case webDAV
+
+    /// What the picker calls it.
+    var name: String {
+        switch self {
+        case .webDAV: "WebDAV"
+        }
+    }
+
+    /// The SF Symbol shown next to its name.
+    var icon: String {
+        switch self {
+        case .webDAV: "server.rack"
+        }
+    }
+
+    /// What Settings calls the detail of a Connection to it.
+    var detailLabel: String {
+        switch self {
+        case .webDAV: "Server"
+        }
+    }
+}
+
 /// The Cloud Provider this Device is Connected to.
 struct CloudConnection: Equatable {
-    /// The Server URL, or the directory of a test.
-    let server: String
+    let provider: CloudProvider
+    /// What Settings shows of it, labelled `provider.detailLabel`: the Server URL
+    /// for WebDAV, or the directory of a test.
+    let detail: String
 }
 
 extension ConnectError {
-    /// What Settings says next to the form.
-    var message: String {
+    /// What Settings says next to the form; nil when nothing needs saying.
+    var message: String? {
         switch self {
+        case .Cancelled: nil
+        case .AccessDenied: "Access denied"
+        case .ICloudDriveUnavailable: "Turn on iCloud Drive in Settings"
+        case .WrongFolder: "Choose iCloud Drive"
+        case .UnsupportedAccount: "Only personal accounts are supported"
         case .WrongCredentials: "Wrong username or password"
         case .Unreachable: "Server not reachable"
         case .NotHttps: "URL must start with https://"

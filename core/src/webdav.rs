@@ -7,7 +7,7 @@
 //! visible under its final name.
 
 use crate::percent::decode;
-use crate::storage::{Blob, Storage, check_name, unique_name};
+use crate::storage::{Blob, ConnectError, Storage, check_name, unique_name};
 use base64::prelude::{BASE64_STANDARD, Engine};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
@@ -25,30 +25,6 @@ const FOLDER: &str = "LeafPDF";
 /// Where blobs are uploaded before they are moved into place. Starts with a
 /// dot, so it is no valid name and never listed.
 const INCOMING: &str = ".incoming";
-
-/// Why connecting to a WebDAV server failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectError {
-    /// The server rejected the username or password.
-    WrongCredentials,
-    /// No answer: wrong host, no network, a broken certificate or a server
-    /// that is down.
-    Unreachable,
-    /// The URL doesn't start with `https://`. The password would travel in
-    /// plain text.
-    NotHttps,
-    /// The server answers, but not as a WebDAV server.
-    NotWebDav,
-}
-
-/// The variant's name; clients word the message for the user.
-impl fmt::Display for ConnectError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-
-impl std::error::Error for ConnectError {}
 
 /// The `LeafPDF` folder of a WebDAV server. A rejected login (HTTP 401) is an
 /// `io::ErrorKind::PermissionDenied` error, anything else that fails to

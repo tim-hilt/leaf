@@ -71,7 +71,7 @@ Cloud Backing is off until the user Connects a Cloud Provider in Settings; only 
 - The Library, Reading Progress, Markup and Highlight Colors keep Syncing: a few seconds after a change, on launch and foreground, and every 10 seconds while in the foreground. Importing uploads the File.
 - A Remove wins over concurrent edits and frees the cloud storage. Importing the File again starts fresh.
 - An open Reader keeps its place; new Markup shows up live. A Document Removed elsewhere closes its Tab.
-- While Files transfer, the Gallery shows "Syncing 12 of 120 Documents". Settings shows the status; a blocked Sync (wrong password, LeafPDF needs an update) adds a warning icon to the Gallery.
+- While Files transfer, the Gallery shows "Syncing 12 of 120 Documents". Settings shows the status; a blocked Sync (access lost, LeafPDF needs an update) adds a warning icon to the Gallery.
 - Disconnect keeps everything and forgets the credentials. Switching Cloud Provider Disconnects first, after a confirmation.
 
 ## 9. File Import (external)

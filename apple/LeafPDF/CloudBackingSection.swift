@@ -2,15 +2,13 @@ import LeafCore
 import SwiftUI
 
 /// Settings' Cloud Backing: pick a Cloud Provider, Connect with Server URL,
-/// username and password, see how Sync stands, enter a new password when the
-/// server rejects the old one, Disconnect.
+/// username and password, see how Sync stands, Reconnect with a new password
+/// when the server rejects the old one, Disconnect.
 struct CloudBackingSection: View {
     @Environment(LibraryModel.self) private var library
 
-    private enum Provider: Hashable { case none, webDAV }
-
-    /// WebDAV is picked, but not Connected yet.
-    @State private var isChoosingWebDAV = false
+    /// The Cloud Provider picked, but not Connected yet.
+    @State private var choosing: CloudProvider?
     @State private var url = ""
     @State private var username = ""
     @State private var password = ""
@@ -21,27 +19,33 @@ struct CloudBackingSection: View {
     var body: some View {
         Section("Cloud Backing") {
             Picker("Cloud Provider", selection: provider) {
-                Text("None").tag(Provider.none)
-                Text("WebDAV").tag(Provider.webDAV)
+                Text("None").tag(CloudProvider?.none)
+                ForEach(CloudProvider.allCases, id: \.self) { provider in
+                    Label(provider.name, systemImage: provider.icon).tag(CloudProvider?.some(provider))
+                }
             }
             if let connection = library.connection {
-                LabeledContent("Server", value: connection.server)
+                LabeledContent {
+                    Text(connection.detail)
+                } label: {
+                    Label(connection.provider.detailLabel, systemImage: connection.provider.icon)
+                }
                 LabeledContent("Status", value: library.syncState.line())
-                if library.syncState == .wrongPassword { passwordForm }
+                if library.syncState == .accessLost { reconnectForm }
                 Button("Disconnect", role: .destructive) { Task { await library.disconnect() } }
-            } else if isChoosingWebDAV {
+            } else if choosing == .webDAV {
                 form
             }
         }
     }
 
     /// Picking None Disconnects, which keeps everything on this Device.
-    private var provider: Binding<Provider> {
+    private var provider: Binding<CloudProvider?> {
         Binding(
-            get: { library.connection != nil || isChoosingWebDAV ? .webDAV : .none },
+            get: { library.connection?.provider ?? choosing },
             set: { picked in
-                isChoosingWebDAV = picked == .webDAV
-                if picked == .none && library.connection != nil { Task { await library.disconnect() } }
+                choosing = picked
+                if picked == nil && library.connection != nil { Task { await library.disconnect() } }
             })
     }
 
@@ -65,21 +69,21 @@ struct CloudBackingSection: View {
             .disabled(isConnecting || url.isEmpty || username.isEmpty || password.isEmpty)
     }
 
-    /// Connected, but the server rejected the password: a new one resumes Sync.
-    @ViewBuilder private var passwordForm: some View {
+    /// Connected, but access was lost: for WebDAV, a new password resumes Sync.
+    @ViewBuilder private var reconnectForm: some View {
         SecureField("New Password", text: $newPassword)
         if let error {
             Text(error).foregroundStyle(.red)
         }
-        Button("Update Password") { Task { await updatePassword() } }
+        Button("Reconnect") { Task { await reconnect() } }
             .disabled(isConnecting || newPassword.isEmpty)
     }
 
-    private func updatePassword() async {
+    private func reconnect() async {
         isConnecting = true
         defer { isConnecting = false }
         do {
-            try await library.updatePassword(newPassword)
+            try await library.reconnect(password: newPassword)
             error = nil
             newPassword = ""
         } catch let failure as ConnectError {

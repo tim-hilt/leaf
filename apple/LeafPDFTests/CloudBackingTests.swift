@@ -1,5 +1,6 @@
 import Foundation
 import LeafCore
+import Security
 import Testing
 
 @testable import LeafPDF
@@ -105,12 +106,12 @@ extension LibraryModelTests {
         #expect(try await eventually { Set(ids(a)) == both && Set(ids(b)) == both })
     }
 
-    @Test func connectingShowsTheServerAndTheSyncStatus() async throws {
+    @Test func connectingShowsTheCloudProviderAndTheSyncStatus() async throws {
         let library = try openLibrary(syncIntervals: Self.fast)
 
         try await library.connect(directory: cloud)
 
-        #expect(library.connection == CloudConnection(server: cloud.path))
+        #expect(library.connection == CloudConnection(provider: .webDAV, detail: cloud.path))
         #expect(
             try await eventually {
                 if case .synced = library.syncState { true } else { false }
@@ -170,15 +171,30 @@ extension LibraryModelTests {
         #expect(ConnectError.Unreachable.message == "Server not reachable")
         #expect(ConnectError.NotHttps.message == "URL must start with https://")
         #expect(ConnectError.NotWebDav.message == "Not a WebDAV server")
+        #expect(ConnectError.AccessDenied.message == "Access denied")
+        #expect(ConnectError.ICloudDriveUnavailable.message == "Turn on iCloud Drive in Settings")
+        #expect(ConnectError.WrongFolder.message == "Choose iCloud Drive")
+        #expect(ConnectError.UnsupportedAccount.message == "Only personal accounts are supported")
+    }
+
+    @Test func cancellingSaysNothing() {
+        #expect(ConnectError.Cancelled.message == nil)
+    }
+
+    @Test func eachCloudProviderHasANameAnIconAndALabelForWhatSettingsShows() {
+        #expect(CloudProvider.allCases == [.webDAV])
+        #expect(CloudProvider.webDAV.name == "WebDAV")
+        #expect(CloudProvider.webDAV.icon == "server.rack")
+        #expect(CloudProvider.webDAV.detailLabel == "Server")
     }
 
     @Test func credentialsSurviveARelaunchAndAreGoneAfterDisconnect() async throws {
         let account = WebDAVAccount(url: "https://127.0.0.1:1", username: "reader", password: "secret")
-        #expect(credentials.save(account))
+        #expect(credentials.save(.webDAV(account)))
 
         // Relaunch: Connected again without contacting the server, which is down.
         let library = try openLibrary(syncIntervals: Self.fast)
-        #expect(library.connection == CloudConnection(server: account.url))
+        #expect(library.connection == CloudConnection(provider: .webDAV, detail: account.url))
         #expect(try await eventually { library.syncState == .offline })
 
         await library.disconnect()
@@ -188,13 +204,30 @@ extension LibraryModelTests {
         #expect(try openLibrary().connection == nil)
     }
 
-    @Test func savedCredentialsHoldOnlyTheLatestAccount() {
-        credentials.save(WebDAVAccount(url: "https://a.example", username: "a", password: "1"))
-        credentials.save(WebDAVAccount(url: "https://b.example", username: "b", password: "2"))
+    @Test func savedCredentialsHoldOnlyTheLatestConnection() {
+        credentials.save(.webDAV(WebDAVAccount(url: "https://a.example", username: "a", password: "1")))
+        credentials.save(.webDAV(WebDAVAccount(url: "https://b.example", username: "b", password: "2")))
 
-        #expect(credentials.load() == WebDAVAccount(url: "https://b.example", username: "b", password: "2"))
+        #expect(credentials.load() == .webDAV(WebDAVAccount(url: "https://b.example", username: "b", password: "2")))
         credentials.forget()
         #expect(credentials.load() == nil)
+    }
+
+    /// What LeafPDF saved before Cloud Providers had names: the URL and username
+    /// in the defaults, the password in the Keychain.
+    @Test func credentialsSavedBeforeCloudProvidersHadNamesStillLoad() throws {
+        let service = "leafpdf-test-\(root.lastPathComponent)"
+        defaults.set("https://old.example", forKey: "cloud.webdav.url")
+        defaults.set("old", forKey: "cloud.webdav.username")
+        let item: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword, kSecAttrService: service,
+            kSecAttrAccount: "WebDAV password", kSecValueData: Data("pw".utf8),
+        ]
+        #expect(SecItemAdd(item as CFDictionary, nil) == errSecSuccess)
+        defer { credentials.forget() }
+
+        #expect(
+            credentials.load() == .webDAV(WebDAVAccount(url: "https://old.example", username: "old", password: "pw")))
     }
 
     @Test func theTransferBarSaysHowManyDocumentsAreDoneAndIsGoneAtTheEnd() {
@@ -261,14 +294,14 @@ extension LibraryModelTests {
     }
 
     @Test func theStatusLineNamesBothBlockedStates() {
-        #expect(Status.wrongPassword.line() == "Wrong password")
+        #expect(Status.accessLost.line() == "Access lost")
         #expect(Status.updateNeeded.line() == "Update LeafPDF to keep syncing")
     }
 
     @Test func theIndicatorShowsHowSyncStandsWhileConnected() async throws {
         // Offline: the server is down. Trying again can help.
         let account = WebDAVAccount(url: "https://127.0.0.1:1", username: "reader", password: "secret")
-        #expect(credentials.save(account))
+        #expect(credentials.save(.webDAV(account)))
         let offline = try openLibrary(syncIntervals: Self.fast)
         #expect(try await eventually { offline.syncState == .offline })
         #expect(offline.syncIndicator == .failed(canRetry: true))
@@ -278,7 +311,7 @@ extension LibraryModelTests {
         let library = try openLibrary(syncIntervals: Self.fast)
         #expect(library.syncIndicator == nil)
 
-        // Blocked: the cloud refuses access, as a server does with a wrong password.
+        // Blocked: the cloud refuses access, as a server does with a changed password.
         try await library.connect(directory: cloud)
         #expect(try await eventually { if case .synced = library.syncState { true } else { false } })
         if case .synced(let at) = library.syncState {
@@ -286,7 +319,7 @@ extension LibraryModelTests {
         }
         try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: cloud.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cloud.path) }
-        #expect(try await eventually { library.syncState == .wrongPassword })
+        #expect(try await eventually { library.syncState == .accessLost })
         #expect(library.syncIndicator == .failed(canRetry: false))
         #expect(library.connection != nil)
 
@@ -305,24 +338,25 @@ extension LibraryModelTests {
         #expect(SyncIndicator.failed(canRetry: false).message == "Error while syncing")
     }
 
-    @Test func aNewPasswordThatTheServerCantCheckLeavesTheConnectionAndTheSavedPasswordAlone() async throws {
+    @Test func reconnectingWithAPasswordThatTheServerCantCheckLeavesTheConnectionAndTheSavedPasswordAlone() async throws
+    {
         let account = WebDAVAccount(url: "https://127.0.0.1:1", username: "reader", password: "old")
-        #expect(credentials.save(account))
+        #expect(credentials.save(.webDAV(account)))
         let library = try openLibrary(syncIntervals: Self.fast)
 
-        await #expect(throws: ConnectError.Unreachable) { try await library.updatePassword("new") }
+        await #expect(throws: ConnectError.Unreachable) { try await library.reconnect(password: "new") }
 
-        #expect(library.connection == CloudConnection(server: account.url))
-        #expect(credentials.load() == account)
+        #expect(library.connection == CloudConnection(provider: .webDAV, detail: account.url))
+        #expect(credentials.load() == .webDAV(account))
     }
 
-    @Test func updatingThePasswordWithoutAWebDAVConnectionDoesNothing() async throws {
+    @Test func reconnectingWithoutASavedConnectionDoesNothing() async throws {
         let library = try openLibrary(syncIntervals: Self.fast)
         try await library.connect(directory: cloud)
 
-        try await library.updatePassword("new")
+        try await library.reconnect(password: "new")
 
-        #expect(library.connection == CloudConnection(server: cloud.path))
+        #expect(library.connection == CloudConnection(provider: .webDAV, detail: cloud.path))
         #expect(credentials.load() == nil)
     }
 

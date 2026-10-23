@@ -8,49 +8,62 @@ struct WebDAVAccount: Equatable, Sendable {
     let password: String
 }
 
-/// Where a Connected WebDAV server's details are kept on this Device: Server
-/// URL and username in `defaults`, the password in the Keychain under `service`.
-/// Never synced. Losing any part means not Connected.
+/// What a Connection to a Cloud Provider needs to resume after a relaunch.
+enum CloudCredential: Equatable, Sendable {
+    case webDAV(WebDAVAccount)
+}
+
+/// Where the credentials of the Connected Cloud Provider are kept on this
+/// Device: plain details in `defaults`, secrets in the Keychain under
+/// `service`; each Cloud Provider has its own keys. Only the latest Connection
+/// is kept. Never synced. Losing any part means not Connected.
 struct CloudCredentials {
     let defaults: UserDefaults
     let service: String
 
     private static let urlKey = "cloud.webdav.url"
     private static let usernameKey = "cloud.webdav.username"
-    private static let account = "WebDAV password"
+    private static let webDAVPassword = "WebDAV password"
 
-    /// The account saved by `save`; nil if there is none or a part is missing.
-    func load() -> WebDAVAccount? {
+    /// What `save` kept; nil if there is none or a part is missing.
+    func load() -> CloudCredential? {
         guard let url = defaults.string(forKey: Self.urlKey),
             let username = defaults.string(forKey: Self.usernameKey),
-            let password = password()
+            let password = secret(Self.webDAVPassword)
         else { return nil }
-        return WebDAVAccount(url: url, username: username, password: password)
+        return .webDAV(WebDAVAccount(url: url, username: username, password: password))
     }
 
-    /// Replaces the saved account. False if the Keychain refused the password;
-    /// then nothing is saved.
+    /// Replaces what was saved, of any Cloud Provider. False if the Keychain
+    /// refused a secret; then nothing is saved.
     @discardableResult
-    func save(_ account: WebDAVAccount) -> Bool {
+    func save(_ credential: CloudCredential) -> Bool {
         forget()
-        var item = query
-        item[kSecValueData] = Data(account.password.utf8)
-        item[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
-        guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { return false }
-        defaults.set(account.url, forKey: Self.urlKey)
-        defaults.set(account.username, forKey: Self.usernameKey)
-        return true
+        switch credential {
+        case .webDAV(let account):
+            guard store(account.password, as: Self.webDAVPassword) else { return false }
+            defaults.set(account.url, forKey: Self.urlKey)
+            defaults.set(account.username, forKey: Self.usernameKey)
+            return true
+        }
     }
 
-    /// Deletes everything saved.
+    /// Deletes everything saved, of every Cloud Provider.
     func forget() {
         defaults.removeObject(forKey: Self.urlKey)
         defaults.removeObject(forKey: Self.usernameKey)
-        SecItemDelete(query as CFDictionary)
+        SecItemDelete(query(Self.webDAVPassword) as CFDictionary)
     }
 
-    private func password() -> String? {
-        var item = query
+    private func store(_ secret: String, as name: String) -> Bool {
+        var item = query(name)
+        item[kSecValueData] = Data(secret.utf8)
+        item[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
+    }
+
+    private func secret(_ name: String) -> String? {
+        var item = query(name)
         item[kSecReturnData] = true
         var result: CFTypeRef?
         guard SecItemCopyMatching(item as CFDictionary, &result) == errSecSuccess, let data = result as? Data
@@ -58,7 +71,7 @@ struct CloudCredentials {
         return String(data: data, encoding: .utf8)
     }
 
-    private var query: [CFString: Any] {
-        [kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: Self.account]
+    private func query(_ name: String) -> [CFString: Any] {
+        [kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: name]
     }
 }

@@ -38,8 +38,9 @@ pub enum Status {
     Synced { at: u64 },
     /// The last step failed. The next one retries.
     Offline,
-    /// The storage rejected the credentials. Blocked, until `use_storage`.
-    WrongPassword,
+    /// The storage rejected the credentials: a changed password, revoked
+    /// access, a lost grant. Blocked, until `use_storage` (Reconnect).
+    AccessLost,
     /// Another Device stored a newer schema version than this app knows.
     /// Blocked: nothing is written until the app is updated.
     UpdateNeeded,
@@ -49,7 +50,7 @@ impl Status {
     /// Whether the user has to act for Sync to go on. Being offline is not
     /// blocked.
     pub fn is_blocked(self) -> bool {
-        matches!(self, Self::WrongPassword | Self::UpdateNeeded)
+        matches!(self, Self::AccessLost | Self::UpdateNeeded)
     }
 }
 
@@ -214,7 +215,7 @@ impl SyncLoop {
     }
 
     /// Syncs with `storage` from now on: new credentials, after Sync was
-    /// blocked by a rejected password. A step runs at once.
+    /// blocked by lost access (Reconnect). A step runs at once.
     pub fn use_storage(&self, storage: Arc<dyn Storage>) {
         let cancelled = self.shared.cancelled.clone();
         self.update(|state| {
@@ -355,7 +356,7 @@ impl Shared {
         let status = match result {
             Ok(()) => Status::Synced { at: now() },
             Err(e) => match e.kind() {
-                io::ErrorKind::PermissionDenied => Status::WrongPassword,
+                io::ErrorKind::PermissionDenied => Status::AccessLost,
                 io::ErrorKind::Unsupported => Status::UpdateNeeded,
                 _ => Status::Offline,
             },
@@ -930,16 +931,16 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_password_blocks_the_loop_until_new_credentials_come() {
+    fn lost_access_blocks_the_loop_until_reconnected() {
         let home = Home::new();
         let (a, b) = (home.device("a"), home.device("b"));
         let id = home.import(&a, b"on a");
         let rejecting = Failing::new(io::ErrorKind::PermissionDenied);
         let (sync_loop, events) = start(&a, rejecting.clone(), intervals(MS, MS));
         eventually("being blocked", || {
-            events.last() == Some(Status::WrongPassword)
+            events.last() == Some(Status::AccessLost)
         });
-        assert!(Status::WrongPassword.is_blocked());
+        assert!(Status::AccessLost.is_blocked());
 
         // Neither polling, a local change nor the app's lifecycle sends more.
         let requests = rejecting.requests.load(Relaxed);
@@ -948,7 +949,7 @@ mod tests {
         sync_loop.background();
         sleep(100 * MS);
         assert_eq!(rejecting.requests.load(Relaxed), requests);
-        assert_eq!(events.last(), Some(Status::WrongPassword));
+        assert_eq!(events.last(), Some(Status::AccessLost));
 
         sync_loop.use_storage(home.cloud());
 
@@ -960,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn new_credentials_that_are_rejected_block_the_loop_again() {
+    fn reconnecting_with_rejected_credentials_blocks_the_loop_again() {
         let home = Home::new();
         let a = home.device("a");
         let (sync_loop, events) = start(
@@ -976,7 +977,7 @@ mod tests {
         eventually("the new storage to be tried", || events.steps() == 2);
         sleep(50 * MS);
         assert_eq!(still_wrong.requests.load(Relaxed), 1);
-        assert_eq!(events.last(), Some(Status::WrongPassword));
+        assert_eq!(events.last(), Some(Status::AccessLost));
     }
 
     #[test]

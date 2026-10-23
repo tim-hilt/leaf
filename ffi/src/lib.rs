@@ -15,9 +15,9 @@ use leafpdf_core::markup::{
 };
 use leafpdf_core::preferences::{HighlightColor, HighlightColors};
 use leafpdf_core::progress::{Place, ReadingProgress};
-use leafpdf_core::storage::{DirStorage, Storage};
+use leafpdf_core::storage::{ConnectError, DirStorage, Storage};
 use leafpdf_core::sync_loop::{self, Status, SyncLoop};
-use leafpdf_core::webdav::{ConnectError, WebDavStorage};
+use leafpdf_core::webdav::WebDavStorage;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -198,12 +198,17 @@ pub enum Status {
     Syncing,
     Synced { at: u64 },
     Offline,
-    WrongPassword,
+    AccessLost,
     UpdateNeeded,
 }
 
 #[uniffi::remote(Error)]
 pub enum ConnectError {
+    Cancelled,
+    AccessDenied,
+    ICloudDriveUnavailable,
+    WrongFolder,
+    UnsupportedAccount,
     WrongCredentials,
     Unreachable,
     NotHttps,
@@ -496,11 +501,11 @@ impl Library {
         Ok(())
     }
 
-    /// Gives the running Connection new credentials, after its status became
-    /// `WrongPassword`: checks them like `connect_webdav` and, if they are
-    /// right, resumes syncing at once. Blocks while it talks to the server.
+    /// Reconnects the running Connection to the WebDAV server, after its
+    /// status became `AccessLost`: checks the credentials like `connect_webdav`
+    /// and, if they are right, resumes syncing at once. Blocks while it talks to the server.
     /// Does nothing if not Connected.
-    pub fn update_webdav_credentials(
+    pub fn reconnect_webdav(
         &self,
         url: String,
         username: String,
