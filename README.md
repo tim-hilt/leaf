@@ -2,7 +2,10 @@
 [![Test](https://github.com/tim-hilt/leaf/actions/workflows/test.yml/badge.svg)](https://github.com/tim-hilt/leaf/actions/workflows/test.yml)
 
 <p align="center">
-  <img src="apple/Leaf/Assets.xcassets/LeafLogo.imageset/LeafLogo.svg" alt="Leaf Logo" width="150">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo-light.svg" alt="Leaf Logo" width="150">
+  </picture>
 </p>
 
 ## Intro
