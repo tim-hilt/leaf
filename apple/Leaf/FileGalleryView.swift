@@ -47,6 +47,27 @@ struct FileGalleryView: View {
     /// Every cell in grid order.
     private var items: [GalleryItem] { [.importCell] + visibleDocuments.map { .document($0.id) } }
 
+    @ToolbarContentBuilder private var galleryToolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) { LeafLogo() }
+        ToolbarItemGroup {
+            if tabs.activeID != nil {
+                let count = tabs.openIDs.count
+                // SF Symbols has numbered squares up to 50.
+                Button("Reader", systemImage: count <= 50 ? "\(count).square" : "square.stack") {
+                    tabs.showReader()
+                }
+                .accessibilityValue("\(count) Tabs")
+            }
+            if let indicator = library.syncIndicator {
+                SyncStatusButton(indicator: indicator, isShowingSettings: $isShowingSettings)
+            }
+            SortMenu(sort: Bindable(library).sort)
+            #if os(iOS)
+                Button("Settings", systemImage: "gear") { isShowingSettings = true }
+            #endif
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
@@ -89,23 +110,10 @@ struct FileGalleryView: View {
                         .readerTabStrip()
                 }
             }
-            .toolbar {
-                if tabs.activeID != nil {
-                    let count = tabs.openIDs.count
-                    // SF Symbols has numbered squares up to 50.
-                    Button("Reader", systemImage: count <= 50 ? "\(count).square" : "square.stack") {
-                        tabs.showReader()
-                    }
-                    .accessibilityValue("\(count) Tabs")
-                }
-                if let indicator = library.syncIndicator {
-                    SyncStatusButton(indicator: indicator, isShowingSettings: $isShowingSettings)
-                }
-                SortMenu(sort: Bindable(library).sort)
-                #if os(iOS)
-                    Button("Settings", systemImage: "gear") { isShowingSettings = true }
-                #endif
-            }
+            #if os(iOS)
+                .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar { galleryToolbar }
             #if os(iOS)
                 .sheet(isPresented: $isShowingSettings) { SettingsSheet() }
             #endif
@@ -281,6 +289,13 @@ struct FileGalleryView: View {
 /// The Gallery's alerts, each shown while its item is set: an Import that
 /// didn't happen, a File already in the Library (offering to open it), and
 /// the confirmation to Remove a Document.
+/// The wordmark; a template image, so it follows the light and dark theme.
+private struct LeafLogo: View {
+    var body: some View {
+        Image("LeafLogo").resizable().scaledToFit().frame(height: 18).accessibilityLabel("Leaf")
+    }
+}
+
 private struct GalleryAlerts: ViewModifier {
     @Environment(LibraryModel.self) private var library
     @Environment(Tabs.self) private var tabs
