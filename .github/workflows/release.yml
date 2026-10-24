@@ -1,0 +1,32 @@
+name: Release
+
+on:
+  push:
+    tags: ["*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: xcode-27
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+      # Match the local Xcode; the image defaults to 27.0.
+      - run: sudo xcode-select -s /Applications/Xcode_27.1.app
+      - run: brew install xcodegen
+      # rustup installs the toolchain and targets from rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: make apple
+      # Ad-hoc signed, not notarized: Gatekeeper asks users to confirm the first launch.
+      - run: |
+          cd apple && xcodebuild -quiet -scheme Leaf -configuration Release \
+            -destination 'generic/platform=macOS' -derivedDataPath ../build \
+            MARKETING_VERSION="${TAG#v}" build
+      - run: ditto -c -k --keepParent build/Build/Products/Release/Leaf.app "Leaf-$TAG-macOS.zip"
+      - run: gh release create "$TAG" --title "$TAG" --generate-notes "Leaf-$TAG-macOS.zip"
+        env:
+          GH_TOKEN: ${{ github.token }}
