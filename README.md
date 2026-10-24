@@ -1,9 +1,7 @@
 # Leaf
 
-<!-- Badges are off until GitHub runners ship Xcode 27; see .github/workflows.
-[![Build](https://github.com/tim-hilt/leafpdf/actions/workflows/build.yml/badge.svg)](https://github.com/tim-hilt/leafpdf/actions/workflows/build.yml)
-[![Test](https://github.com/tim-hilt/leafpdf/actions/workflows/test.yml/badge.svg)](https://github.com/tim-hilt/leafpdf/actions/workflows/test.yml)
--->
+[![Build](https://github.com/tim-hilt/leaf/actions/workflows/build.yml/badge.svg)](https://github.com/tim-hilt/leaf/actions/workflows/build.yml)
+[![Test](https://github.com/tim-hilt/leaf/actions/workflows/test.yml/badge.svg)](https://github.com/tim-hilt/leaf/actions/workflows/test.yml)
 
 <p align="center">
   <img src="docs/images/light-dark-pages.png" alt="Leaf showing the same page with light and dark pages" width="400">
