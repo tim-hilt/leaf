@@ -42,10 +42,14 @@ import Testing
     @Test func keyboardZoomKeepsThePlace() throws {
         let reader = try makeReader(size: portrait)
         reader.go(to: place)
+        // Each zoom keeps the place it started from. Scrolling snaps to device
+        // pixels, so on a 1x display the original place drifts over zooms.
+        let beforeZoomIn = try #require(reader.topOfViewport)
         reader.zoomIn()
-        try expectAtTop(place, of: reader)
+        try expectAtTop(beforeZoomIn, of: reader)
+        let beforeFit = try #require(reader.topOfViewport)
         reader.zoomToFitWidth()
-        try expectAtTop(place, of: reader)
+        try expectAtTop(beforeFit, of: reader)
     }
 
     // MARK: Jump and Back

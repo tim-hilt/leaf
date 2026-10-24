@@ -27,9 +27,11 @@ import WebKit
         }
 
         let frames = try await reader.chapterFrames()
+        // Without a trackpad, macOS shows a scroll bar that narrows the view.
+        let width = Double(try await reader.evaluate("document.documentElement.clientWidth")) ?? 0
         #expect(frames.count == 3)
         // Stacked, one under the other, each as wide as the view.
-        #expect(frames.allSatisfy { $0.minX == 0 && $0.width == 400 })
+        #expect(frames.allSatisfy { $0.minX == 0 && $0.width == width })
         #expect(frames[1].minY >= frames[0].minY + 1000)
         #expect(frames[2].minY >= frames[1].minY + 1000)
         #expect(try await reader.scrollHeight() >= 3000)
