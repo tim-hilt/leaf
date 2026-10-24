@@ -211,13 +211,13 @@ struct CloudBackingSection: View {
 }
 
 extension CloudProvider.Icon {
-    /// The icon as a view: a symbol follows the text, a logo is drawn unmodified.
+    /// The icon as a view, all 20pt high: a symbol follows the text, a logo is drawn unmodified.
     @ViewBuilder var image: some View {
         switch self {
         case .symbol(let name):
-            Image(systemName: name)
+            Image(systemName: name).resizable().scaledToFit().frame(height: 20)
         case .logo(let name):
-            Image(name).renderingMode(.original).resizable().scaledToFit().frame(width: 20, height: 20)
+            Image(name).renderingMode(.original).resizable().scaledToFit().frame(height: 20)
         }
     }
 }

@@ -197,7 +197,7 @@ extension LibraryModelTests {
         #expect(CloudProvider.webDAV.icon == .symbol("server.rack"))
         #expect(CloudProvider.webDAV.detailLabel == "Server")
         #expect(CloudProvider.iCloudDrive.name == "iCloud Drive")
-        #expect(CloudProvider.iCloudDrive.icon == .symbol("icloud"))
+        #expect(CloudProvider.iCloudDrive.icon == .logo("ICloudDrive"))
         #expect(CloudProvider.iCloudDrive.detailLabel == "Folder")
         #expect(CloudProvider.googleDrive.name == "Google Drive")
         #expect(CloudProvider.googleDrive.icon == .logo("GoogleDrive"))

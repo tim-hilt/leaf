@@ -87,7 +87,7 @@ enum CloudProvider: CaseIterable, Hashable {
     var icon: Icon {
         switch self {
         case .webDAV: .symbol("server.rack")
-        case .iCloudDrive: .symbol("icloud")
+        case .iCloudDrive: .logo("ICloudDrive")
         case .googleDrive: .logo("GoogleDrive")
         case .oneDrive: .logo("OneDrive")
         }
