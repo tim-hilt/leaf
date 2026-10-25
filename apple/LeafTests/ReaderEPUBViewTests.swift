@@ -734,6 +734,8 @@ import WebKit
             ])
 
         #expect(try await covered(reader, yellow, in: 0) == ["Ishmael."])
+        // Chapter 1 loads after the one that opens, and is drawn once it has.
+        try await eventually { try await self.covered(reader, self.yellow, in: 1) == ["Some"] }
         #expect(try await covered(reader, yellow, in: 1) == ["Some"])
         #expect(try await covered(reader, "leaf-hl-00ff00") == ["e Ishm"])
     }

@@ -24,6 +24,7 @@ Leaf is an application I wanted to build for quite some time, but the idea of le
 - Customizable dark page rendering for reading at night time
 - (Self hostable) cross-device syncing without a sophisticated server - only WebDAV or an authenticated account to Google Drive, One Drive or iCloud Drive are enough
 - Local first - all data is on the device **always**. Syncing is done incrementally and the data is saved to a folder you can easily discover. You own the data.
+- Focus on minimalism - app size is ~6.8MB on both Mac and iOS/iPadOS
 
 <p align="center">
   <img src="docs/images/light-dark-pages.png" alt="Leaf showing the same page with light and dark pages" width="400">
