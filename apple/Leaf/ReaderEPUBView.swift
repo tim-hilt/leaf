@@ -142,6 +142,9 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// The position at the top of the viewport, as last reported; nil until opened.
     private var top: Place?
     private var isOpen = false
+    /// Scrolls to a Jump's or Back's place in flight. Until they land, the page may still report
+    /// the old position, which must not end Back.
+    private var scrollsInFlight = 0
     /// The Highlights to draw. Setting them draws the change.
     var highlights: [Highlight] {
         didSet { if highlights != oldValue { syncHighlights() } }
@@ -265,7 +268,9 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
             case let position as [Int] where position.count == 2:
                 view.top = .epub(spineIndex: position[0], offset: position[1])
                 if view.isOpen {
-                    view.history.didScroll(to: .epub(spineIndex: position[0], offset: position[1]))
+                    if view.scrollsInFlight == 0 {
+                        view.history.didScroll(to: .epub(spineIndex: position[0], offset: position[1]))
+                    }
                     view.callbacks.onScroll()
                 }
             case "opened" as String:
@@ -317,7 +322,13 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// reports the new position.
     private func go(to place: Place) {
         guard isOpen, let (spineIndex, offset) = place.epubPosition else { return }
-        callPage("return await leaf.scrollToPosition([\(spineIndex), \(offset)])")
+        scrollsInFlight += 1
+        Task {
+            _ = try? await callAsyncJavaScript(
+                "return await leaf.scrollToPosition([\(spineIndex), \(offset)])", in: nil,
+                contentWorld: .defaultClient)
+            scrollsInFlight -= 1
+        }
     }
     func zoomIn() { changeTextSize(to: TextSize.zoomedIn(from: textSize)) }
     func zoomOut() { changeTextSize(to: TextSize.zoomedOut(from: textSize)) }

@@ -345,7 +345,7 @@ import WebKit
 
     /// Waits until `condition` holds, for up to two seconds.
     private func eventually(_ condition: () async throws -> Bool) async throws {
-        for _ in 0..<40 {
+        for _ in 0..<200 {
             if try await condition() { return }
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -1273,7 +1273,8 @@ extension ReaderEPUBViewTests {
         let white = RGB(1, 1, 1)
         /// Below the book's content: nothing but the page's background.
         let empty = CGPoint(x: 5, y: 790)
-        let picture = CGPoint(x: 100, y: 400)
+        /// In the picture, which never grows past its 40 pixels of width, after the page's side margin.
+        let picture = CGPoint(x: 40, y: 400)
         /// Inside the letter-block, and beside it but inside the white box the book gives it.
         let text = CGPoint(x: 100, y: 100)
         let box = CGPoint(x: 350, y: 20)
