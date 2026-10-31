@@ -49,6 +49,8 @@ struct ReaderCallbacks {
     var onSingleTap: () -> Void = {}
     /// Called once, after the Document is first laid out and scrolled to its opening Place.
     var onOpen: () -> Void = {}
+    /// Called when a finger starts dragging the pages to scroll (iOS only).
+    var onDragScroll: () -> Void = {}
     /// Called whenever the viewport scrolls, however it was moved: often, so keep it cheap.
     var onScroll: () -> Void = {}
     /// Called with the anchor of the selection and its text when the reader highlights it.

@@ -539,8 +539,13 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
         private lazy var addNoteMenu = UIEditMenuInteraction(delegate: self)
         fileprivate var notePoint: CGPoint?
 
+        @objc private func panned(_ pan: UIPanGestureRecognizer) {
+            if pan.state == .began { callbacks.onDragScroll() }
+        }
+
         private func observeScrolling() {
             letScrollIndicatorScrub()
+            scrollView?.panGestureRecognizer.addTarget(self, action: #selector(panned))
             scrollObservation = scrollView?
                 .observe(\.contentOffset) { [weak self] _, _ in
                     MainActor.assumeIsolated {

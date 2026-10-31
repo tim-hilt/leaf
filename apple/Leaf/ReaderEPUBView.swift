@@ -243,6 +243,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         #if os(iOS)
             // The text size takes the pinch, not the page's scale.
             scrollView.pinchGestureRecognizer?.isEnabled = false
+            scrollView.panGestureRecognizer.addTarget(self, action: #selector(panned))
             let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched))
             pinch.delegate = self
             addGestureRecognizer(pinch)
@@ -520,6 +521,10 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
 
     #if os(iOS)
         private var sizeBeforePinch = TextSize.normal
+
+        @objc private func panned(_ pan: UIPanGestureRecognizer) {
+            if pan.state == .began { callbacks.onDragScroll() }
+        }
 
         /// Changes the text size; the page doesn't scroll meanwhile: a scroll in progress fights
         /// the page keeping its place and leaves the old size on screen until the next scroll.

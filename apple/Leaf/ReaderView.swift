@@ -10,9 +10,9 @@ import SwiftUI
 /// loaded. The `TabStrip` under the toolbar isn't part of it: it outlives the Tabs' Readers.
 ///
 /// Immersive Mode hides everything but the pages, the Tab strip too. On iOS a
-/// single tap toggles it; on macOS it is the native full screen, with the toolbar
-/// shown on hover.
-/// Scrolling never changes it, nor minimizes the bars, and the Reader always
+/// single tap toggles it and dragging the pages enters it; on macOS it is the
+/// native full screen, with the toolbar shown on hover.
+/// Scrolling never exits it, nor minimizes the bars, and the Reader always
 /// opens with its UI showing. Toggling it leaves the pages where they are.
 ///
 /// Pages are drawn per the Page Style in Settings, and redrawn live when it changes.
@@ -180,7 +180,8 @@ struct ReaderView: View {
             state: tabs.viewState(of: document.id) ?? document.place.map { ReaderViewState(place: $0) },
             contents: contents ?? TableOfContents(), textSize: settings.epubTextSize,
             callbacks: ReaderCallbacks(
-                onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onScroll: { saver?.scrolled() },
+                onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onDragScroll: enterImmersive,
+                onScroll: { saver?.scrolled() },
                 onHighlight: highlight,
                 onHighlightTap: { openMarkup = OpenMarkup(target: .highlight($0.id), point: $1) },
                 onAddNote: addPageNote,
@@ -338,6 +339,12 @@ struct ReaderView: View {
         openMarkup = nil
         pageNotes.removeAll { $0.id == note.id }
         Task { await library.removePageNote(note, from: document) }
+    }
+
+    private func enterImmersive() {
+        #if os(iOS)
+            isImmersive = true
+        #endif
     }
 
     private func toggleImmersive() {
