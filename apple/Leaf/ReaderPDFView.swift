@@ -615,6 +615,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
 
         // Recognizers hold their delegate weakly.
         private var singleTapFilter: SingleTapFilter?
+        private weak var singleTapRecognizer: UITapGestureRecognizer?
 
         private var scrollObservation: NSKeyValueObservation?
 
@@ -633,7 +634,11 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
 
         private func observeScrolling() {
             letScrollIndicatorScrub()
-            scrollView?.panGestureRecognizer.addTarget(self, action: #selector(panned))
+            if let pan = scrollView?.panGestureRecognizer {
+                pan.addTarget(self, action: #selector(panned))
+                // A drag too short to leave a tap's slop must not also toggle Immersive Mode back.
+                singleTapRecognizer?.require(toFail: pan)
+            }
             scrollObservation = scrollView?
                 .observe(\.contentOffset) { [weak self] _, _ in
                     MainActor.assumeIsolated {
@@ -756,6 +761,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
             singleTap.require(toFail: longPress)
             singleTap.delegate = filter
             addGestureRecognizer(singleTap)
+            singleTapRecognizer = singleTap
             addInteraction(addNoteMenu)
             NotificationCenter.default.addObserver(
                 self, selector: #selector(selectionDidChange), name: .PDFViewSelectionChanged, object: self)
