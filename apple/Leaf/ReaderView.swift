@@ -102,8 +102,16 @@ struct ReaderView: View {
         }
         .onDisappear { saver?.saveIfMoved() }
         .onChange(of: scenePhase) { if scenePhase == .background { saver?.saveIfMoved() } }
-        .navigationTitle(document.title)
+        // Buttons only: no title (it's in the settings info), no bar background.
         .toolbar {
+            if showsToolbarButtons {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Find", systemImage: "magnifyingglass") { handle.view?.presentFind() }
+                        #if os(iOS)
+                            .keyboardShortcut("f", modifiers: .command)
+                        #endif
+                }
+            }
             if let contents = availableContents {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Table of Contents", systemImage: "list.bullet") { isShowingContents = true }
@@ -117,12 +125,6 @@ struct ReaderView: View {
             }
             if showsToolbarButtons {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Find", systemImage: "magnifyingglass") { handle.view?.presentFind() }
-                        #if os(iOS)
-                            .keyboardShortcut("f", modifiers: .command)
-                        #endif
-                }
-                ToolbarItem(placement: .primaryAction) {
                     Button("Page Style", systemImage: "gearshape") { isShowingPageStyle = true }
                         .popover(isPresented: $isShowingPageStyle) { PageStylePopover(document: document) }
                 }
@@ -130,6 +132,7 @@ struct ReaderView: View {
         }
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
             .toolbarVisibility(isImmersive ? .hidden : .automatic, for: .navigationBar)
             .navigationBarNeverMinimizes()
             .statusBarHidden(isImmersive)
@@ -151,6 +154,8 @@ struct ReaderView: View {
             .focusedSceneValue(\.readerColorScheme, colorScheme)
             .focusedSceneValue(\.showTableOfContents, availableContents == nil ? nil : $isShowingContents)
             .windowToolbarFullScreenVisibility(.onHover)
+            .toolbar(removing: .title)
+            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         #endif
     }
 
