@@ -94,14 +94,14 @@ struct ReaderView: View {
         .task {
             guard opened == nil else { return }
             saver = ReadingProgressSaver(library: library, document: document, handle: handle)
+            // Read alongside the File, so the pages first draw with their Markup
+            // rather than drawing it in afterwards. Paper shows until then.
+            async let markup = library.markup(of: document)
             let file = await OpenedDocument.open(
                 document, in: library, appearance: settings.pageAppearance(systemScheme: colorScheme))
+            (highlights, pageNotes) = await markup
             contents = file?.contents
-            // Shown once the File and its Table of Contents are ready, without
-            // waiting for Markup: the Library may be busy writing (the previous
-            // Tab's Reading Progress), and Markup draws in when it arrives.
             opened = file?.document
-            (highlights, pageNotes) = await library.markup(of: document)
         }
         // Markup from another Device shows live. Reading Progress never moves the Reader.
         .onChange(of: library.markupRevision(of: document)) {

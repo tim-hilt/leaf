@@ -36,6 +36,32 @@
 
         private struct ImportFailure: Error {}
 
+        @Test func aTabOpensWithItsMarkup() async throws {
+            // Drawn in the first pass, rather than drawn in after the pages.
+            let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+            let defaults = try #require(UserDefaults(suiteName: root.lastPathComponent))
+            let library = try LibraryModel(
+                root: root, coversFolder: root.appending(path: "covers"), defaults: defaults,
+                credentials: CloudCredentials(defaults: defaults, service: "leaf-test-\(root.lastPathComponent)"),
+                syncIntervals: .standard, inbox: nil)
+            guard case .opened(let document) = await library.import(try writePDF(named: "a.pdf", pageCount: 2))
+            else { throw ImportFailure() }
+            let anchor = Anchor.pdf([PageRects(pageIndex: 0, rects: [CGRect(x: 100, y: 300, width: 400, height: 300)])])
+            _ = try #require(await library.addHighlight(anchor, quotedText: "a", to: document))
+            let tabs = Tabs(defaults: defaults, library: library.documents)
+            tabs.open([document])
+
+            let window = host(library: library, settings: AppSettings(defaults: defaults), tabs: tabs)
+            for _ in 0..<200 {
+                if let reader = subview(ofType: ReaderPDFView.self, in: window) {
+                    #expect(reader.highlights.count == 1)
+                    return
+                }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            Issue.record("The Reader never showed")
+        }
+
         @Test func tabsMixPDFsAndEPUBs() async throws {
             let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
             let defaults = try #require(UserDefaults(suiteName: root.lastPathComponent))

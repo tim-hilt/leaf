@@ -21,6 +21,19 @@ import Testing
         #expect(reader.scaleFactor == reader.scaleFactorForSizeToFit)
     }
 
+    @Test func pagesShowOnlyOnceDrawn() async throws {
+        // Not in stages: blank, Note icons, a blurry preview (iOS), then tile by tile.
+        let reader = try makeReader(size: portrait, openingAt: place)
+        #if os(macOS)
+            // PDFKit draws only on screen.
+            reader.window?.orderFront(nil)
+        #endif
+        #expect(!reader.showsPages)
+        // Well before the cover gives up waiting, after a second.
+        for _ in 0..<30 where !reader.showsPages { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(reader.showsPages)
+    }
+
     @Test func keepsThePlaceWhenResizedAtFitToWidth() throws {
         let reader = try makeReader(size: portrait)
         reader.go(to: place)

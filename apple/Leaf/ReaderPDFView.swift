@@ -7,7 +7,8 @@ import PDFKit
 /// pinch gesture does the pinch zooming, so the content under the fingers
 /// stays put; on iOS a double-tap toggles between fit-to-width and zoomed in,
 /// and a single tap clears the selection or, without one and unless it is on a link, calls `onSingleTap`. It reports when it has opened and
-/// whenever it scrolls, so the Reader can save Reading Progress.
+/// whenever it scrolls, so the Reader can save Reading Progress. Once opened, the
+/// pages show only when those in view are drawn, all at once, Note icons included.
 ///
 /// Highlights are drawn into the pages (`StyledDocument`); a Highlight with a
 /// Note has a Note icon at its end, drawn above the pages at a constant size
@@ -483,6 +484,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
                 go(to: state.place)
                 history = JumpHistory(backPlace: state.backPlace)
             }
+            coverUntilDrawn()
             observeScrolling()
             callbacks.onOpen()
         } else if let viewpoint {
@@ -490,6 +492,100 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
             scaleFactor = range.rescaled(viewpoint.scale, from: viewpoint.range)
             go(to: viewpoint.place)
         }
+    }
+
+    // MARK: Showing the pages only once drawn
+
+    /// Over the pages (and Note icons) while those in view aren't all drawn,
+    /// so they show at once, not in stages.
+    private var cover: PlatformView?
+    private var uncovering: Task<Void, Never>?
+
+    /// Whether the pages show, rather than a cover over them.
+    var showsPages: Bool { cover == nil }
+
+    /// Covers the pages with plain paper until those in view are drawn: PDFKit
+    /// would show them blank, with the Note icons already on top, then (on iOS)
+    /// as a blurry preview, then tile by tile.
+    private func coverUntilDrawn() {
+        let paper = pageAppearance.paper
+        let color = CGColor(srgbRed: paper.r, green: paper.g, blue: paper.b, alpha: 1)
+        #if os(iOS)
+            let blank = UIView()
+            blank.backgroundColor = UIColor(cgColor: color)
+        #else
+            let blank = ClickThroughView()
+            blank.wantsLayer = true
+            blank.layer?.backgroundColor = color
+        #endif
+        cover(with: blank)
+        uncoverOnceDrawn(since: [:])
+    }
+
+    /// Puts `view` over the pages as the cover.
+    private func cover(with view: PlatformView) {
+        view.frame = bounds
+        #if os(iOS)
+            view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            view.isUserInteractionEnabled = false
+        #else
+            view.autoresizingMask = [.width, .height]
+        #endif
+        addSubview(view)
+        cover = view
+    }
+
+    /// Fades the cover out once every tile in view shows a drawing made since
+    /// `before`: PDFKit draws them one after the other.
+    private func uncoverOnceDrawn(since before: [ObjectIdentifier: ObjectIdentifier?]) {
+        guard let cover else { return }
+        uncovering?.cancel()
+        uncovering = Task { [weak self] in
+            // Up to a second, should PDFKit draw differently.
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .milliseconds(16))
+                guard let self, !Task.isCancelled else { return }
+                let tiles = self.shownTiles()
+                if !tiles.isEmpty, tiles.allSatisfy({ $0.value != nil && $0.value != before[$0.key] ?? nil }) {
+                    break
+                }
+            }
+            guard !Task.isCancelled else { return }
+            self?.cover = nil
+            #if os(iOS)
+                UIView.animate(withDuration: 0.2) {
+                    cover.alpha = 0
+                } completion: { _ in
+                    cover.removeFromSuperview()
+                }
+            #else
+                await NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.2
+                    cover.animator().alphaValue = 0
+                }
+                cover.removeFromSuperview()
+            #endif
+        }
+    }
+
+    /// What each of PDFKit's tiles in view shows; nil until it is drawn. Tiles
+    /// are its layers without sublayers, other than plain `CALayer`s; each
+    /// drawing gives them a new surface.
+    private func shownTiles() -> [ObjectIdentifier: ObjectIdentifier?] {
+        let view: CALayer? = layer
+        let pages: CALayer? = documentView?.layer
+        guard let view, let pages else { return [:] }
+        var tiles: [ObjectIdentifier: ObjectIdentifier?] = [:]
+        func collect(_ layer: CALayer) {
+            if type(of: layer) != CALayer.self, layer.sublayers?.isEmpty ?? true,
+                layer.convert(layer.bounds, to: view).intersects(view.bounds)
+            {
+                tiles[ObjectIdentifier(layer)] = layer.contents.map { ObjectIdentifier($0 as AnyObject) }
+            }
+            layer.sublayers?.forEach(collect)
+        }
+        collect(pages)
+        return tiles
     }
 
     #if os(iOS)
@@ -623,54 +719,14 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
             }
         }
 
-        /// The pages as they looked before a restyle, over them until all are redrawn.
-        private var cover: UIView?
-        private var uncovering: Task<Void, Never>?
-
-        /// Restyles under a picture of the pages as they are, which fades out once
-        /// every shown tile is redrawn: PDFKit redraws them one after the other.
+        /// Restyles under a picture of the pages as they are, until all in view are redrawn.
         private func coverPages(while restyle: () -> Void) {
             if cover == nil, window != nil, let picture = snapshotView(afterScreenUpdates: false) {
-                picture.frame = bounds
-                picture.isUserInteractionEnabled = false
-                addSubview(picture)
-                cover = picture
+                cover(with: picture)
             }
             let before = shownTiles()
             restyle()
-            guard let cover else { return }
-            uncovering?.cancel()
-            uncovering = Task { [weak self] in
-                // Up to half a second, should PDFKit draw differently.
-                for _ in 0..<30 {
-                    try? await Task.sleep(for: .milliseconds(16))
-                    guard let self, !Task.isCancelled else { return }
-                    if self.shownTiles().allSatisfy({ before[$0.key] != $0.value }) { break }
-                }
-                guard !Task.isCancelled else { return }
-                self?.cover = nil
-                UIView.animate(withDuration: 0.2) {
-                    cover.alpha = 0
-                } completion: { _ in
-                    cover.removeFromSuperview()
-                }
-            }
-        }
-
-        /// What each of PDFKit's tiles in view shows. Tiles are the drawn layers
-        /// without sublayers; each redraw gives them a new surface.
-        private func shownTiles() -> [ObjectIdentifier: ObjectIdentifier] {
-            var tiles: [ObjectIdentifier: ObjectIdentifier] = [:]
-            func collect(_ layer: CALayer) {
-                if type(of: layer) != CALayer.self, layer.sublayers?.isEmpty ?? true, let contents = layer.contents,
-                    layer.convert(layer.bounds, to: self.layer).intersects(self.layer.bounds)
-                {
-                    tiles[ObjectIdentifier(layer)] = ObjectIdentifier(contents as AnyObject)
-                }
-                layer.sublayers?.forEach(collect)
-            }
-            documentView.map { collect($0.layer) }
-            return tiles
+            uncoverOnceDrawn(since: before)
         }
 
         // The find bar is presented from the first responder.
@@ -797,6 +853,11 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
             zoom(to: range.doubleTapTarget(from: scaleFactor), keeping: tap.location(in: self))
         }
     #else
+        /// A view that clicks pass through, to the pages under it.
+        private final class ClickThroughView: NSView {
+            override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        }
+
         /// PDFView isn't flipped: its top edge is at `bounds.maxY`.
         private var viewportTopLeft: CGPoint { CGPoint(x: 0, y: bounds.maxY) }
 
