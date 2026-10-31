@@ -761,6 +761,15 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
                 self, selector: #selector(selectionDidChange), name: .PDFViewSelectionChanged, object: self)
         }
 
+        /// No side insets: PDFKit fits pages to the width inside the safe area, which
+        /// leaves grey bars beside them in landscape.
+        override var safeAreaInsets: UIEdgeInsets {
+            var insets = super.safeAreaInsets
+            insets.left = 0
+            insets.right = 0
+            return insets
+        }
+
         // UIKit may resize through either property.
         override var bounds: CGRect {
             willSet { sizeWillChange(to: newValue.size, from: bounds.size) }
