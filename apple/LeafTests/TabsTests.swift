@@ -114,31 +114,73 @@ import Testing
         place: Place.pdf(pageIndex: 3, point: CGPoint(x: 0, y: 200)), zoom: 2,
         backPlace: Place.pdf(pageIndex: 1, point: CGPoint(x: 0, y: 700)))
 
+    /// `id`'s Document with Reading Progress at `place`, Last Read `lastRead`.
+    static func doc(_ id: String, at place: Place, lastRead: Date) -> LibraryDocument {
+        LibraryDocument(
+            id: id, file: URL(fileURLWithPath: "/\(id).pdf"),
+            progress: ReadingProgress(place: place, lastRead: lastRead.millisecondsSince1970))
+    }
+
+    let saved = Date(timeIntervalSince1970: 1000)
+
     @Test func aTabKeepsItsViewState() {
         let tabs = makeTabs()
         tabs.open([a, b])
-        tabs.store(state, for: "a")
+        tabs.store(state, for: "a", progressSaved: saved)
         tabs.select("b")
         tabs.select("a")
-        #expect(tabs.viewState(of: "a") == state)
-        #expect(tabs.viewState(of: "b") == nil)
+        #expect(tabs.viewState(of: a) == state)
+        #expect(tabs.viewState(of: b) == nil)
+    }
+
+    @Test func aTabKeepsItsViewStateOverItsOwnReadingProgress() {
+        let tabs = makeTabs()
+        tabs.open([a])
+        tabs.store(state, for: "a", progressSaved: saved)
+        // Saved by this Tab, or still being saved when the Tab shows again.
+        #expect(tabs.viewState(of: Self.doc("a", at: state.place, lastRead: saved)) == state)
+        let older = Place.pdf(pageIndex: 1, point: .zero)
+        #expect(tabs.viewState(of: Self.doc("a", at: older, lastRead: saved - 60)) == state)
+    }
+
+    @Test func newerReadingProgressFromAnotherDeviceMovesATab() {
+        let tabs = makeTabs()
+        tabs.open([a])
+        tabs.store(state, for: "a", progressSaved: saved)
+        let further = Place.pdf(pageIndex: 40, point: .zero)
+        let synced = Self.doc("a", at: further, lastRead: saved + 60)
+        #expect(tabs.viewState(of: synced) == ReaderViewState(place: further, zoom: state.zoom))
+    }
+
+    @Test func aTabThatSavedNoReadingProgressKeepsItsViewState() {
+        let tabs = makeTabs()
+        tabs.open([a])
+        tabs.store(state, for: "a", progressSaved: nil)
+        let synced = Self.doc("a", at: Place.pdf(pageIndex: 40, point: .zero), lastRead: saved)
+        #expect(tabs.viewState(of: synced) == state)
+    }
+
+    @Test func aNewTabOpensAtTheReadingProgress() {
+        let place = Place.pdf(pageIndex: 40, point: .zero)
+        let document = Self.doc("a", at: place, lastRead: saved)
+        #expect(makeTabs().viewState(of: document) == ReaderViewState(place: place))
     }
 
     @Test func aClosedTabForgetsItsViewState() {
         let tabs = makeTabs()
         tabs.open([a, b])
-        tabs.store(state, for: "a")
+        tabs.store(state, for: "a", progressSaved: saved)
         tabs.close("a")
-        tabs.store(state, for: "a")
+        tabs.store(state, for: "a", progressSaved: saved)
         tabs.open([a])
-        #expect(tabs.viewState(of: "a") == nil)
+        #expect(tabs.viewState(of: a) == nil)
     }
 
     @Test func aRestoredTabHasNoViewState() {
         let tabs = makeTabs()
         tabs.open([a, b])
-        tabs.store(state, for: "a")
-        #expect(makeTabs().viewState(of: "a") == nil)
+        tabs.store(state, for: "a", progressSaved: saved)
+        #expect(makeTabs().viewState(of: a) == nil)
     }
 
     // MARK: Select

@@ -31,9 +31,10 @@ import SwiftUI
 ///
 /// Opens at the Tab's place, zoom and Back place if it was shown before (kept
 /// in `Tabs`, in memory), else at the Document's Reading Progress at
-/// fit-to-width, or at page 1. It saves Reading Progress (see `ReadingProgressSaver`) when opened, after scrolling stops,
+/// fit-to-width, or at page 1. Newer Reading Progress from another Device
+/// beats the Tab's place. It saves Reading Progress (see `ReadingProgressSaver`) when opened, after scrolling stops,
 /// when it disappears and when the scene goes to the background. Reading
-/// Progress from another Device never moves it; Markup from another Device
+/// Progress from another Device never moves an open Reader; Markup from another Device
 /// shows up live.
 ///
 /// A trailing toolbar button opens the Table of Contents, in a popover (a sheet
@@ -108,7 +109,9 @@ struct ReaderView: View {
         }
         .onDisappear {
             saver?.saveIfMoved()
-            if let state = handle.view?.viewState { tabs.store(state, for: document.id) }
+            if let state = handle.view?.viewState {
+                tabs.store(state, for: document.id, progressSaved: saver?.lastSaved)
+            }
         }
         .onChange(of: scenePhase) { if scenePhase == .background { saver?.saveIfMoved() } }
         .navigationTitle(document.title)
@@ -178,7 +181,7 @@ struct ReaderView: View {
             appearance: settings.pageAppearance(systemScheme: colorScheme), highlights: highlights,
             pageNotes: pageNotes, pageNoteColor: library.highlightColors[0].tint,
             handle: handle, results: results,
-            state: tabs.viewState(of: document.id) ?? document.place.map { ReaderViewState(place: $0) },
+            state: tabs.viewState(of: document),
             contents: contents ?? TableOfContents(), textSize: settings.epubTextSize,
             callbacks: ReaderCallbacks(
                 onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onDragScroll: enterImmersive,

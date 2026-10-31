@@ -42,10 +42,10 @@ struct LibraryDocument: Identifiable, Hashable {
     /// When the Reader last showed the Document; nil if never.
     var lastRead: Date? { progress.map { Date(milliseconds: $0.lastRead) } }
 
-    /// A Document with no details or progress, Imported at the Unix epoch.
-    init(id: String, file: URL) {
+    /// A Document with no details, Imported at the Unix epoch.
+    init(id: String, file: URL, progress: ReadingProgress? = nil) {
         stored = LeafCore.Document(
-            id: id, path: file.path, format: .pdf, imported: 0, progress: nil,
+            id: id, path: file.path, format: .pdf, imported: 0, progress: progress,
             title: file.deletingPathExtension().lastPathComponent, author: nil, pageCount: nil, percentRead: nil)
     }
 
@@ -149,6 +149,9 @@ private final class ProgressRelay: ImportProgress {
 extension Date {
     /// The core's time: milliseconds since the Unix epoch.
     init(milliseconds: UInt64) { self.init(timeIntervalSince1970: Double(milliseconds) / 1000) }
+
+    /// This time as the core takes it: whole milliseconds since the Unix epoch, none before.
+    var millisecondsSince1970: UInt64 { UInt64(max(0, timeIntervalSince1970 * 1000).rounded()) }
 }
 
 /// The Library as the clients see it: the core's Library folder plus its
@@ -1024,9 +1027,4 @@ extension LeafCore.Library {
         try setDetails(
             id: id, title: details.title, author: details.author, pageCount: UInt32(clamping: details.pageCount))
     }
-}
-
-extension Date {
-    /// This time as the core takes it: whole milliseconds since the Unix epoch, none before.
-    fileprivate var millisecondsSince1970: UInt64 { UInt64(max(0, timeIntervalSince1970 * 1000).rounded()) }
 }

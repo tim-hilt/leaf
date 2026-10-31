@@ -83,14 +83,26 @@ final class Tabs {
         for id in openIDs where !kept.contains(id) { close(id) }
     }
 
-    /// The view state stored for the Tab of `id`; nil for a new Tab and after relaunch.
-    func viewState(of id: String) -> ReaderViewState? { viewStates[id] }
+    /// Where the Reader of `document`'s Tab opens: the view state stored for the
+    /// Tab, else at the Reading Progress. Reading Progress Last Read after the
+    /// Tab last saved it (from another Device) wins, keeping the zoom. Nil if
+    /// there is neither.
+    func viewState(of document: LibraryDocument) -> ReaderViewState? {
+        let progress = document.place.map { ReaderViewState(place: $0) }
+        guard let stored = viewStates[document.id] else { return progress }
+        guard var progress, let lastRead = document.lastRead, let saved = stored.progressSaved,
+            lastRead.millisecondsSince1970 > saved.millisecondsSince1970
+        else { return stored.state }
+        progress.zoom = stored.state.zoom
+        return progress
+    }
 
-    /// Stores the view state of the Tab of `id`, for when it is shown again.
-    /// Nothing if it has no Tab, e.g. when the Reader of a closed Tab disappears.
-    func store(_ state: ReaderViewState, for id: String) {
+    /// Stores the view state of the Tab of `id`, for when it is shown again,
+    /// and when it last saved Reading Progress; nil if never. Nothing if it has
+    /// no Tab, e.g. when the Reader of a closed Tab disappears.
+    func store(_ state: ReaderViewState, for id: String, progressSaved: Date?) {
         guard openIDs.contains(id) else { return }
-        viewStates[id] = state
+        viewStates[id] = (state, progressSaved)
     }
 
     private func step(by offset: Int) {
@@ -98,9 +110,10 @@ final class Tabs {
         self.activeID = openIDs[(index + offset + openIDs.count) % openIDs.count]
     }
 
-    /// Each Tab's place, zoom and Back place while it isn't active. In memory only;
+    /// Each Tab's place, zoom and Back place while it isn't active, and when it
+    /// last saved Reading Progress. In memory only;
     /// not observed, since nothing renders it.
-    @ObservationIgnored private var viewStates: [String: ReaderViewState] = [:]
+    @ObservationIgnored private var viewStates: [String: (state: ReaderViewState, progressSaved: Date?)] = [:]
     @ObservationIgnored private let defaults: UserDefaults
     private static let openName = "tabs.open"
     private static let activeName = "tabs.active"
