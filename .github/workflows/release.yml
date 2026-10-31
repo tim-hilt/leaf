@@ -1,22 +1,32 @@
 name: Release
 
+# Manual only: version and notes come from conventional commits since the last tag (cliff.toml).
 on:
-  push:
-    tags: ["*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   macos:
+    if: github.ref == 'refs/heads/main'
     runs-on: xcode-27
-    env:
-      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # git-cliff needs the history and tags
+      - run: brew install xcodegen git-cliff
+      - name: Determine version and notes
+        run: |
+          TAG=$(git cliff --bumped-version)
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::No feature or fix commits since $TAG, nothing to release"
+            exit 1
+          fi
+          git cliff --unreleased --tag "$TAG" --strip all -o NOTES.md
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
       # Match the local Xcode; the image defaults to 27.0.
       - run: sudo xcode-select -s /Applications/Xcode_27.1.app
-      - run: brew install xcodegen
       # rustup installs the toolchain and targets from rust-toolchain.toml.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -25,8 +35,10 @@ jobs:
       - run: |
           cd apple && xcodebuild -quiet -scheme Leaf -configuration Release \
             -destination 'generic/platform=macOS' -derivedDataPath ../build \
-            MARKETING_VERSION="${TAG#v}" build
+            MARKETING_VERSION="$TAG" build
       - run: ditto -c -k --keepParent build/Build/Products/Release/Leaf.app "Leaf-$TAG-macOS.zip"
-      - run: gh release create "$TAG" --title "$TAG" --generate-notes "Leaf-$TAG-macOS.zip"
+      - run: |
+          gh release create "$TAG" --title "$TAG" --target "$GITHUB_SHA" \
+            --notes-file NOTES.md "Leaf-$TAG-macOS.zip"
         env:
           GH_TOKEN: ${{ github.token }}
