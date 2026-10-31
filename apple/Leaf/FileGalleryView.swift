@@ -48,7 +48,7 @@ struct FileGalleryView: View {
     private var items: [GalleryItem] { [.importCell] + visibleDocuments.map { .document($0.id) } }
 
     @ToolbarContentBuilder private var galleryToolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) { LeafLogo() }
+        ToolbarItem(placement: .navigation) { LeafLogo() }.sharedBackgroundVisibility(.hidden)
         ToolbarItemGroup {
             if let indicator = library.syncIndicator {
                 SyncStatusButton(indicator: indicator, isShowingSettings: $isShowingSettings)
@@ -101,6 +101,8 @@ struct FileGalleryView: View {
                 .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar { galleryToolbar }
+            // The logo stands in for the title, which still names the back button.
+            .toolbar(removing: .title)
             #if os(iOS)
                 .sheet(isPresented: $isShowingSettings) { SettingsSheet() }
             #endif
