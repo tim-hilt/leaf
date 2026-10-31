@@ -7,9 +7,11 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LibraryModel.self) private var library
+    @State private var isEditingColors = false
 
     var body: some View {
         @Bindable var settings = settings
+        let hasCustomColors = library.highlightColors.contains(where: \.isCustom)
         Form {
             Section("Theme") {
                 Picker("Theme", selection: $settings.theme) {
@@ -20,15 +22,26 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
             }
-            Section("Highlight Colors") {
+            Section {
                 HighlightColorGrid(
                     colors: library.highlightColors, selected: library.defaultHighlightColor.tint,
                     onSelect: { color in Task { await library.setDefaultHighlightColor(color) } },
                     onRemove: { color in Task { await library.removeCustomColor(color) } },
+                    isEditing: isEditingColors,
                     trailing: { AddCustomColorButton { color in Task { await library.addCustomColor(color) } } })
+            } header: {
+                HStack {
+                    Text("Highlight Colors")
+                    Spacer()
+                    if hasCustomColors {
+                        Button(isEditingColors ? "Done" : "Edit") { isEditingColors.toggle() }
+                            .textCase(nil)
+                    }
+                }
             }
             CloudBackingSection()
         }
+        .onChange(of: hasCustomColors) { if !hasCustomColors { isEditingColors = false } }
         .formStyle(.grouped)
     }
 }
