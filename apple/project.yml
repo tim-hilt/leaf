@@ -48,7 +48,7 @@ targets:
         GoogleRedirectScheme: $(GOOGLE_REDIRECT_SCHEME)
         MicrosoftClientID: $(MICROSOFT_CLIENT_ID)
         MicrosoftRedirectScheme: $(MICROSOFT_REDIRECT_SCHEME)
-        # One window per Device, all Tabs in it (docs/adr/0018); iPadOS gets one scene.
+        # One window per Device (docs/adr/0018); iPadOS gets one scene.
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
     settings:

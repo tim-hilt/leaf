@@ -3,7 +3,7 @@ import PDFKit
 import SwiftUI
 
 /// PDFKit's native viewer, laid out as one vertical, continuously scrolling
-/// column. Opens as `state` if there is one, else at page 1 at fit-to-width; see
+/// column. Opens at `place` if there is one, else at page 1 at fit-to-width; see
 /// `ReaderPDFView` for zooming, keeping your place, taps and scrolling.
 struct ReaderPDFContent {
     let document: StyledDocument
@@ -15,7 +15,7 @@ struct ReaderPDFContent {
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
         view.autoScales = true
-        if let state = inputs.state { view.open(from: state) }
+        if let place = inputs.place { view.open(at: place) }
         view.document = document
         view.pageAppearance = inputs.appearance
         view.highlights = inputs.highlights

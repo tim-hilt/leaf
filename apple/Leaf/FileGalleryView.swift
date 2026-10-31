@@ -5,26 +5,26 @@ import UniformTypeIdentifiers
 /// in the toolbar's sort menu, led by a "+" cell that Imports. The window's own
 /// search field (⌘F on Mac and iPad) narrows it to matching Documents; with
 /// none, "No Results" follows the "+" cell. A click or tap opens a Document in the
-/// Reader, in a Tab (see `Tabs`). A "Reader" toolbar button, a square showing
-/// the number of Tabs, returns to them while any are open. The "+" cell and File > Import… (also from the Reader)
+/// Reader, one at a time; it reopens after relaunch. The "+" cell and File > Import… (also from the Reader)
 /// Import PDFs and EPUBs, as do Files dropped onto the Gallery or handed over by other apps
-/// (share sheet, Open With, Dock icon). Every Document of the Files opens in a
-/// Tab, the first one active; a single File already in the Library is reported
+/// (share sheet, Open With, Dock icon). The first Document of the Files
+/// opens; a single File already in the Library is reported
 /// for "+" and drops. A cell's context menu
 /// (long-press, right-click) or VoiceOver action offers "Remove", after
 /// confirmation. A thin bar at the bottom shows "Syncing N of M Documents"
 /// while Files transfer, and a toolbar icon shows how Sync stands while Connected
 /// (see `SyncStatusButton`). A Document
-/// that gets Removed (here or on another Device) has its Tab closed, without a message.
+/// that gets Removed (here or on another Device) closes its Reader, without a message.
 ///
 /// With a keyboard (Mac, iPad), arrow keys move a highlight through the grid,
 /// including the "+" cell; nothing is highlighted until the first press.
 /// Return opens the highlighted cell, ⌘⌫ asks to Remove it, and ↓ in the
 /// search field highlights the first match. Coming back from the Reader
-/// highlights the active Tab's Document, if a highlight was in use.
+/// highlights the Document read, if a highlight was in use.
 struct FileGalleryView: View {
     @Environment(LibraryModel.self) private var library
-    @Environment(Tabs.self) private var tabs
+    /// The Document in the Reader; nil while the Gallery shows.
+    @SceneStorage("openDocument") private var openID: String?
     @State private var isImporting = false
     @State private var isDropTargeted = false
     @State private var isShowingSettings = false
@@ -50,14 +50,6 @@ struct FileGalleryView: View {
     @ToolbarContentBuilder private var galleryToolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) { LeafLogo() }
         ToolbarItemGroup {
-            if tabs.activeID != nil {
-                let count = tabs.openIDs.count
-                // SF Symbols has numbered squares up to 50.
-                Button("Reader", systemImage: count <= 50 ? "\(count).square" : "square.stack") {
-                    tabs.showReader()
-                }
-                .accessibilityValue("\(count) Tabs")
-            }
             if let indicator = library.syncIndicator {
                 SyncStatusButton(indicator: indicator, isShowingSettings: $isShowingSettings)
             }
@@ -74,7 +66,7 @@ struct FileGalleryView: View {
                 ScrollView { grid }
                     // Only the Gallery takes drops, not the Reader on top of it.
                     .onDrop(
-                        of: tabs.isShowingReader ? [] : ImportableTypes.all, isTargeted: $isDropTargeted, perform: drop
+                        of: isShowingReader ? [] : ImportableTypes.all, isTargeted: $isDropTargeted, perform: drop
                     )
                     .overlay {
                         if isDropTargeted { Rectangle().strokeBorder(.tint, lineWidth: 4).allowsHitTesting(false) }
@@ -102,13 +94,8 @@ struct FileGalleryView: View {
             .searchFocused($isSearchFocused)
             .navigationTitle("Leaf")
             .navigationDestination(isPresented: showsReader) {
-                // A new Reader per Tab, so that nothing of the previous one carries over.
-                if let document = activeDocument {
-                    ReaderView(document: document).id(document.id)
-                        // Outside the per-Tab Reader, so switching Tabs doesn't rebuild the strip.
-                        // Not a stack sibling: toggling it must not move the pages.
-                        .readerTabStrip()
-                }
+                // A new Reader per Document, so that nothing of the previous one carries over.
+                if let document = openDocument { ReaderView(document: document).id(document.id) }
             }
             #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
@@ -125,13 +112,12 @@ struct FileGalleryView: View {
         .onKeyPress(keys: [.return, .delete], phases: .down) { press in
             handleAction(press) ? .handled : .ignored
         }
-        .onChange(of: tabs.isShowingReader) { _, isShowingReader in
-            guard !isShowingReader else { return }
-            if highlighted != nil, let active = tabs.activeID { highlighted = .document(active) }
+        .onChange(of: openID) { closed, opened in
+            guard opened == nil else { return }
+            if highlighted != nil, let closed { highlighted = .document(closed) }
             isGridFocused = true
         }
-        .onChange(of: library.documents) { tabs.keep(onlyIn: library.documents) }
-        .focusedSceneValue(\.tabs, tabs)
+        .onChange(of: library.documents) { if openDocument == nil { openID = nil } }
         .disabled(library.runningImport != nil)
         .focusedSceneValue(\.isImporting, library.runningImport == nil ? $isImporting : nil)
         .overlay {
@@ -155,7 +141,7 @@ struct FileGalleryView: View {
                 await importFiles(urls, from: .openWithOrShare)
             }
         }
-        .modifier(GalleryAlerts(rejection: $rejection, duplicate: $duplicate, removal: $removal))
+        .modifier(GalleryAlerts(openID: $openID, rejection: $rejection, duplicate: $duplicate, removal: $removal))
     }
 
     /// The cells, "+" first, and "No Results" when a search matches no Document.
@@ -206,25 +192,26 @@ struct FileGalleryView: View {
     private func open(_ item: GalleryItem) {
         switch item {
         case .importCell: isImporting = true
-        case .document(let id):
-            if let document = visibleDocuments.first(where: { $0.id == id }) { tabs.open([document]) }
+        case .document(let id): openID = id
         }
     }
 
-    /// The Document of the active Tab.
-    private var activeDocument: LibraryDocument? {
-        library.documents.first { $0.id == tabs.activeID }
+    /// The Document in the Reader; nil while the Gallery shows.
+    private var openDocument: LibraryDocument? {
+        library.documents.first { $0.id == openID }
     }
+
+    private var isShowingReader: Bool { openDocument != nil }
 
     /// Whether the Reader is pushed; the back chevron and edge swipe Go to Gallery.
     private var showsReader: Binding<Bool> {
-        Binding(get: { tabs.isShowingReader }, set: { if !$0 { tabs.goToGallery() } })
+        Binding(get: { isShowingReader }, set: { if !$0 { openID = nil } })
     }
 
     /// Moves the highlight; from the search field, ↓ highlights the first
     /// match and hands the keyboard to the grid. False if the key isn't ours.
     private func handleArrow(_ arrow: GridHighlight.Arrow) -> Bool {
-        guard !tabs.isShowingReader else { return false }
+        guard !isShowingReader else { return false }
         if isSearchFocused {
             guard arrow == .down, let first = visibleDocuments.first else { return false }
             highlighted = .document(first.id)
@@ -239,7 +226,7 @@ struct FileGalleryView: View {
 
     /// Return opens the highlighted cell; ⌘⌫ asks to Remove its Document.
     private func handleAction(_ press: KeyPress) -> Bool {
-        guard !tabs.isShowingReader, !isSearchFocused, let highlighted else { return false }
+        guard !isShowingReader, !isSearchFocused, let highlighted else { return false }
         switch press.key {
         case .return:
             open(highlighted)
@@ -279,11 +266,13 @@ struct FileGalleryView: View {
     private func importFiles(_ urls: [URL], from origin: ImportOrigin) async {
         let result = await library.importFiles(urls, from: origin)
         switch result {
-        case .open(let documents, let problems):
-            tabs.open(documents)
+        case .open(let document, let problems):
+            openID = document.id
             rejection = ImportAlert(problems)
         case .alreadyInLibrary(let document): duplicate = document
-        case .problems(let problems): rejection = ImportAlert(problems)
+        case .problems(let problems):
+            openID = nil
+            rejection = ImportAlert(problems)
         }
     }
 }
@@ -300,7 +289,7 @@ private struct LeafLogo: View {
 
 private struct GalleryAlerts: ViewModifier {
     @Environment(LibraryModel.self) private var library
-    @Environment(Tabs.self) private var tabs
+    @Binding var openID: String?
     @Binding var rejection: ImportAlert?
     @Binding var duplicate: LibraryDocument?
     @Binding var removal: LibraryDocument?
@@ -322,7 +311,7 @@ private struct GalleryAlerts: ViewModifier {
             }
             .alert("Already in your Library", isPresented: Binding(isPresenting: $duplicate), presenting: duplicate) {
                 existing in
-                Button("Open") { tabs.open([existing]) }
+                Button("Open") { openID = existing.id }
                 Button("Cancel", role: .cancel) {}
             } message: { existing in
                 Text("“\(existing.title)” is already in your Library, so nothing was copied.")

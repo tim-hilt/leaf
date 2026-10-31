@@ -139,9 +139,6 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// Nil before any Jump and after Back.
     var backPlace: Place? { history.backPlace }
 
-    /// The Back place to reopen with, reported once the book is open.
-    private let restoredBackPlace: Place?
-
     /// The position at the top of the viewport, as last reported; nil until opened.
     private var top: Place?
     private var isOpen = false
@@ -201,11 +198,10 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         }
     }
 
-    /// Opens `book` at the place of `state`, else at its start, with the Back place
-    /// of `state`, at `textSize` in `appearance`, and registers as the `handle`'s view.
+    /// Opens `book` at `place`, else at its start, at `textSize` in `appearance`, and registers as the `handle`'s view.
     /// Document Search lists its matches in `results`. Draws `highlights`.
     init(
-        book: EpubBook, state: ReaderViewState?, contents: TableOfContents, textSize: CGFloat,
+        book: EpubBook, place: Place?, contents: TableOfContents, textSize: CGFloat,
         appearance: PageAppearance, highlights: [Highlight] = [], handle: ReaderHandle,
         results: SearchResults = SearchResults(), callbacks: ReaderCallbacks
     ) {
@@ -213,7 +209,6 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         self.highlights = highlights
         self.results = results
         self.contents = contents
-        restoredBackPlace = state?.backPlace
         self.callbacks = callbacks
         self.textSize = textSize
         pageTextSize = textSize
@@ -228,7 +223,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         let messages = Messages()
         configuration.userContentController.add(messages, contentWorld: .defaultClient, name: ReaderEPUBScript.channel)
         var start: (chapter: Int, offset: Int)?
-        if let position = state?.place.epubPosition { start = (position.spineIndex, position.offset) }
+        if let position = place?.epubPosition { start = (position.spineIndex, position.offset) }
         configuration.userContentController.addUserScript(
             WKUserScript(
                 source: ReaderEPUBScript.source(
@@ -275,7 +270,6 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
                 }
             case "opened" as String:
                 view.isOpen = true
-                view.history = JumpHistory(backPlace: view.restoredBackPlace)
                 view.syncTextSize()
                 view.syncAppearance()
                 view.syncHighlights()
@@ -305,7 +299,6 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     // MARK: ReaderDocumentView
 
     var topOfViewport: Place? { top }
-    var viewState: ReaderViewState? { top.map { ReaderViewState(place: $0, backPlace: backPlace) } }
 
     /// Jump: goes to `place`, remembering the top of the viewport for `goBack()` in
     /// place of any earlier Back place. Does nothing if `place` is already at the top.

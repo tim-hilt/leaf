@@ -5,11 +5,9 @@ import SwiftUI
 /// scrolling vertical column, titled with the Document's Title. Whatever the
 /// Document's Format, the Reader only knows its document view through
 /// `ReaderDocumentView` and its positions as a `Place`. Must be pushed onto a
-/// `NavigationStack`, which provides the back chevron and iOS edge swipe. The
-/// window makes a new one for each Tab, so only the active Tab's Document is
-/// loaded. The `TabStrip` under the toolbar isn't part of it: it outlives the Tabs' Readers.
+/// `NavigationStack`, which provides the back chevron and iOS edge swipe.
 ///
-/// Immersive Mode hides everything but the pages, the Tab strip too. On iOS a
+/// Immersive Mode hides everything but the pages. On iOS a
 /// single tap toggles it and dragging the pages enters it; on macOS it is the
 /// native full screen, with the toolbar shown on hover.
 /// Scrolling never exits it, nor minimizes the bars, and the Reader always
@@ -29,10 +27,7 @@ import SwiftUI
 /// (macOS) or after a long press (iOS). Its popover opens in editing and also has
 /// "Remove Note"; emptying the Note removes it. Page Notes can't be moved.
 ///
-/// Opens at the Tab's place, zoom and Back place if it was shown before (kept
-/// in `Tabs`, in memory), else at the Document's Reading Progress at
-/// fit-to-width, or at page 1. Newer Reading Progress from another Device
-/// beats the Tab's place. It saves Reading Progress (see `ReadingProgressSaver`) when opened, after scrolling stops,
+/// Opens at the Document's Reading Progress at fit-to-width, or at page 1. It saves Reading Progress (see `ReadingProgressSaver`) when opened, after scrolling stops,
 /// when it disappears and when the scene goes to the background. Reading
 /// Progress from another Device never moves an open Reader; Markup from another Device
 /// shows up live.
@@ -58,7 +53,6 @@ struct ReaderView: View {
     let document: LibraryDocument
     @Environment(LibraryModel.self) private var library
     @Environment(AppSettings.self) private var settings
-    @Environment(Tabs.self) private var tabs
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -88,7 +82,6 @@ struct ReaderView: View {
             }
             pages
         }
-        .onChange(of: isImmersive, initial: true) { tabs.isImmersive = isImmersive }
         .animation(.default, value: showsResultsSidebar)
         .sheet(isPresented: $isShowingResults) { SearchResultsSheet(results: results) }
         .task {
@@ -107,12 +100,7 @@ struct ReaderView: View {
         .onChange(of: library.markupRevision(of: document)) {
             Task { (highlights, pageNotes) = await library.markup(of: document) }
         }
-        .onDisappear {
-            saver?.saveIfMoved()
-            if let state = handle.view?.viewState {
-                tabs.store(state, for: document.id, progressSaved: saver?.lastSaved)
-            }
-        }
+        .onDisappear { saver?.saveIfMoved() }
         .onChange(of: scenePhase) { if scenePhase == .background { saver?.saveIfMoved() } }
         .navigationTitle(document.title)
         .toolbar {
@@ -181,7 +169,7 @@ struct ReaderView: View {
             appearance: settings.pageAppearance(systemScheme: colorScheme), highlights: highlights,
             pageNotes: pageNotes, pageNoteColor: library.highlightColors[0].tint,
             handle: handle, results: results,
-            state: tabs.viewState(of: document),
+            place: document.place,
             contents: contents ?? TableOfContents(), textSize: settings.epubTextSize,
             callbacks: ReaderCallbacks(
                 onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onDragScroll: enterImmersive,
@@ -406,10 +394,10 @@ private struct BackCapsule: View {
 #if os(macOS)
     /// Invisible button that makes ⌘[ Go to Gallery, as in other macOS apps.
     private struct BackShortcut: View {
-        @Environment(Tabs.self) private var tabs
+        @Environment(\.dismiss) private var dismiss
 
         var body: some View {
-            Button("Back", action: tabs.goToGallery)
+            Button("Back") { dismiss() }
                 .keyboardShortcut("[", modifiers: .command)
                 .opacity(0)
                 .accessibilityHidden(true)

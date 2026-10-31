@@ -9,7 +9,7 @@ struct ReaderEPUBContent {
     @MainActor
     fileprivate func makeEPUBView() -> ReaderEPUBView {
         let view = ReaderEPUBView(
-            book: book, state: inputs.state, contents: inputs.contents, textSize: inputs.textSize,
+            book: book, place: inputs.place, contents: inputs.contents, textSize: inputs.textSize,
             appearance: inputs.appearance, highlights: inputs.highlights, handle: inputs.handle,
             results: inputs.results, callbacks: inputs.callbacks)
         view.pageNotes = inputs.pageNotes

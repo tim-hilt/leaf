@@ -117,12 +117,11 @@ import UniformTypeIdentifiers
 
         let result = await library.importFiles([try writePDF(named: "a.pdf")], from: origin)
 
-        guard case .open(let documents, let problems) = result else {
+        guard case .open(let document, let problems) = result else {
             Issue.record("expected .open, got \(result)")
             return
         }
-        #expect(documents == library.documents)
-        #expect(documents.count == 1)
+        #expect([document] == library.documents)
         #expect(problems.isEmpty)
     }
 
@@ -131,7 +130,7 @@ import UniformTypeIdentifiers
         let library = try openLibrary()
         let source = try writePDF(named: "a.pdf")
         let first = await library.importFiles([source], from: .picker)
-        guard case .open(let opened, _) = first, let existing = opened.first else {
+        guard case .open(let existing, _) = first else {
             Issue.record("expected .open")
             return
         }
@@ -141,8 +140,8 @@ import UniformTypeIdentifiers
         let result = await library.importFiles([renamed], from: origin)
 
         switch (origin, result) {
-        case (.openWithOrShare, .open(let documents, let problems)):
-            #expect(documents == [existing])
+        case (.openWithOrShare, .open(let document, let problems)):
+            #expect(document == existing)
             #expect(problems.isEmpty)
         case (.drop, .alreadyInLibrary(let document)), (.picker, .alreadyInLibrary(let document)):
             #expect(document == existing)
@@ -185,7 +184,7 @@ import UniformTypeIdentifiers
         #expect(message.localizedCaseInsensitiveContains("no such file"))
     }
 
-    @Test func severalFilesOpenTheNewOnesInOrderAndListProblems() async throws {
+    @Test func severalFilesOpenNothingAndListProblems() async throws {
         let library = try openLibrary()
         let good = try writePDF(named: "a.pdf")
         let garbage = try writeFile(named: "notes.pdf", bytes: Data("just some text".utf8))
@@ -193,31 +192,30 @@ import UniformTypeIdentifiers
 
         let result = await library.importFiles([good, garbage, other], from: .drop)
 
-        guard case .open(let documents, let problems) = result else {
-            Issue.record("expected .open, got \(result)")
+        guard case .problems(let problems) = result else {
+            Issue.record("expected .problems, got \(result)")
             return
         }
-        #expect(documents.map(\.title) == ["a", "Other"])
         #expect(problems.map(\.file) == [garbage])
         #expect(library.documents.count == 2)
     }
 
-    @Test func severalNewFilesAllOpenWithoutProblems() async throws {
+    @Test func severalNewFilesAreImportedAndNothingOpens() async throws {
         let library = try openLibrary()
         let files = try (1...3).map { try writePDF(named: "\($0).pdf", metadataTitle: "Book \($0)") }
 
         let result = await library.importFiles(files, from: .picker)
 
-        guard case .open(let documents, let problems) = result else {
-            Issue.record("expected .open, got \(result)")
+        guard case .problems(let problems) = result else {
+            Issue.record("expected .problems, got \(result)")
             return
         }
-        #expect(documents.map(\.title) == ["Book 1", "Book 2", "Book 3"])
+        #expect(library.documents.map(\.title).sorted() == ["Book 1", "Book 2", "Book 3"])
         #expect(problems.isEmpty)
     }
 
     @Test(arguments: [ImportOrigin.openWithOrShare, .drop, .picker])
-    func severalFilesOpenADuplicateInsteadOfSkippingIt(origin: ImportOrigin) async throws {
+    func severalFilesWithADuplicateOpenNothing(origin: ImportOrigin) async throws {
         let library = try openLibrary()
         let existing = try writePDF(named: "a.pdf", metadataTitle: "Existing")
         _ = await library.importFiles([existing], from: .picker)
@@ -227,11 +225,10 @@ import UniformTypeIdentifiers
 
         let result = await library.importFiles([new, duplicate], from: origin)
 
-        guard case .open(let documents, let problems) = result else {
-            Issue.record("expected .open, got \(result)")
+        guard case .problems(let problems) = result else {
+            Issue.record("expected .problems, got \(result)")
             return
         }
-        #expect(documents.map(\.title) == ["New", "Existing"])
         #expect(problems.isEmpty)
         #expect(library.documents.count == 2)
     }
@@ -244,11 +241,11 @@ import UniformTypeIdentifiers
 
         let result = await library.importFiles([garbage, new, missing], from: .openWithOrShare)
 
-        guard case .open(let documents, let problems) = result else {
-            Issue.record("expected .open, got \(result)")
+        guard case .problems(let problems) = result else {
+            Issue.record("expected .problems, got \(result)")
             return
         }
-        #expect(documents.map(\.title) == ["New"])
+        #expect(library.documents.map(\.title) == ["New"])
         #expect(problems.map(\.file) == [garbage, missing])
     }
 
@@ -780,17 +777,16 @@ import UniformTypeIdentifiers
 
         let result = await library.importFiles(urls, from: .picker)
 
-        guard case .open(let documents, let problems) = result else {
-            Issue.record("expected .open, got \(result)")
+        guard case .problems(let problems) = result else {
+            Issue.record("expected .problems, got \(result)")
             return
         }
-        #expect(documents.map(\.format) == [.epub, .pdf])
+        #expect(Set(library.documents.map(\.format)) == [.epub, .pdf])
         #expect(problems.map(\.file.lastPathComponent) == ["bad.epub"])
     }
 
-    @Test func aMixedDropOfAPDFAndAnEPUBImportsBothAndOpensATabForEach() async throws {
+    @Test func aMixedDropOfAPDFAndAnEPUBImportsBoth() async throws {
         let library = try openLibrary()
-        let tabs = Tabs(defaults: UserDefaults(suiteName: UUID().uuidString)!, library: [])
         let dropped = DroppedFiles()
         let providers = [
             NSItemProvider(contentsOf: try writePDF(named: "a.pdf"))!,
@@ -801,14 +797,12 @@ import UniformTypeIdentifiers
         let result = await library.importFiles(urls, from: .drop)
         dropped.removeCopies()
 
-        guard case .open(let documents, let problems) = result else {
-            Issue.record("expected .open, got \(result)")
+        guard case .problems(let problems) = result else {
+            Issue.record("expected .problems, got \(result)")
             return
         }
-        tabs.open(documents)
         #expect(problems.isEmpty)
-        #expect(documents.map(\.format) == [.pdf, .epub])
-        #expect(tabs.openIDs == documents.map(\.id))
+        #expect(library.documents.count == 2)
     }
 
     @Test func searchFindsAnEPUBByItsAuthorAndItSortsLikeAPDF() async throws {

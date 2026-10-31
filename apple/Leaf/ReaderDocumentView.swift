@@ -2,14 +2,12 @@ import CoreGraphics
 import LeafCore
 
 /// What `ReaderView` and the window's commands ask of the view that shows a
-/// Document, whatever its Format. Tabs, Back, the Table of Contents, the find
+/// Document, whatever its Format. Back, the Table of Contents, the find
 /// bar and the popovers depend on this and on `Place`, never on a Format.
 @MainActor
 protocol ReaderDocumentView: AnyObject {
     /// The content at the top of the viewport; nil until there is some.
     var topOfViewport: Place? { get }
-    /// The place, zoom and Back place, to reopen from; nil until laid out.
-    var viewState: ReaderViewState? { get }
 
     /// Jump: goes to `place`, remembering where the viewport was for `goBack()`.
     func jump(to place: Place)

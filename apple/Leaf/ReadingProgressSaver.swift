@@ -19,9 +19,6 @@ final class ReadingProgressSaver {
     private var lastScroll = ContinuousClock.now
     /// The Place saved last; nil before the first save.
     private var saved: Place?
-    /// When the last save was, its Last Read; nil before the first save.
-    private(set) var lastSaved: Date?
-
     /// `quietPeriod` is how long scrolling must stop before `scrolled()` saves.
     init(library: LibraryModel, document: LibraryDocument, handle: ReaderHandle, quietPeriod: Duration = .seconds(1)) {
         self.library = library
@@ -63,7 +60,6 @@ final class ReadingProgressSaver {
         guard let place = handle.view?.topOfViewport, !(unlessUnmoved && place == saved) else { return }
         let now = Date.now
         saved = place
-        lastSaved = now
         let library = library
         let document = document
         Task { await library.saveProgress(place, of: document, at: now) }

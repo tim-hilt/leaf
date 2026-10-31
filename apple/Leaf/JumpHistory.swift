@@ -13,8 +13,6 @@ struct JumpHistory: Equatable {
     /// Where the current Document Search session started; nil outside a session.
     private var searchStart: Place?
 
-    init(backPlace: Place? = nil) { self.backPlace = backPlace }
-
     /// Jump: remembers `top` as the Back place in place of any earlier one.
     /// Returns false, changing nothing, if `place` is already at `top` or there is no top.
     mutating func jump(to place: Place, from top: Place?) -> Bool {

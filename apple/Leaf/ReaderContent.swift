@@ -45,8 +45,8 @@ struct ReaderInputs {
     let pageNoteColor: RGB
     let handle: ReaderHandle
     let results: SearchResults
-    /// How to open; nil opens at the start.
-    let state: ReaderViewState?
+    /// Where to open; nil opens at the start.
+    let place: Place?
     /// The Table of Contents, which names the Back place.
     let contents: TableOfContents
     /// The text size of EPUBs; see `TextSize`.

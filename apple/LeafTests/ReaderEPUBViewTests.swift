@@ -150,10 +150,9 @@ import WebKit
     @Test func openingAtASavedPlaceLandsThereAndReportsIt() async throws {
         let book = try await importedBook(chapters: [paragraphs(20), paragraphs(60), paragraphs(5)])
         let place = Place.epub(spineIndex: 1, offset: try offset(of: "Paragraph 30 ", in: 1, of: book))
-        let reader = try await openReader(book: book, state: ReaderViewState(place: place))
+        let reader = try await openReader(book: book, place: place)
 
         #expect(reader.topOfViewport == place)
-        #expect(reader.viewState?.place == place)
         // The line of the paragraph is at the top of the viewport.
         let top = try await reader.evaluate(
             "document.querySelectorAll('iframe')[1].getBoundingClientRect().top + frame(1).querySelectorAll('p')[30].getBoundingClientRect().top"
@@ -166,7 +165,7 @@ import WebKit
         let book = try await importedBook(chapters: [paragraphs(40)])
         let start = try offset(of: "Paragraph 20 ", in: 0, of: book)
         let place = Place.epub(spineIndex: 0, offset: start + 150)
-        let reader = try await openReader(book: book, state: ReaderViewState(place: place))
+        let reader = try await openReader(book: book, place: place)
 
         guard case .epub(0, let reported)? = reader.topOfViewport else { throw ImportFailed() }
         // Reported is where its line starts: before the place, and on the same line.
@@ -193,11 +192,11 @@ import WebKit
         let first = try await openReader(book: book)
         try await first.scrollAsReader("window.scrollTo(0, 3000)")
         try await Task.sleep(for: .milliseconds(300))
-        let reported = try #require(first.viewState)
+        let reported = try #require(first.topOfViewport)
 
-        let second = try await openReader(book: book, state: reported)
+        let second = try await openReader(book: book, place: reported)
 
-        #expect(second.topOfViewport == reported.place)
+        #expect(second.topOfViewport == reported)
     }
 
     // MARK: Text size
@@ -216,7 +215,7 @@ import WebKit
     @Test func changingTheTextSizeKeepsThePlace() async throws {
         let book = try await importedBook(chapters: [paragraphs(20), paragraphs(60), paragraphs(5)])
         let place = Place.epub(spineIndex: 1, offset: try offset(of: "Paragraph 30 ", in: 1, of: book))
-        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        let reader = try await openReader(book: book, place: place, onScreen: true)
         let height = try await reader.scrollHeight()
 
         for size in [2, 0.75, 1] as [CGFloat] {
@@ -254,7 +253,7 @@ import WebKit
     @Test func aBurstOfTextSizesAsInAPinchEndsAtTheLastAndKeepsThePlace() async throws {
         let book = try await importedBook(chapters: [paragraphs(20), paragraphs(60)])
         let place = Place.epub(spineIndex: 1, offset: try offset(of: "Paragraph 30 ", in: 1, of: book))
-        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        let reader = try await openReader(book: book, place: place, onScreen: true)
 
         for step in 1...30 { reader.textSize = 1 + CGFloat(step) / 30 }
         try await reader.settle()
@@ -310,7 +309,7 @@ import WebKit
     @Test func switchingThePageStyleKeepsThePlace() async throws {
         let book = try await importedBook(chapters: [paragraphs(20), paragraphs(60), paragraphs(5)])
         let place = Place.epub(spineIndex: 1, offset: try offset(of: "Paragraph 30 ", in: 1, of: book))
-        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        let reader = try await openReader(book: book, place: place, onScreen: true)
         let height = try await reader.scrollHeight()
 
         for appearance in [.dark(night), .light, .dark(.default)] as [PageAppearance] {
@@ -404,21 +403,6 @@ import WebKit
         reader.back()
 
         #expect(reported == [.chapter("Start"), .chapter("Middle"), nil])
-    }
-
-    @Test func theBackPlaceSurvivesReopeningAndIsReportedAgain() async throws {
-        let book = try await navigableBook()
-        let first = try await openReader(book: book, onScreen: true, contents: TableOfContents(book))
-        first.jump(to: .epub(spineIndex: 1, offset: 0))
-        try await eventually { first.topOfViewport == .epub(spineIndex: 1, offset: 0) }
-        let state = try #require(first.viewState)
-        var reported: [BackTarget?] = []
-
-        let second = try await openReader(
-            book: book, state: state, contents: TableOfContents(book), onBackChange: { reported.append($0) })
-
-        #expect(second.backPlace == .epub(spineIndex: 0, offset: 0))
-        #expect(reported == [.chapter("Start")])
     }
 
     // MARK: Document Search
@@ -1061,11 +1045,10 @@ extension ReaderEPUBViewTests {
         let book = try await longBook()
         let place = try paragraph(6, of: 9, in: book)
 
-        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        let reader = try await openReader(book: book, place: place, onScreen: true)
 
         try await expectParagraphAtTop(reader, 6, of: 9)
         #expect(reader.topOfViewport == place)
-        #expect(reader.viewState?.place == place)
         // The column has the height of the whole book, not of what is loaded: 12 Chapters of about 3000.
         let height = try await reader.scrollHeight()
         #expect(height > 12 * 1500 && height < 12 * 6000, "\(height)")
@@ -1074,7 +1057,7 @@ extension ReaderEPUBViewTests {
     @Test func theChapterOfThePlaceGrowingAboveItAfterOpeningKeepsThePlace() async throws {
         let book = try await longBook()
         let place = try paragraph(6, of: 9, in: book)
-        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        let reader = try await openReader(book: book, place: place, onScreen: true)
         try await expectParagraphAtTop(reader, 6, of: 9)
 
         // As when its images or fonts arrive late.
@@ -1087,7 +1070,7 @@ extension ReaderEPUBViewTests {
     @Test func aPinnedPlaceGoesBackWhenThePageIsScrolledBackRightAfterItMoved() async throws {
         let book = try await longBook()
         let place = try paragraph(6, of: 9, in: book)
-        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        let reader = try await openReader(book: book, place: place, onScreen: true)
         try await expectParagraphAtTop(reader, 6, of: 9)
 
         // The page moves to keep the place as the Chapter grows (resize observers run before the next
@@ -1106,7 +1089,7 @@ extension ReaderEPUBViewTests {
     @Test func aScrollTheReaderDidntMakeAfterOpeningIsNotTheirPlace() async throws {
         let book = try await longBook()
         let place = try paragraph(6, of: 9, in: book)
-        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        let reader = try await openReader(book: book, place: place, onScreen: true)
 
         // iOS can scroll the page back for a moment to where its own scroll view was.
         _ = try await reader.evaluate("window.scrollTo(0, 0)")
@@ -1119,7 +1102,7 @@ extension ReaderEPUBViewTests {
         let book = try await longBook()
         let place = try paragraph(6, of: 9, in: book)
         let reader = try await openReader(
-            book: book, state: ReaderViewState(place: place), size: CGSize(width: 400, height: 800), onScreen: true)
+            book: book, place: place, size: CGSize(width: 400, height: 800), onScreen: true)
         try await expectParagraphAtTop(reader, 6, of: 9)
 
         let size = CGSize(width: 800, height: 400)
@@ -1195,7 +1178,7 @@ extension ReaderEPUBViewTests {
     @Test func theTextSizeKeepsThePlaceInALongBookAndChaptersLoadedLaterUseIt() async throws {
         let book = try await longBook()
         let place = try paragraph(6, of: 9, in: book)
-        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        let reader = try await openReader(book: book, place: place, onScreen: true)
         try await expectParagraphAtTop(reader, 6, of: 9)
         let height = try await reader.scrollHeight()
 
@@ -1218,7 +1201,7 @@ extension ReaderEPUBViewTests {
     @Test func thePageStyleKeepsThePlaceInALongBookAndChaptersLoadedLaterUseIt() async throws {
         let book = try await longBook()
         let place = try paragraph(6, of: 9, in: book)
-        let reader = try await openReader(book: book, state: ReaderViewState(place: place), onScreen: true)
+        let reader = try await openReader(book: book, place: place, onScreen: true)
         try await expectParagraphAtTop(reader, 6, of: 9)
         try await reader.settle()  // the Chapters around load and are measured
         let height = try await reader.scrollHeight()
@@ -1349,7 +1332,7 @@ extension ReaderEPUBViewTests {
 
         @Test func theBackgroundIsPaperFromTheFirstFrame() async throws {
             let reader = ReaderEPUBView(
-                book: try await book(), state: nil, contents: TableOfContents(), textSize: TextSize.normal,
+                book: try await book(), place: nil, contents: TableOfContents(), textSize: TextSize.normal,
                 appearance: .dark(night),
                 handle: ReaderHandle(), callbacks: ReaderCallbacks())
             reader.frame = CGRect(x: 0, y: 0, width: 400, height: 800)
@@ -1404,7 +1387,7 @@ private func openReader(
 /// A Reader on `book`, once it has opened.
 @MainActor
 private func openReader(
-    book: EpubBook, state: ReaderViewState? = nil, size: CGSize = CGSize(width: 400, height: 800),
+    book: EpubBook, place: Place? = nil, size: CGSize = CGSize(width: 400, height: 800),
     textSize: CGFloat = TextSize.normal, appearance: PageAppearance = .light, onScreen: Bool = false,
     contents: TableOfContents = TableOfContents(), highlights: [Highlight] = [],
     onSingleTap: @escaping () -> Void = {}, onScroll: @escaping () -> Void = {},
@@ -1419,7 +1402,7 @@ private func openReader(
     await withCheckedContinuation { opened in
         var once: CheckedContinuation<Void, Never>? = opened
         reader = ReaderEPUBView(
-            book: book, state: state, contents: contents, textSize: textSize, appearance: appearance,
+            book: book, place: place, contents: contents, textSize: textSize, appearance: appearance,
             highlights: highlights, handle: ReaderHandle(),
             callbacks: ReaderCallbacks(
                 onSingleTap: onSingleTap,

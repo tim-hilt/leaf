@@ -70,7 +70,7 @@ Cloud Backing is off until the user Connects a Cloud Provider in Settings; only 
 - Connecting merges the Device's Library with the one in the cloud; nothing is lost. Files download right away, most recently read first; a Document appears once its File is there.
 - The Library, Reading Progress, Markup and Highlight Colors keep Syncing: a few seconds after a change, on launch and foreground, and every 10 seconds while in the foreground. Importing uploads the File.
 - A Remove wins over concurrent edits and frees the cloud storage. Importing the File again starts fresh.
-- An open Reader keeps its place; new Markup shows up live. A Document Removed elsewhere closes its Tab.
+- An open Reader keeps its place; new Markup shows up live. A Document Removed elsewhere closes its Reader.
 - While Files transfer, the Gallery shows "Syncing 12 of 120 Documents". Settings shows the status; a blocked Sync (access lost, Leaf needs an update) adds a warning icon to the Gallery.
 - Disconnect keeps everything and forgets the credentials. Switching Cloud Provider Disconnects first, after a confirmation.
 
@@ -78,8 +78,8 @@ Cloud Backing is off until the user Connects a Cloud Provider in Settings; only 
 
 Files can also be Imported from outside: the share sheet on iOS and iPadOS, "Open With" and the Dock icon on macOS, and dropping onto the Gallery. Leaf only declares that it opens PDFs and EPUBs (on macOS as an Alternate handler, never the default). There are no extension targets; the in-app import pipeline is reused. A Share Extension would need an App Group for the Library folder, would have two processes writing the Library state, and would lack the progress modal, alerts and Reader.
 
-- Each file opens in a new Tab next to the open ones. A single file already in the Library opens its Tab with Open With or Share; "+" and a drop show "Already in your Library" with "Open".
-- Several files are Imported one after another and each opens in a Tab, the first one active. Duplicates open (or switch to) their Tab; rejections are listed in one alert. "+" accepts several files too.
+- The file opens in the Reader. A single file already in the Library opens with Open With or Share; "+" and a drop show "Already in your Library" with "Open".
+- Several files are Imported one after another and none opens; the Gallery shows. Rejections are listed in one alert. "+" accepts several files too.
 - The one window takes the file and closes sheets. A file that arrives during an Import waits its turn.
 - Drops get the system highlight and are accepted on the Gallery only, not in the Reader.
 - PDFs and EPUBs (section 12); MOBI may follow.
@@ -99,19 +99,13 @@ Same Cloud Backing as section 8, other storage, in order:
 
 The icons of the respective providers should be used and shown in the UI
 
-## 11. Tabs
+## 11. One Document at a time
 
-One window on iPhone, iPad and Mac (ADR-0018). The Reader keeps several Documents open as Tabs, in a strip under the toolbar. Tabs are per Device, not synced, and come back after relaunch with the active Tab and whether the Reader or the Gallery was showing.
+One window on iPhone, iPad and Mac (ADR-0018), showing the Gallery or the Reader on one Document. No Tabs.
 
-- Opening a Document from the Gallery adds a Tab at the end, or switches to its Tab. Each Tab shows its Title, truncated, and an (x); the active one is emphasized.
-- The strip shows from 2 Tabs, fits 2–3 on an iPhone in portrait and scrolls sideways beyond that. Immersive Mode hides it.
-- Closing the active Tab shows the one to its right, else its left; closing the last goes to the Gallery. Closing leaves the Document in the Library.
-- Go to Gallery (back chevron, edge swipe) keeps the Tabs; the Gallery's "Reader" button (`book`) returns to the active one while any are open.
-- Only the active Tab is loaded and saves Reading Progress and Last Read. A Tab you come back to keeps its place, zoom and Back capsule (in memory only); a new or restored Tab opens at its Reading Progress at fit-to-width. The find bar and popovers close when switching.
-- ⌘W closes the active Tab (nothing in the Gallery), ⌃Tab and ⌃⇧Tab switch to the next and previous Tab, ⌘1–⌘9 pick a Tab by position. On Mac they sit in the Window menu.
-- A Removed Document closes its Tab silently.
-- VoiceOver announces each Tab's Title and selection, with a Close action.
-- Not included: reordering, "Close Other Tabs", a Tab overview, several windows.
+- Opening a Document always opens it at its Reading Progress at fit-to-width. Go to Gallery (back chevron, edge swipe, ⌘[ on Mac) closes the Reader.
+- The open Document reopens after relaunch, through the system's scene state restoration.
+- A Removed Document closes its Reader silently.
 
 ## 12. EPUB
 

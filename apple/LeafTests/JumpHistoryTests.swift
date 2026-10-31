@@ -44,14 +44,6 @@ import Testing
         #expect(next.backPlace == nil)
     }
 
-    @Test func aRestoredBackPlaceGoesAfterMovingAwayFromWhereTheDocumentOpened() {
-        var history = JumpHistory(backPlace: pdf(1))
-        history.didScroll(to: pdf(10))
-        #expect(history.backPlace == pdf(1))
-        history.didScroll(to: pdf(13))
-        #expect(history.backPlace == nil)
-    }
-
     @Test func aSearchSessionKeepsBackWhileScrolling() {
         var history = JumpHistory()
         history.beginSearchSession(at: pdf(1))

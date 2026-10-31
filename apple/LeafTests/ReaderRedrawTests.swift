@@ -149,11 +149,8 @@
         }
 
         @Test func darkPagesNeverShowLightWhenOpeningPartwayIn() async throws {
-            // What a Tab switch does: reopen from the saved place, zoom and Back place.
-            let state = ReaderViewState(
-                place: Place.pdf(pageIndex: 40, point: CGPoint(x: 0, y: 700)), zoom: 1.5,
-                backPlace: Place.pdf(pageIndex: 3, point: CGPoint(x: 0, y: 500)))
-            let reader = try makeReader(appearance: .dark(.default), pageCount: 60, opening: state)
+            let place = Place.pdf(pageIndex: 40, point: CGPoint(x: 0, y: 700))
+            let reader = try makeReader(appearance: .dark(.default), pageCount: 60, openingAt: place)
             try await expectAlwaysShown(paper, at: CGPoint(x: 200, y: 400), in: reader)
         }
 
@@ -170,7 +167,7 @@
         /// Page Style and Highlights before the view gets it.
         func makeReader(
             appearance: PageAppearance = .light, highlights: [Highlight] = [], pageCount: Int = 2,
-            opening state: ReaderViewState? = nil, interfaceStyle: UIUserInterfaceStyle = .light,
+            openingAt place: Place? = nil, interfaceStyle: UIUserInterfaceStyle = .light,
             size: CGSize = CGSize(width: 400, height: 800)
         ) throws -> ReaderPDFView {
             let document = try #require(StyledDocument(url: writePDF(named: "Redraw.pdf", pageCount: pageCount)))
@@ -179,7 +176,7 @@
             let reader = ReaderPDFView(handle: ReaderHandle())
             reader.displayMode = .singlePageContinuous
             reader.autoScales = true
-            if let state { reader.open(from: state) }
+            if let place { reader.open(at: place) }
             reader.document = document
             reader.highlights = highlights
             // On screen: PDFKit draws differently into windows that aren't.
