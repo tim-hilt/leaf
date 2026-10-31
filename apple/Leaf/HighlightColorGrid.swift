@@ -10,48 +10,66 @@ struct HighlightColorGrid<Trailing: View>: View {
     let onSelect: (HighlightColor) -> Void
     var onRemove: ((HighlightColor) -> Void)?
     var isEditing = false
+    /// Lays the circles out in one horizontally scrollable row showing this many at a time.
+    var scrollingRow: Int?
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 36), spacing: 12)], spacing: 12) {
-            ForEach(colors, id: \.id) { entry in
-                let isSelected = entry.tint == selected
-                let removing = isEditing && entry.isCustom && onRemove != nil
-                Button {
-                    if removing { onRemove?(entry) } else { onSelect(entry) }
-                } label: {
-                    Circle()
-                        .fill(Color(entry.tint))
-                        .frame(width: 32, height: 32)
-                        .overlay {
-                            if isSelected { Image(systemName: "checkmark").foregroundStyle(.black.opacity(0.7)) }
+        if let visible = scrollingRow {
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 12) { circles }
+            }
+            .frame(width: CGFloat(visible) * 32 + CGFloat(visible - 1) * 12)
+        } else {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 36), spacing: 12)], spacing: 12) { circles }
+        }
+    }
+
+    @ViewBuilder private var circles: some View {
+        ForEach(colors, id: \.id) { entry in
+            let isSelected = entry.tint == selected
+            let removing = isEditing && entry.isCustom && onRemove != nil
+            Button {
+                if removing { onRemove?(entry) } else { onSelect(entry) }
+            } label: {
+                Circle()
+                    .fill(Color(entry.tint))
+                    .frame(width: 32, height: 32)
+                    .overlay {
+                        if isSelected {
+                            Image(systemName: "checkmark").foregroundStyle(.black.opacity(0.7))
                         }
-                        .overlay(alignment: .topLeading) {
-                            if removing {
-                                Image(systemName: "minus.circle.fill")
-                                    .symbolRenderingMode(.multicolor)
-                                    .foregroundStyle(.white, .red)
-                                    .offset(x: -4, y: -4)
-                            }
-                        }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(removing ? "Remove \(entry.name)" : entry.name)
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-                .contextMenu {
-                    if entry.isCustom, let onRemove {
-                        Button("Remove", systemImage: "trash", role: .destructive) { onRemove(entry) }
                     }
+                    .overlay(alignment: .topLeading) {
+                        if removing {
+                            Image(systemName: "minus.circle.fill")
+                                .symbolRenderingMode(.multicolor)
+                                .foregroundStyle(.white, .red)
+                                .offset(x: -4, y: -4)
+                        }
+                    }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(removing ? "Remove \(entry.name)" : entry.name)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            .contextMenu {
+                if entry.isCustom, let onRemove {
+                    Button("Remove", systemImage: "trash", role: .destructive) { onRemove(entry) }
                 }
             }
-            trailing
         }
+        trailing
     }
 }
 
 extension HighlightColorGrid where Trailing == EmptyView {
-    init(colors: [HighlightColor], selected: RGB, onSelect: @escaping (HighlightColor) -> Void) {
-        self.init(colors: colors, selected: selected, onSelect: onSelect, trailing: { EmptyView() })
+    init(
+        colors: [HighlightColor], selected: RGB, scrollingRow: Int? = nil,
+        onSelect: @escaping (HighlightColor) -> Void
+    ) {
+        self.init(
+            colors: colors, selected: selected, onSelect: onSelect, scrollingRow: scrollingRow,
+            trailing: { EmptyView() })
     }
 }
 
