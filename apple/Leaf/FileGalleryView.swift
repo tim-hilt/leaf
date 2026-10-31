@@ -184,6 +184,8 @@ struct FileGalleryView: View {
                     .galleryHighlight(highlighted == .document(document.id))
                     .id(GalleryItem.document(document.id))
                     .contextMenu {
+                        DocumentInfoMenuItems(info: DocumentInfo(document))
+                        Divider()
                         Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
                     }
                     .accessibilityLabel(document.accessibilityLabel)

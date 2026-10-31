@@ -1,9 +1,11 @@
 import SwiftUI
 
-/// The Reader's cog popover: Page Style and Page Colors, shared by all Documents and saved.
+/// The Reader's cog popover: Page Style and Page Colors, shared by all Documents and saved,
+/// then what is known about `document`.
 struct PageStylePopover: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
+    let document: LibraryDocument
 
     var body: some View {
         @Bindable var settings = settings
@@ -17,6 +19,8 @@ struct PageStylePopover: View {
                     Text("Dark Page Colors").font(.headline)
                     PageColorsEditor()
                 }
+                Divider()
+                DocumentInfoList(info: DocumentInfo(document))
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)

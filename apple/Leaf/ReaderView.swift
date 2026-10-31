@@ -132,7 +132,7 @@ struct ReaderView: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Page Style", systemImage: "gearshape") { isShowingPageStyle = true }
-                        .popover(isPresented: $isShowingPageStyle) { PageStylePopover() }
+                        .popover(isPresented: $isShowingPageStyle) { PageStylePopover(document: document) }
                 }
             }
         }

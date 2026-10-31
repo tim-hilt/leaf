@@ -33,6 +33,8 @@ struct LibraryDocument: Identifiable, Hashable {
     /// Where the user left off; nil if the Document was never opened.
     private var progress: ReadingProgress? { stored.progress }
 
+    /// When the Document was first Imported.
+    var imported: Date { Date(milliseconds: stored.imported) }
     /// The name the File had when it was Imported.
     var fileName: String { file.lastPathComponent }
     /// Where the user left off, to reopen the Document there.
