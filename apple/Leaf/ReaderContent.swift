@@ -63,7 +63,12 @@ struct ReaderContent: View {
 
     var body: some View {
         switch document {
-        case .pdf(let pdf): ReaderPDFContent(document: pdf, inputs: inputs)
+        case .pdf(let pdf):
+            ReaderPDFContent(document: pdf, inputs: inputs)
+                #if os(iOS)
+                    // Pages run edge to edge in landscape, across the Dynamic Island.
+                    .ignoresSafeArea(.container, edges: .horizontal)
+                #endif
         case .epub(let book): ReaderEPUBContent(book: book, inputs: inputs)
         }
     }

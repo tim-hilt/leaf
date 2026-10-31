@@ -204,7 +204,7 @@ struct ReaderView: View {
                 // While loading, never the system background showing through.
                 Color(settings.pageAppearance(systemScheme: colorScheme).paper)
                     #if os(iOS)
-                        .ignoresSafeArea(.container, edges: [.top, .bottom])
+                        .ignoresSafeArea(.container)
                     #endif
             }
         }
