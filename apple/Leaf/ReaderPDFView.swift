@@ -731,6 +731,8 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
         private func insetBySafeArea() {
             guard let scrollView else { return }
             scrollView.contentInsetAdjustmentBehavior = .never
+            // A status-bar tap must not jump to the Document's start.
+            scrollView.scrollsToTop = false
             let insets = UIEdgeInsets(top: safeAreaInsets.top, left: 0, bottom: safeAreaInsets.bottom, right: 0)
             guard scrollView.contentInset != insets else { return }
             scrollView.contentInset = insets
