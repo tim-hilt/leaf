@@ -18,6 +18,12 @@ Native, cross platform PDF Reader with cloud syncing
 - Keep documentation very lean and precise. No walls of text in this project!
 - Apply the boy scouts rule: Leave the code cleaner than you found it
 - Don't accept flaky tests. Fix them or remove them
+- Commit messages should be short and to the point, so that the messages can appear directly in a changelog
+- Commit messages follow a subset of conventional commits. Prefix the commit message with...
+  - `feature: `, if we're adding a new capability
+  - `feature!: `, if we're introducing a breaking change
+  - `fix: `, if we're fixing wrong behavior
+  - `chore: ` for everything else
 
 ## Rust
 
