@@ -43,8 +43,31 @@ struct DocumentInfo {
     }
 }
 
+extension View {
+    /// A context menu offering "Remove" and showing the Document's info. On
+    /// iOS the info is the preview, as menu items there truncate and grey out;
+    /// macOS shows no previews, so there it's lines in the menu.
+    func documentContextMenu(_ document: LibraryDocument, remove: @escaping () -> Void) -> some View {
+        #if os(macOS)
+            contextMenu {
+                DocumentInfoMenuItems(info: DocumentInfo(document))
+                Divider()
+                Button("Remove", systemImage: "trash", role: .destructive, action: remove)
+            }
+        #else
+            contextMenu {
+                Button("Remove", systemImage: "trash", role: .destructive, action: remove)
+            } preview: {
+                DocumentInfoList(info: DocumentInfo(document))
+                    .padding()
+                    .frame(width: 320)
+            }
+        #endif
+    }
+}
+
 /// `DocumentInfo` as plain lines, for a menu.
-struct DocumentInfoMenuItems: View {
+private struct DocumentInfoMenuItems: View {
     let info: DocumentInfo
 
     var body: some View {

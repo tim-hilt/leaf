@@ -10,8 +10,8 @@ import UniformTypeIdentifiers
 /// (share sheet, Open With, Dock icon). The first Document of the Files
 /// opens; a single File already in the Library is reported
 /// for "+" and drops. A cell's context menu
-/// (long-press, right-click) or VoiceOver action offers "Remove", after
-/// confirmation. A thin bar at the bottom shows "Syncing N of M Documents"
+/// (long-press, right-click) shows its `DocumentInfo`; it or a VoiceOver
+/// action offers "Remove", after confirmation. A thin bar at the bottom shows "Syncing N of M Documents"
 /// while Files transfer, and a toolbar icon shows how Sync stands while Connected
 /// (see `SyncStatusButton`). A Document
 /// that gets Removed (here or on another Device) closes its Reader, without a message.
@@ -171,11 +171,7 @@ struct FileGalleryView: View {
                     }
                     .galleryHighlight(highlighted == .document(document.id))
                     .id(GalleryItem.document(document.id))
-                    .contextMenu {
-                        DocumentInfoMenuItems(info: DocumentInfo(document))
-                        Divider()
-                        Button("Remove", systemImage: "trash", role: .destructive) { removal = document }
-                    }
+                    .documentContextMenu(document) { removal = document }
                     .accessibilityLabel(document.accessibilityLabel)
                     .accessibilityAction(named: "Remove") { removal = document }
                 }
