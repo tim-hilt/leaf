@@ -20,8 +20,7 @@ import SwiftUI
 /// Selecting text and choosing "Highlight" in the selection menu (⌃⌘H on macOS)
 /// adds a Highlight in the default color, stored in the Library, never in the
 /// File. Highlights are drawn into the pages, so Dark Pages reverse them.
-/// Clicking or tapping a Highlight, or its Note icon, opens a popover (a sheet
-/// on iPhone) to recolor it, write its Note or remove it, all stored at once.
+/// Clicking or tapping a Highlight, or its Note icon, opens a popover (on iPhone too) to recolor it, write its Note or remove it, all stored at once.
 ///
 /// A Note can also sit on an empty spot of a page: "Add Note" in the context menu
 /// (macOS) or after a long press (iOS). Its popover opens in editing and also has
@@ -191,6 +190,15 @@ struct ReaderView: View {
         Group {
             if let opened {
                 ReaderContent(document: opened, inputs: inputs)
+                    // Inside `ignoresSafeArea`, so the anchor shares the reader's frame,
+                    // whose coordinates the tap points are in.
+                    .popover(
+                        item: $openMarkup,
+                        attachmentAnchor: .rect(
+                            .rect(CGRect(origin: openMarkup?.point ?? .zero, size: CGSize(width: 1, height: 1))))
+                    ) { open in
+                        popover(for: open)
+                    }
                     #if os(iOS)
                         // Under the bars and the home indicator, so Immersive Mode changes
                         // only the safe area, not the frame, and the pages stay put. Without
@@ -214,13 +222,6 @@ struct ReaderView: View {
             }
         }
         .animation(.default, value: backTarget)
-        .popover(
-            item: $openMarkup,
-            attachmentAnchor: .rect(
-                .rect(CGRect(origin: openMarkup?.point ?? .zero, size: CGSize(width: 1, height: 1))))
-        ) { open in
-            popover(for: open)
-        }
     }
 
     /// The popover of the Highlight or page Note `open`; nothing if it is gone.
@@ -233,7 +234,7 @@ struct ReaderView: View {
                     onColor: { recolor(highlight, to: $0) }, onNote: { setNote($0, of: highlight) },
                     onRemove: { remove(highlight) }
                 )
-                .presentationCompactAdaptation(.sheet)
+                .presentationCompactAdaptation(.popover)
             }
         case .pageNote(let id):
             if let note = pageNotes.first(where: { $0.id == id }) {
@@ -241,7 +242,7 @@ struct ReaderView: View {
                     text: note.text, startsEditing: open.startsEditing, onText: { setText($0, of: note) },
                     onRemove: { remove(note) }
                 )
-                .presentationCompactAdaptation(.sheet)
+                .presentationCompactAdaptation(.popover)
             }
         }
     }
