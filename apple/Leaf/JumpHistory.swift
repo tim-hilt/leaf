@@ -7,6 +7,9 @@ import LeafCore
 struct JumpHistory: Equatable {
     /// The top of the viewport before the latest Jump; nil before any and after Back.
     private(set) var backPlace: Place?
+    /// Where the latest Jump landed, or the first place seen after opening or a
+    /// Document Search reveal; nil until known. Moving far from it ends Back.
+    private var landing: Place?
     /// Where the current Document Search session started; nil outside a session.
     private var searchStart: Place?
 
@@ -17,12 +20,16 @@ struct JumpHistory: Equatable {
     mutating func jump(to place: Place, from top: Place?) -> Bool {
         guard let top, !place.isSameSpot(as: top) else { return false }
         backPlace = top
+        landing = place
         return true
     }
 
     /// Back: the Back place, which is forgotten; nil without one.
     mutating func goBack() -> Place? {
-        defer { backPlace = nil }
+        defer {
+            backPlace = nil
+            landing = nil
+        }
         return backPlace
     }
 
@@ -36,6 +43,24 @@ struct JumpHistory: Equatable {
 
     /// A Document Search match was revealed by moving the viewport.
     mutating func didReveal() {
-        if let searchStart { backPlace = searchStart }
+        if let searchStart {
+            backPlace = searchStart
+            landing = nil
+        }
+    }
+
+    /// The viewport moved to `top`. Back is forgotten once the reader has moved
+    /// on: back at the Back place, or about a page or more from where they
+    /// landed. Does nothing during a Document Search session.
+    mutating func didScroll(to top: Place) {
+        guard let backPlace, searchStart == nil else { return }
+        guard let landing else {
+            landing = top
+            return
+        }
+        if top.isSameSpot(as: backPlace) || top.isFar(from: landing) {
+            self.backPlace = nil
+            self.landing = nil
+        }
     }
 }

@@ -40,7 +40,8 @@ import SwiftUI
 /// on iPhone), unless the Document has none. It shows where the top of the
 /// page is, and choosing an entry is a Jump. After a Jump, a floating capsule
 /// "Back to p. 42" returns to where the reader was; it also shows in Immersive
-/// Mode, where it is the only way back. Following a link in the Document is a
+/// Mode, where it is the only way back. It goes once the reader has moved on:
+/// about a page from where the Jump landed, or back at where it started. Following a link in the Document is a
 /// Jump too, and tapping a link doesn't switch Immersive Mode.
 ///
 /// A trailing toolbar cog opens a popover, on iPhone too, to change Page Style

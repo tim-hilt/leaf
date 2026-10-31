@@ -269,7 +269,10 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
             switch message.body {
             case let position as [Int] where position.count == 2:
                 view.top = .epub(spineIndex: position[0], offset: position[1])
-                if view.isOpen { view.callbacks.onScroll() }
+                if view.isOpen {
+                    view.history.didScroll(to: .epub(spineIndex: position[0], offset: position[1]))
+                    view.callbacks.onScroll()
+                }
             case "opened" as String:
                 view.isOpen = true
                 view.history = JumpHistory(backPlace: view.restoredBackPlace)

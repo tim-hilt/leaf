@@ -260,6 +260,11 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
         go(to: place)
     }
 
+    private func didScrollViewport() {
+        if let top = topOfViewport { history.didScroll(to: top) }
+        callbacks.onScroll()
+    }
+
     /// Back: returns to the Back place at the current zoom and forgets it.
     /// Does nothing without one.
     func goBack() {
@@ -551,7 +556,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
                     MainActor.assumeIsolated {
                         self?.styleBackdrops()
                         self?.noteIcons.refresh()
-                        self?.callbacks.onScroll()
+                        self?.didScrollViewport()
                     }
                 }
         }
@@ -807,7 +812,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
 
         @objc private func didScroll(_ notification: Notification) {
             noteIcons.refresh()
-            callbacks.onScroll()
+            didScrollViewport()
         }
 
         /// Adds "Highlight" to the context menu of a selection, and "Add Note" to

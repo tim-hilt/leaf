@@ -67,4 +67,18 @@ extension Place {
 
     /// Whether this Place comes no earlier than `other`; see `isAtOrBefore`.
     func isAtOrAfter(_ other: Place) -> Bool { other.isAtOrBefore(self) }
+
+    /// Whether this Place is about a page or more from `other`: two PDF pages
+    /// apart, or an EPUB Chapter or some 2000 characters apart. Places of
+    /// different kinds are not.
+    func isFar(from other: Place) -> Bool {
+        switch (self, other) {
+        case (.pdf(let page, _, _), .pdf(let otherPage, _, _)):
+            return abs(Int64(page) - Int64(otherPage)) >= 2
+        case (.epub(let spine, let offset), .epub(let otherSpine, let otherOffset)):
+            return spine != otherSpine || abs(Int64(offset) - Int64(otherOffset)) > 2000
+        default:
+            return false
+        }
+    }
 }
