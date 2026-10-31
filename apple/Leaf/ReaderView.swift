@@ -131,7 +131,8 @@ struct ReaderView: View {
         }
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.hidden, for: .navigationBar)
+            // The bar's background stays: it is the scroll edge effect, which keeps the
+            // glass buttons light over light pages rather than tinted by the text under them.
             .toolbarVisibility(isImmersive ? .hidden : .automatic, for: .navigationBar)
             .navigationBarNeverMinimizes()
             .statusBarHidden(isImmersive)
