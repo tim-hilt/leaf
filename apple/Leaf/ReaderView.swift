@@ -101,15 +101,15 @@ struct ReaderView: View {
         }
         .onDisappear { saver?.saveIfMoved() }
         .onChange(of: scenePhase) { if scenePhase == .background { saver?.saveIfMoved() } }
-        // Buttons only: no title (it's in the settings info), no bar background.
+        // Buttons only: no title (it's in the settings info).
+        // Immersive Mode hides the bar, buttons and all: removing them instead, iOS would morph
+        // their glass across the bar as it fades.
         .toolbar {
-            if showsToolbarButtons {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Find", systemImage: "magnifyingglass") { handle.view?.presentFind() }
-                        #if os(iOS)
-                            .keyboardShortcut("f", modifiers: .command)
-                        #endif
-                }
+            ToolbarItem(placement: .primaryAction) {
+                Button("Find", systemImage: "magnifyingglass") { handle.view?.presentFind() }
+                    #if os(iOS)
+                        .keyboardShortcut("f", modifiers: .command)
+                    #endif
             }
             if let contents = availableContents {
                 ToolbarItem(placement: .primaryAction) {
@@ -122,11 +122,9 @@ struct ReaderView: View {
                         }
                 }
             }
-            if showsToolbarButtons {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Page Style", systemImage: "gearshape") { isShowingPageStyle = true }
-                        .popover(isPresented: $isShowingPageStyle) { PageStylePopover(document: document) }
-                }
+            ToolbarItem(placement: .primaryAction) {
+                Button("Page Style", systemImage: "gearshape") { isShowingPageStyle = true }
+                    .popover(isPresented: $isShowingPageStyle) { PageStylePopover(document: document) }
             }
         }
         #if os(iOS)
@@ -252,19 +250,9 @@ struct ReaderView: View {
     /// and has matches, unless the width is compact, which has a sheet instead.
     private var showsResultsSidebar: Bool { results.isListable && sizeClass != .compact }
 
-    /// Whether the toolbar's buttons are shown. On macOS Immersive Mode is the
-    /// full screen, where the toolbar hides itself.
-    private var showsToolbarButtons: Bool {
-        #if os(iOS)
-            !isImmersive
-        #else
-            true
-        #endif
-    }
-
-    /// The Table of Contents, unless it is empty or Immersive Mode hides it.
+    /// The Table of Contents, unless it is empty.
     private var availableContents: TableOfContents? {
-        guard showsToolbarButtons, let contents, !contents.isEmpty else { return nil }
+        guard let contents, !contents.isEmpty else { return nil }
         return contents
     }
 
