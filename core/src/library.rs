@@ -520,9 +520,10 @@ impl Library {
         }
     }
 
-    /// EPUB `id`, opened for reading; none for a PDF, a Document that isn't in
-    /// the Library, or an EPUB that can't be opened anymore. An `id` that
-    /// isn't a Document ID is `InvalidInput`.
+    /// EPUB `id`, opened for reading, with the character counts stored at Import
+    /// so that they need no scan; none for a PDF, a Document that isn't in the
+    /// Library, or an EPUB that can't be opened anymore. An `id` that isn't a
+    /// Document ID is `InvalidInput`.
     pub fn open_epub(&self, id: &str) -> io::Result<Option<Epub>> {
         let Some(document) = self.document(id)? else {
             return Ok(None);
@@ -530,7 +531,17 @@ impl Library {
         if document.format() != Format::Epub {
             return Ok(None);
         }
-        Ok(Epub::open(&document.path).ok())
+        // Empty, hence ignored by `with_characters`, for a Document without them.
+        let stored = match document.details {
+            Some(Details {
+                size: Size::Characters(items),
+                ..
+            }) => items,
+            _ => Vec::new(),
+        };
+        Ok(Epub::open(&document.path)
+            .ok()
+            .map(|epub| epub.with_characters(stored)))
     }
 
     /// The bytes of the Cover image of EPUB `id`; none for a PDF, a Document
@@ -1854,7 +1865,7 @@ mod tests {
     }
 
     #[test]
-    fn an_opened_epubs_lengths_equal_its_stored_character_counts() {
+    fn an_opened_epubs_lengths_are_its_stored_character_counts_and_no_item_is_scanned() {
         let scratch = Scratch::new();
         let library = scratch.library();
         let bytes = emma()
@@ -1868,7 +1879,10 @@ mod tests {
             panic!("an EPUB is sized in characters");
         };
         assert_eq!(epub.characters(), stored);
+        assert_eq!(epub.scanned_items(), 0);
         assert_eq!(stored, [5, 8]);
+        // What scanning the File gives, which the stored counts must match.
+        assert_eq!(Epub::open(&document.path).unwrap().characters(), stored);
     }
 
     #[test]

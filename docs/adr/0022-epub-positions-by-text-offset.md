@@ -1,6 +1,6 @@
 # EPUB positions are a spine item plus a character offset in the core's text
 
-ADR-0003 anchors Markup and Reading Progress by page and page-space geometry, which reflowable EPUBs lack. Since the core parses EPUBs (ADR-0021), it also defines their text: a position is the index of a spine item plus a character offset into that item's text as the core extracts it. Highlights keep their quoted text as a fallback. Clients map these to and from their web view's selections; the core derives the percentage read from character counts.
+ADR-0003 anchors Markup and Reading Progress by page and page-space geometry, which reflowable EPUBs lack. Since the core parses EPUBs (ADR-0021), it also defines their text: a position is the index of a spine item plus a character offset into that item's text as the core extracts it. Highlights keep their quoted text as a fallback. Clients map these to and from their web view's selections; the core derives the percentage read from character counts. The counts are those stored at Import (`details`), so opening a book scans none of its text; a change to how text is extracted must therefore invalidate the stored details.
 
 ## Considered Options
 

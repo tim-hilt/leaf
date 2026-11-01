@@ -280,6 +280,7 @@ impl EpubBook {
 
     /// The length of each spine item's text in UTF-16 units, in spine order:
     /// the counts positions are measured in (ADR-0022), 0 for an unreadable item.
+    /// Known from the Import, so asking for them parses no spine item.
     pub fn text_lengths(&self) -> Vec<u64> {
         self.0.characters()
     }

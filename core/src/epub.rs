@@ -66,6 +66,9 @@ pub struct Epub {
     /// Its lock is held only to look up or insert, never while inflating or
     /// parsing, so reads on several threads don't wait for each other.
     items: Mutex<HashMap<usize, Option<Arc<Scanned>>>>,
+    /// The character counts given by `with_characters`, which `characters`
+    /// returns instead of scanning.
+    known_characters: Option<Vec<u64>>,
 }
 
 /// What one `scan` of a spine item yields.
@@ -102,7 +105,19 @@ impl Epub {
             zip,
             package,
             items: Mutex::default(),
+            known_characters: None,
         })
+    }
+
+    /// Gives the EPUB the character counts its spine items have, as
+    /// `characters` gives them, so they are not scanned. Ignored unless there is
+    /// one count per spine item, so an empty list means none known. The counts
+    /// must be a scan's: they are trusted, not checked.
+    pub fn with_characters(mut self, characters: Vec<u64>) -> Self {
+        if characters.len() == self.package.spine.len() {
+            self.known_characters = Some(characters);
+        }
+        self
     }
 
     /// The title the EPUB declares, if any.
@@ -375,11 +390,21 @@ impl Epub {
     }
 
     /// The length of the text of each spine item, in characters, in order; 0 for
-    /// one the zip can't read.
+    /// one the zip can't read. The counts given by `with_characters` if any,
+    /// else scanned.
     pub fn characters(&self) -> Vec<u64> {
+        if let Some(known) = &self.known_characters {
+            return known.clone();
+        }
         (0..self.package.spine.len())
             .map(|i| self.item(i).map_or(0, |item| item.text.len() as u64))
             .collect()
+    }
+
+    /// How many spine items have been scanned, for tests of laziness.
+    #[cfg(test)]
+    pub(crate) fn scanned_items(&self) -> usize {
+        self.cached().len()
     }
 }
 
@@ -1141,6 +1166,37 @@ mod tests {
         let book = Book::new("").chapters(&["<p>abc</p><p>de"]);
         // The head's title isn't text; the item breaks at its unclosed `p`.
         assert_eq!(open(&book.bytes()).unwrap().characters(), [5]);
+    }
+
+    #[test]
+    fn known_characters_are_returned_without_scanning_any_item() {
+        let book = Book::new("").chapters(&["<p>Hello</p>", "<p>world</p>"]);
+        let epub = open(&book.bytes()).unwrap().with_characters(vec![5, 5]);
+
+        assert_eq!(epub.characters(), [5, 5]);
+        assert_eq!(epub.scanned_items(), 0);
+        // An item is scanned when its text is asked for, and only then.
+        assert_eq!(epub.text(1).as_deref(), Some("world"));
+        assert_eq!(epub.scanned_items(), 1);
+    }
+
+    #[test]
+    fn known_characters_are_ignored_unless_there_is_one_per_spine_item() {
+        let book = Book::new("").chapters(&["<p>Gr\u{fc}\u{df}e \u{1f600}</p>", "<p>Hello</p>"]);
+        let scanned = open(&book.bytes()).unwrap().characters();
+        assert_eq!(scanned, [8, 5]);
+
+        let known = open(&book.bytes())
+            .unwrap()
+            .with_characters(scanned.clone());
+        assert_eq!(known.characters(), scanned);
+        assert_eq!(known.scanned_items(), 0);
+
+        for wrong in [vec![], vec![1]] {
+            let epub = open(&book.bytes()).unwrap().with_characters(wrong);
+            assert_eq!(epub.characters(), scanned);
+            assert_eq!(epub.scanned_items(), 2);
+        }
     }
 
     #[test]
