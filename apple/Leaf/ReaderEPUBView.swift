@@ -430,9 +430,9 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         callPage("setHighlights", with: drawn)
     }
 
-    /// Calls `leaf.<function>` of the page with `argument` as JSON.
+    /// Calls `leaf.<function>` of the page with `argument` as JSON, null included.
     private func callPage(_ function: String, with argument: Any) {
-        guard let data = try? JSONSerialization.data(withJSONObject: argument),
+        guard let data = try? JSONSerialization.data(withJSONObject: argument, options: .fragmentsAllowed),
             let json = String(data: data, encoding: .utf8)
         else { return }
         callPage("leaf.\(function)(\(json))")
@@ -522,8 +522,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     private func syncAppearance() {
         guard isOpen, pageAppearance != toldAppearance else { return }
         toldAppearance = pageAppearance
-        let script = "leaf.setAppearance(\(ReaderEPUBScript.literal(of: pageAppearance)))"
-        Task { _ = try? await evaluateJavaScript(script, in: nil, contentWorld: .defaultClient) }
+        callPage("setAppearance", with: ReaderEPUBScript.appearance(of: pageAppearance))
     }
 
     #if os(iOS)
