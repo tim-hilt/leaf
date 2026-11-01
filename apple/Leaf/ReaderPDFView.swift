@@ -11,7 +11,7 @@ import PDFKit
 /// pages show only when those in view are drawn, all at once, Note icons included.
 ///
 /// Highlights are drawn into the pages (`StyledDocument`); a Highlight with a
-/// Note has a Note icon at its end, drawn above the pages at a constant size
+/// Note has a Note icon at its end, drawn above the pages and zooming with them
 /// (`NoteIconsView`), which opens the same popover when clicked or tapped. The selection can be
 /// highlighted (`highlightSelection()`, also from the selection menu), which
 /// reports its anchor, and never changes the File. A single click or tap on a
@@ -333,7 +333,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
 
     /// Where the Note icon of `highlight` is, in the view's coordinates: at the
     /// end of its last rectangle, centred on its top-right corner so it covers
-    /// little text, at the same size on screen at any zoom. Nil without a Note.
+    /// little text, zooming with the page. Nil without a Note.
     func noteIconRect(of highlight: Highlight) -> CGRect? {
         guard highlight.note != nil, let last = highlight.anchor.pages.last, let rect = last.cgRects.last,
             let page = document?.page(at: last.page)
@@ -374,7 +374,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
     // MARK: Page Notes
 
     /// Where the Note icon of `note` is, in the view's coordinates: centred on
-    /// its spot, at the same size on screen at any zoom.
+    /// its spot, zooming with the page.
     func noteIconRect(of note: PageNote) -> CGRect? {
         guard let (pageIndex, point) = note.place.pdfPosition, let page = document?.page(at: pageIndex) else {
             return nil
@@ -388,7 +388,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
 
     /// The square of a Note icon centred on `point`, in the view's coordinates.
     private func noteIconRect(around point: CGPoint) -> CGRect {
-        let side = NoteIconsView.size
+        let side = NoteIconsView.size * scaleFactor
         return CGRect(x: point.x - side / 2, y: point.y - side / 2, width: side, height: side)
     }
 
@@ -461,9 +461,6 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
         if minScaleFactor != range.minimum { minScaleFactor = range.minimum }
         if maxScaleFactor != range.maximum { maxScaleFactor = range.maximum }
         zoomRange = range
-        if noteIcons.superview == nil { addSubview(noteIcons) }
-        // It may have been made before the view had a size.
-        noteIcons.frame = bounds
         noteIcons.refresh()
         if !hasOpened {
             hasOpened = true
@@ -643,7 +640,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
                 .observe(\.contentOffset) { [weak self] _, _ in
                     MainActor.assumeIsolated {
                         self?.styleBackdrops()
-                        self?.noteIcons.refresh()
+                        self?.noteIcons.pagesScrolled()
                         self?.didScrollViewport()
                     }
                 }
@@ -700,7 +697,8 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
                 if case .dark(let colors) = pageAppearance {
                     UIColor(red: colors.paper.r, green: colors.paper.g, blue: colors.paper.b, alpha: 1)
                 } else { nil }
-            for pageView in documentView.subviews where pageView.backgroundColor != paper {
+            for pageView in documentView.subviews
+            where !(pageView is NoteIconsView) && pageView.backgroundColor != paper {
                 pageView.backgroundColor = paper
                 // The backdrop: the opaque layer right under the page's own layer.
                 for pageLayer in pageView.layer.sublayers ?? [] {
@@ -874,7 +872,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
         }
 
         @objc private func didScroll(_ notification: Notification) {
-            noteIcons.refresh()
+            noteIcons.pagesScrolled()
             didScrollViewport()
         }
 

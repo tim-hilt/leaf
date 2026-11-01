@@ -512,16 +512,21 @@ import Testing
         #expect(reader.noteIconRect(of: plain) == nil)
     }
 
-    @Test func theNoteIconKeepsItsOnScreenSizeAtAnyZoom() throws {
+    @Test func theNoteIconIsAboutALineOfTextAndZoomsWithThePage() throws {
         let reader = try readerWithText()
         let highlight = noted("a", CGRect(x: 100, y: 690, width: 80, height: 20))
         reader.highlights = [highlight]
         let before = try #require(reader.noteIconRect(of: highlight))
+        let scale = reader.scaleFactor
+        // In page space; larger, it covers the text around it.
+        #expect(before.width / scale <= 12)
 
         reader.zoomIn()
         reader.zoomIn()
 
-        #expect(reader.noteIconRect(of: highlight)?.size == before.size)
+        let after = try #require(reader.noteIconRect(of: highlight))
+        #expect(reader.scaleFactor > scale)
+        #expect(abs(after.width - before.width * reader.scaleFactor / scale) < 0.001)
     }
 
     @Test func reportsTheNoteIconAtAViewPoint() throws {
@@ -533,6 +538,39 @@ import Testing
         #expect(reader.noteIcon(at: CGPoint(x: icon.midX, y: icon.midY))?.id == "a")
         #expect(reader.noteIcon(at: CGPoint(x: icon.maxX + 40, y: icon.midY)) == nil)
     }
+
+    #if os(iOS)
+        /// The Note icon views as they show on screen, in the reader's coordinates.
+        func shownNoteIcons(in reader: ReaderPDFView) throws -> [CGRect] {
+            let icons = try #require(reader.documentView?.subviews.compactMap { $0 as? NoteIconsView }.first)
+            return icons.subviews.map { reader.convert($0.bounds, from: $0) }
+        }
+
+        @Test func noteIconsStayOnTheirHighlightsMidPinch() throws {
+            let reader = try readerWithText()
+            let highlight = noted("a", CGRect(x: 100, y: 690, width: 80, height: 20))
+            reader.highlights = [highlight]
+            let scroll = try #require(reader.subviews.compactMap { $0 as? UIScrollView }.first)
+
+            // As a pinch does, frame by frame.
+            scroll.zoomScale *= 1.5
+
+            let expected = try #require(reader.noteIconRect(of: highlight))
+            let shown = try #require(try shownNoteIcons(in: reader).first)
+            #expect(abs(shown.midX - expected.midX) < 0.5 && abs(shown.midY - expected.midY) < 0.5)
+            #expect(abs(shown.width - expected.width) < 0.5)
+        }
+
+        @Test func noteIconsStayAbovePagesAddedWhileScrolling() throws {
+            let reader = try readerWithText()
+            reader.highlights = [noted("a", CGRect(x: 100, y: 690, width: 80, height: 20))]
+
+            reader.go(to: place)
+
+            #expect(reader.documentView?.subviews.last is NoteIconsView)
+            #expect(try shownNoteIcons(in: reader).count == 1)
+        }
+    #endif
 
     @Test func clickingTheNoteIconReportsItsHighlightForThePopover() throws {
         let reader = try readerWithText()
@@ -578,7 +616,7 @@ import Testing
         #expect(reported == 0)
     }
 
-    @Test func thePageNoteIconIsCentredOnItsSpotAndKeepsItsOnScreenSizeAtAnyZoom() throws {
+    @Test func thePageNoteIconIsCentredOnItsSpotAndZoomsWithThePage() throws {
         let reader = try readerWithText()
         let note = pageNote("a", at: CGPoint(x: 300, y: 400))
         reader.pageNotes = [note]
@@ -588,9 +626,12 @@ import Testing
         let spot = reader.convert(note.place.point, from: page)
         #expect(abs(icon.midX - spot.x) < 0.001 && abs(icon.midY - spot.y) < 0.001)
 
+        let scale = reader.scaleFactor
         reader.zoomIn()
         reader.zoomIn()
-        #expect(reader.noteIconRect(of: note)?.size == icon.size)
+        let after = try #require(reader.noteIconRect(of: note))
+        #expect(reader.scaleFactor > scale)
+        #expect(abs(after.width - icon.width * reader.scaleFactor / scale) < 0.001)
     }
 
     @Test func reportsThePageNoteAtAViewPoint() throws {

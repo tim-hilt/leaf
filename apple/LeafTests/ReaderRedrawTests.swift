@@ -72,7 +72,8 @@
         @Test func noteIconsSetBeforeTheFirstLayoutShow() async throws {
             var noted = highlight()
             noted.note = "a thought"
-            let reader = try makeReader(highlights: [noted])
+            // Wide, so the icon is large enough to read back inside its border.
+            let reader = try makeReader(highlights: [noted], size: CGSize(width: 1200, height: 1600))
             let icon = try #require(reader.noteIconRect(of: noted))
             // The icon's top-left corner, inside its border.
             try await expectShown(.sampleYellow, at: CGPoint(x: icon.minX + 2, y: icon.minY + 2), in: reader)
