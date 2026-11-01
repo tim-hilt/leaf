@@ -23,6 +23,7 @@ import UniformTypeIdentifiers
 /// highlights the Document read, if a highlight was in use.
 struct FileGalleryView: View {
     @Environment(LibraryModel.self) private var library
+    @Environment(CloudBackingModel.self) private var cloud
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
     /// The Document to show in the Reader; nil while the Gallery shows.
@@ -54,7 +55,7 @@ struct FileGalleryView: View {
     @ToolbarContentBuilder private var galleryToolbar: some ToolbarContent {
         ToolbarItem(placement: .navigation) { LeafLogo() }.sharedBackgroundVisibility(.hidden)
         ToolbarItemGroup {
-            if let indicator = library.syncIndicator {
+            if let indicator = cloud.syncIndicator {
                 SyncStatusButton(indicator: indicator, isShowingSettings: $isShowingSettings)
             }
             SortMenu(sort: Bindable(library).sort)
@@ -91,9 +92,9 @@ struct FileGalleryView: View {
             .onScrollPhaseChange { _, phase in scroll.scrollingChanged(isScrolling: phase != .idle) }
             .environment(scroll)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if let transfer = library.transfer { TransferBar(transfer: transfer) }
+                if let transfer = cloud.transfer { TransferBar(transfer: transfer) }
             }
-            .animation(.default, value: library.transfer != nil)
+            .animation(.default, value: cloud.transfer != nil)
             .searchable(text: $searchText)
             .searchFocused($isSearchFocused)
             .navigationTitle("Leaf")
@@ -454,7 +455,7 @@ extension ImportProblem.Failure {
 /// is blocked (access lost, full, update needed) trying again can't help, so it
 /// names the reason and opens Settings instead.
 struct SyncStatusButton: View {
-    @Environment(LibraryModel.self) private var library
+    @Environment(CloudBackingModel.self) private var cloud
     let indicator: SyncIndicator
     @Binding var isShowingSettings: Bool
 
@@ -514,11 +515,11 @@ struct SyncStatusButton: View {
                 if canRetry {
                     Button("Try Again") {
                         isShowingPopover = false
-                        library.foreground()
+                        cloud.foreground()
                     }
                 } else {
-                    if let provider = library.connection?.provider {
-                        Text(library.syncState.line(for: provider)).font(.caption).foregroundStyle(.secondary)
+                    if let provider = cloud.connection?.provider {
+                        Text(cloud.syncState.line(for: provider)).font(.caption).foregroundStyle(.secondary)
                     }
                     settingsButton
                 }

@@ -14,21 +14,12 @@ import UniformTypeIdentifiers
     /// suite per test, so tests don't see each other's sort choice.
     var defaults: UserDefaults { UserDefaults(suiteName: root.lastPathComponent)! }
 
-    /// This device's Cloud Backing credentials: the Keychain item is per test too.
-    var credentials: CloudCredentials {
-        CloudCredentials(defaults: defaults, service: "leaf-test-\(root.lastPathComponent)")
-    }
-
-    /// Opens the Library at `root`, keeping its Covers in `coversFolder`, its
-    /// sort choice in `defaults` and its Cloud Backing credentials in `credentials`.
-    func openLibrary(
-        syncIntervals: SyncIntervals = .standard, inbox: URL? = nil, iCloudDrive: ICloudDrive = .system,
-        cloudCore: CloudCore = .system
-    ) throws -> LibraryModel {
-        try LibraryModel(
-            root: root, coversFolder: coversFolder, defaults: defaults,
-            credentials: credentials, iCloudDrive: iCloudDrive, cloudCore: cloudCore,
-            syncIntervals: syncIntervals, inbox: inbox)
+    /// Opens the Library at `root`, keeping its Covers in `coversFolder` and its
+    /// sort choice in `defaults`.
+    func openLibrary(inbox: URL? = nil) throws -> LibraryModel {
+        LibraryModel(
+            core: try LeafCore.Library.open(root: root.path), coversFolder: coversFolder, defaults: defaults,
+            inbox: inbox)
     }
 
     /// Imports a PDF with the given Title, oldest first when called in sequence.
@@ -1394,6 +1385,30 @@ import UniformTypeIdentifiers
         await library.saveProgress(Place.pdf(pageIndex: 1, point: .zero), of: document, at: lastRead)
 
         #expect(library.documents.first?.accessibilityLabel == "\(document.title), 50 % read")
+    }
+
+    // MARK: Changes from Sync
+
+    @Test func aLibraryChangeFromSyncListsTheDocumentsAgainAndReadsTheirDetails() async throws {
+        // The model shares this core handle: another handle's Import wouldn't show, its catalog is in memory.
+        let core = try LeafCore.Library.open(root: root.path)
+        let library = LibraryModel(core: core, coversFolder: coversFolder, defaults: defaults)
+        _ = try core.import(source: try writePDF(named: "synced.pdf", pageCount: 2).path, progress: NoProgress())
+        #expect(library.documents.isEmpty)
+
+        library.libraryChanged()
+
+        try await waitUntil { library.documents.first?.pageCount == 2 }
+    }
+
+    @Test func aMarkupChangeFromSyncIsANewRevisionOfItsDocument() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        let before = library.markupRevision(of: document)
+
+        library.markupChanged(of: document.id)
+
+        #expect(library.markupRevision(of: document) == before + 1)
     }
 
     /// Waits for the core's listing, which the model asks for off the main

@@ -6,7 +6,7 @@ import SwiftUI
 /// username and password for WebDAV, with one button for the others), see
 /// how Sync stands, Reconnect when access was lost, Disconnect.
 struct CloudBackingSection: View {
-    @Environment(LibraryModel.self) private var library
+    @Environment(CloudBackingModel.self) private var cloud
     @Environment(\.webAuthenticationSession) private var webAuthentication
 
     /// The Cloud Provider picked, but not Connected yet.
@@ -34,7 +34,7 @@ struct CloudBackingSection: View {
                     .tag(CloudProvider?.some(provider))
                 }
             }
-            if let connection = library.connection {
+            if let connection = cloud.connection {
                 LabeledContent {
                     Text(connection.detail)
                 } label: {
@@ -46,10 +46,10 @@ struct CloudBackingSection: View {
                 }
                 LabeledContent(
                     "Status",
-                    value: library.isOnline
-                        ? library.syncState.line(for: connection.provider) : "No internet connection")
-                if library.syncState == .accessLost { reconnect(connection.provider) }
-                Button("Disconnect", role: .destructive) { Task { await library.disconnect() } }
+                    value: cloud.isOnline
+                        ? cloud.syncState.line(for: connection.provider) : "No internet connection")
+                if cloud.syncState == .accessLost { reconnect(connection.provider) }
+                Button("Disconnect", role: .destructive) { Task { await cloud.disconnect() } }
             } else if choosing == .webDAV {
                 form
             } else if choosing == .iCloudDrive {
@@ -58,7 +58,7 @@ struct CloudBackingSection: View {
             } else if let choosing, let service = OAuthSignIn.Service.of(choosing) {
                 errorText
                 Button("Connect") {
-                    attempt { try await library.connectOAuth(choosing, refreshToken: signIn(to: service)) }
+                    attempt { try await cloud.connectOAuth(choosing, refreshToken: signIn(to: service)) }
                 }
                 .disabled(isConnecting)
             }
@@ -68,13 +68,13 @@ struct CloudBackingSection: View {
         }
         .fileDialogMessage("Choose iCloud Drive")
         .confirmationDialog(
-            "Disconnect from \(library.connection?.provider.name ?? "")?",
+            "Disconnect from \(cloud.connection?.provider.name ?? "")?",
             isPresented: Binding(isPresenting: $switchingTo),
             titleVisibility: .visible, presenting: switchingTo
         ) { provider in
             Button("Disconnect and Choose \(provider.name)", role: .destructive) {
                 choosing = provider
-                Task { await library.disconnect() }
+                Task { await cloud.disconnect() }
             }
         } message: { _ in
             Text("Everything stays on this Device.")
@@ -85,16 +85,16 @@ struct CloudBackingSection: View {
     /// another Cloud Provider while Connected Disconnects too, after a confirmation.
     private var provider: Binding<CloudProvider?> {
         Binding(
-            get: { library.connection?.provider ?? choosing },
+            get: { cloud.connection?.provider ?? choosing },
             set: { picked in
                 error = nil
-                guard let connection = library.connection else {
+                guard let connection = cloud.connection else {
                     choosing = picked
                     return
                 }
                 if picked == nil {
                     choosing = nil
-                    Task { await library.disconnect() }
+                    Task { await cloud.disconnect() }
                 } else if picked != connection.provider {
                     switchingTo = picked
                 }
@@ -123,7 +123,7 @@ struct CloudBackingSection: View {
         errorText
         Button("Connect") {
             attempt {
-                try await library.connect(url: url, username: username, password: password)
+                try await cloud.connect(url: url, username: username, password: password)
                 password = ""
             }
         }
@@ -140,7 +140,7 @@ struct CloudBackingSection: View {
             errorText
             Button("Reconnect") {
                 attempt {
-                    try await library.reconnect(password: newPassword)
+                    try await cloud.reconnect(password: newPassword)
                     newPassword = ""
                 }
             }
@@ -151,7 +151,7 @@ struct CloudBackingSection: View {
         case .googleDrive, .oneDrive:
             errorText
             if let service = OAuthSignIn.Service.of(provider) {
-                Button("Reconnect") { attempt { try await library.reconnectOAuth(refreshToken: signIn(to: service)) } }
+                Button("Reconnect") { attempt { try await cloud.reconnectOAuth(refreshToken: signIn(to: service)) } }
                     .disabled(isConnecting)
             }
         }
@@ -175,7 +175,7 @@ struct CloudBackingSection: View {
 
     /// Opens the folder picker, unless iCloud Drive is off: then there is nothing to pick.
     private func pickICloudDrive() {
-        if library.iCloudDriveIsAvailable {
+        if cloud.iCloudDriveIsAvailable {
             error = nil
             isPickingFolder = true
         } else {
@@ -187,7 +187,7 @@ struct CloudBackingSection: View {
     private func connectICloudDrive(_ picked: Result<URL, any Error>) {
         switch picked {
         case .success(let folder):
-            attempt { try await library.connectICloudDrive(granting: folder) }
+            attempt { try await cloud.connectICloudDrive(granting: folder) }
         case .failure(let failure):
             if (failure as? CocoaError)?.code != .userCancelled { error = failure.localizedDescription }
         }

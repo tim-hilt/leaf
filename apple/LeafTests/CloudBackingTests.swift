@@ -9,30 +9,53 @@ import Testing
     import UIKit
 #endif
 
-/// Cloud Backing through `LibraryModel`: two models, each a Device, share a
-/// directory as their cloud.
 /// The Cloud Providers behind OAuth.
 private let oauthProviders: [CloudProvider] = [.googleDrive, .oneDrive]
 
-extension LibraryModelTests {
+/// Cloud Backing through `CloudBackingModel`: each Device is a Library with its
+/// Cloud Backing, sharing one core Library; the Devices share a directory as
+/// their cloud.
+@MainActor @Suite struct CloudBackingTests {
     private static let fast = SyncIntervals(debounceMs: 10, progressMs: 10, pollMs: 30, idlePollMs: 30)
 
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     /// The shared cloud directory of this test.
-    private var cloud: URL { root.deletingLastPathComponent().appending(path: "\(root.lastPathComponent)-cloud") }
+    private var cloudDirectory: URL {
+        root.deletingLastPathComponent().appending(path: "\(root.lastPathComponent)-cloud")
+    }
+    /// This Device's user defaults: one suite per test.
+    private var defaults: UserDefaults { UserDefaults(suiteName: root.lastPathComponent)! }
+    /// This Device's Cloud Backing credentials: the Keychain item is per test too.
+    private var credentials: CloudCredentials {
+        CloudCredentials(defaults: defaults, service: "leaf-test-\(root.lastPathComponent)")
+    }
 
-    /// A second Device with a Library of its own.
-    private func openOtherDevice(
-        iCloudDrive: ICloudDrive = .system, cloudCore: CloudCore = .system
-    ) throws -> LibraryModel {
-        let name = "\(root.lastPathComponent)-other"
+    /// A Device: its Library and its Cloud Backing.
+    private typealias Device = (library: LibraryModel, cloud: CloudBackingModel)
+
+    /// A Device at `root`, with a `suffix` for a second one. Its Library and
+    /// Cloud Backing share one core Library.
+    private func openDevice(
+        _ suffix: String = "", syncIntervals: SyncIntervals = .standard, iCloudDrive: ICloudDrive = .system,
+        cloudCore: CloudCore = .system
+    ) throws -> Device {
+        let name = root.lastPathComponent + suffix
         let parent = root.deletingLastPathComponent()
         let defaults = UserDefaults(suiteName: name)!
-        return try LibraryModel(
-            root: parent.appending(path: name, directoryHint: .isDirectory),
-            coversFolder: parent.appending(path: "\(name)-covers"), defaults: defaults,
-            credentials: CloudCredentials(defaults: defaults, service: "leaf-test-\(name)"),
-            iCloudDrive: iCloudDrive, cloudCore: cloudCore, syncIntervals: Self.fast
-        )
+        let core = try LeafCore.Library.open(root: parent.appending(path: name, directoryHint: .isDirectory).path)
+        let library = LibraryModel(
+            core: core, coversFolder: parent.appending(path: "\(name)-covers"), defaults: defaults)
+        let credentials = CloudCredentials(defaults: defaults, service: "leaf-test-\(name)")
+        let cloud = CloudBackingModel(
+            core: core, library: library, credentials: credentials, iCloudDrive: iCloudDrive, cloudCore: cloudCore,
+            syncIntervals: syncIntervals)
+        return (library, cloud)
+    }
+
+    /// A second Device, which syncs fast.
+    private func openOtherDevice(iCloudDrive: ICloudDrive = .system, cloudCore: CloudCore = .system) throws -> Device {
+        try openDevice("-other", syncIntervals: Self.fast, iCloudDrive: iCloudDrive, cloudCore: cloudCore)
     }
 
     private func ids(_ library: LibraryModel) -> [String] { library.documents.map(\.id) }
@@ -62,105 +85,105 @@ extension LibraryModelTests {
     private struct ImportFailure: Error {}
 
     @Test func cloudBackingIsOffUntilConnected() throws {
-        let library = try openLibrary()
+        let (_, cloud) = try openDevice()
 
-        #expect(library.connection == nil)
+        #expect(cloud.connection == nil)
     }
 
     @Test func anImportOnOneDeviceAppearsOnTheOther() async throws {
-        let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())
-        try await a.connect(directory: cloud)
-        try await b.connect(directory: cloud)
+        let (a, b) = (try openDevice(syncIntervals: Self.fast), try openOtherDevice())
+        try await a.cloud.connect(directory: cloudDirectory)
+        try await b.cloud.connect(directory: cloudDirectory)
 
-        let id = try await importedID(a, titled: "Paper")
+        let id = try await importedID(a.library, titled: "Paper")
 
-        #expect(try await eventually { ids(b) == [id] })
-        #expect(b.documents.first?.fileName.hasSuffix(".pdf") == true)
-        #expect(try await eventually { b.documents.first?.title == "Paper" })
+        #expect(try await eventually { ids(b.library) == [id] })
+        #expect(b.library.documents.first?.fileName.hasSuffix(".pdf") == true)
+        #expect(try await eventually { b.library.documents.first?.title == "Paper" })
     }
 
     @Test func aRemoveOnOneDeviceRemovesTheDocumentOnTheOther() async throws {
-        let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())
-        try await a.connect(directory: cloud)
-        try await b.connect(directory: cloud)
-        let id = try await importedID(a, titled: "Paper")
-        #expect(try await eventually { ids(b) == [id] })
+        let (a, b) = (try openDevice(syncIntervals: Self.fast), try openOtherDevice())
+        try await a.cloud.connect(directory: cloudDirectory)
+        try await b.cloud.connect(directory: cloudDirectory)
+        let id = try await importedID(a.library, titled: "Paper")
+        #expect(try await eventually { ids(b.library) == [id] })
 
-        await a.remove(a.documents[0])
+        await a.library.remove(a.library.documents[0])
 
-        #expect(try await eventually { b.documents.isEmpty })
+        #expect(try await eventually { b.library.documents.isEmpty })
     }
 
     @Test func connectingMergesTheLibrariesOfBothDevices() async throws {
-        let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())
-        let onA = try await importedID(a, titled: "On A")
-        let onB = try await importedID(b, titled: "On B")
+        let (a, b) = (try openDevice(syncIntervals: Self.fast), try openOtherDevice())
+        let onA = try await importedID(a.library, titled: "On A")
+        let onB = try await importedID(b.library, titled: "On B")
 
-        try await a.connect(directory: cloud)
-        try await b.connect(directory: cloud)
+        try await a.cloud.connect(directory: cloudDirectory)
+        try await b.cloud.connect(directory: cloudDirectory)
 
         let both = Set([onA, onB])
-        #expect(try await eventually { Set(ids(a)) == both && Set(ids(b)) == both })
+        #expect(try await eventually { Set(ids(a.library)) == both && Set(ids(b.library)) == both })
     }
 
     @Test func connectingShowsTheCloudProviderAndTheSyncStatus() async throws {
-        let library = try openLibrary(syncIntervals: Self.fast)
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast)
 
-        try await library.connect(directory: cloud)
+        try await cloud.connect(directory: cloudDirectory)
 
-        #expect(library.connection == CloudConnection(provider: .webDAV, detail: cloud.path))
+        #expect(cloud.connection == CloudConnection(provider: .webDAV, detail: cloudDirectory.path))
         #expect(
             try await eventually {
-                if case .synced = library.syncState { true } else { false }
+                if case .synced = cloud.syncState { true } else { false }
             })
     }
 
     @Test func disconnectingStopsSyncingAndKeepsTheLibrary() async throws {
-        let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())
-        try await a.connect(directory: cloud)
-        try await b.connect(directory: cloud)
-        let first = try await importedID(a, titled: "First")
-        #expect(try await eventually { ids(b) == [first] })
+        let (a, b) = (try openDevice(syncIntervals: Self.fast), try openOtherDevice())
+        try await a.cloud.connect(directory: cloudDirectory)
+        try await b.cloud.connect(directory: cloudDirectory)
+        let first = try await importedID(a.library, titled: "First")
+        #expect(try await eventually { ids(b.library) == [first] })
 
-        await b.disconnect()
-        _ = try await importedID(a, titled: "Second")
+        await b.cloud.disconnect()
+        _ = try await importedID(a.library, titled: "Second")
         try await Task.sleep(for: .milliseconds(300))
 
-        #expect(b.connection == nil)
-        #expect(ids(b) == [first])
+        #expect(b.cloud.connection == nil)
+        #expect(ids(b.library) == [first])
     }
 
     @Test func reconnectingSyncsWhatChangedWhileDisconnected() async throws {
-        let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())
-        try await a.connect(directory: cloud)
-        try await b.connect(directory: cloud)
-        await b.disconnect()
-        let onA = try await importedID(a, titled: "On A")
-        let onB = try await importedID(b, titled: "On B")
+        let (a, b) = (try openDevice(syncIntervals: Self.fast), try openOtherDevice())
+        try await a.cloud.connect(directory: cloudDirectory)
+        try await b.cloud.connect(directory: cloudDirectory)
+        await b.cloud.disconnect()
+        let onA = try await importedID(a.library, titled: "On A")
+        let onB = try await importedID(b.library, titled: "On B")
 
-        try await b.connect(directory: cloud)
+        try await b.cloud.connect(directory: cloudDirectory)
 
         let both = Set([onA, onB])
-        #expect(try await eventually { Set(ids(a)) == both && Set(ids(b)) == both })
+        #expect(try await eventually { Set(ids(a.library)) == both && Set(ids(b.library)) == both })
     }
 
     @Test func aConnectionToAnUnreachableServerFailsAndLeavesCloudBackingOff() async throws {
-        let library = try openLibrary()
+        let (_, cloud) = try openDevice()
 
         await #expect(throws: ConnectError.Unreachable) {
-            try await library.connect(url: "https://127.0.0.1:1", username: "reader", password: "secret")
+            try await cloud.connect(url: "https://127.0.0.1:1", username: "reader", password: "secret")
         }
-        #expect(library.connection == nil)
+        #expect(cloud.connection == nil)
         #expect(credentials.load() == nil)
     }
 
     @Test func aURLWithoutHTTPSIsRefusedBeforeAnythingIsSent() async throws {
-        let library = try openLibrary()
+        let (_, cloud) = try openDevice()
 
         await #expect(throws: ConnectError.NotHttps) {
-            try await library.connect(url: "http://example.com", username: "reader", password: "secret")
+            try await cloud.connect(url: "http://example.com", username: "reader", password: "secret")
         }
-        #expect(library.connection == nil)
+        #expect(cloud.connection == nil)
     }
 
     @Test func connectErrorsSayWhatToFix() {
@@ -241,105 +264,106 @@ extension LibraryModelTests {
 
     @Test func connectingToICloudDriveShowsTheFolderAndSyncsThroughIt() async throws {
         let icloud = try fakeICloudDrive()
-        let library = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast, iCloudDrive: icloud.system)
 
-        try await library.connectICloudDrive(granting: icloud.root)
+        try await cloud.connectICloudDrive(granting: icloud.root)
 
-        #expect(library.connection == Self.iCloudConnection)
-        #expect(try await eventually { if case .synced = library.syncState { true } else { false } })
+        #expect(cloud.connection == Self.iCloudConnection)
+        #expect(try await eventually { if case .synced = cloud.syncState { true } else { false } })
         #expect(FileManager.default.fileExists(atPath: icloud.root.appending(path: "Leaf").path))
     }
 
     @Test func anImportOnOneDeviceAppearsOnTheOtherThroughICloudDrive() async throws {
         let icloud = try fakeICloudDrive()
-        let a = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        let a = try openDevice(syncIntervals: Self.fast, iCloudDrive: icloud.system)
         let b = try openOtherDevice(iCloudDrive: icloud.system)
-        try await a.connectICloudDrive(granting: icloud.root)
-        try await b.connectICloudDrive(granting: icloud.root)
+        try await a.cloud.connectICloudDrive(granting: icloud.root)
+        try await b.cloud.connectICloudDrive(granting: icloud.root)
 
-        let id = try await importedID(a, titled: "Paper")
+        let id = try await importedID(a.library, titled: "Paper")
 
-        #expect(try await eventually { ids(b) == [id] })
+        #expect(try await eventually { ids(b.library) == [id] })
     }
 
     @Test func aFolderOtherThanICloudDriveIsRefused() async throws {
         let icloud = try fakeICloudDrive()
-        let library = try openLibrary(iCloudDrive: icloud.system)
+        let (_, cloud) = try openDevice(iCloudDrive: icloud.system)
         let elsewhere = icloud.root.appending(path: "Documents", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
 
         await #expect(throws: ConnectError.WrongFolder) {
-            try await library.connectICloudDrive(granting: elsewhere)
+            try await cloud.connectICloudDrive(granting: elsewhere)
         }
-        #expect(library.connection == nil)
+        #expect(cloud.connection == nil)
         #expect(credentials.load() == nil)
     }
 
     @Test func connectingWhileICloudDriveIsOffAsksToTurnItOn() async throws {
         let icloud = try fakeICloudDrive()
         icloud.isAvailable = false
-        let library = try openLibrary(iCloudDrive: icloud.system)
+        let (_, cloud) = try openDevice(iCloudDrive: icloud.system)
 
         await #expect(throws: ConnectError.ICloudDriveUnavailable) {
-            try await library.connectICloudDrive(granting: icloud.root)
+            try await cloud.connectICloudDrive(granting: icloud.root)
         }
-        #expect(library.connection == nil)
-        #expect(library.iCloudDriveIsAvailable == false)
+        #expect(cloud.connection == nil)
+        #expect(cloud.iCloudDriveIsAvailable == false)
     }
 
     @Test func theGrantSurvivesARelaunchAndIsForgottenOnDisconnect() async throws {
         let icloud = try fakeICloudDrive()
-        let first = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
-        try await first.connectICloudDrive(granting: icloud.root)
-        let id = try await importedID(first, titled: "Paper")
+        let first = try openDevice(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        try await first.cloud.connectICloudDrive(granting: icloud.root)
+        let id = try await importedID(first.library, titled: "Paper")
         let other = try openOtherDevice(iCloudDrive: icloud.system)
-        try await other.connectICloudDrive(granting: icloud.root)
-        #expect(try await eventually { ids(other) == [id] })
+        try await other.cloud.connectICloudDrive(granting: icloud.root)
+        #expect(try await eventually { ids(other.library) == [id] })
 
         // Relaunch.
-        let library = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
-        #expect(library.connection == Self.iCloudConnection)
-        let more = try await importedID(other, titled: "More")
+        let (library, cloud) = try openDevice(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        #expect(cloud.connection == Self.iCloudConnection)
+        let more = try await importedID(other.library, titled: "More")
         #expect(try await eventually { Set(ids(library)) == [id, more] })
 
-        await library.disconnect()
+        await cloud.disconnect()
 
-        #expect(library.connection == nil)
+        #expect(cloud.connection == nil)
         #expect(credentials.load() == nil)
-        #expect(try openLibrary(iCloudDrive: icloud.system).connection == nil)
+        #expect(try openDevice(iCloudDrive: icloud.system).cloud.connection == nil)
     }
 
     @Test func aLostGrantIsAccessLostAndReconnectingGrantsAgain() async throws {
         let icloud = try fakeICloudDrive()
-        let first = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
-        try await first.connectICloudDrive(granting: icloud.root)
+        let first = try openDevice(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        try await first.cloud.connectICloudDrive(granting: icloud.root)
         try FileManager.default.removeItem(at: icloud.root)
 
-        let library = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast, iCloudDrive: icloud.system)
 
-        #expect(library.connection == Self.iCloudConnection)
-        #expect(library.syncState == .accessLost)
-        #expect(library.syncIndicator == .failed(canRetry: false))
+        #expect(cloud.connection == Self.iCloudConnection)
+        #expect(cloud.syncState == .accessLost)
+        #expect(cloud.syncIndicator == .failed(canRetry: false))
         try FileManager.default.createDirectory(at: icloud.root, withIntermediateDirectories: true)
-        try await library.connectICloudDrive(granting: icloud.root)
-        #expect(library.connection == Self.iCloudConnection)
-        #expect(try await eventually { if case .synced = library.syncState { true } else { false } })
-        #expect(try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system).syncState != .accessLost)
+        try await cloud.connectICloudDrive(granting: icloud.root)
+        #expect(cloud.connection == Self.iCloudConnection)
+        #expect(try await eventually { if case .synced = cloud.syncState { true } else { false } })
+        #expect(
+            try openDevice(syncIntervals: Self.fast, iCloudDrive: icloud.system).cloud.syncState != .accessLost)
     }
 
     @Test func iCloudDriveTurnedOffIsAccessLostOnLaunchAndWhenTheAppReturns() async throws {
         let icloud = try fakeICloudDrive()
-        let first = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
-        try await first.connectICloudDrive(granting: icloud.root)
-        #expect(try await eventually { if case .synced = first.syncState { true } else { false } })
+        let first = try openDevice(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        try await first.cloud.connectICloudDrive(granting: icloud.root)
+        #expect(try await eventually { if case .synced = first.cloud.syncState { true } else { false } })
 
         icloud.isAvailable = false
-        first.foreground()
-        #expect(first.syncState == .accessLost)
+        first.cloud.foreground()
+        #expect(first.cloud.syncState == .accessLost)
         try await Task.sleep(for: .milliseconds(200))
-        #expect(first.syncState == .accessLost)
+        #expect(first.cloud.syncState == .accessLost)
 
-        let relaunched = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        let (_, relaunched) = try openDevice(syncIntervals: Self.fast, iCloudDrive: icloud.system)
         #expect(relaunched.connection == Self.iCloudConnection)
         #expect(relaunched.syncState == .accessLost)
 
@@ -353,9 +377,9 @@ extension LibraryModelTests {
         let remote = icloud.root.appending(path: "Leaf/v1", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
         try Data().write(to: remote.appending(path: ".chunk.icloud"))
-        let library = try openLibrary(syncIntervals: Self.fast, iCloudDrive: icloud.system)
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast, iCloudDrive: icloud.system)
 
-        try await library.connectICloudDrive(granting: icloud.root)
+        try await cloud.connectICloudDrive(granting: icloud.root)
 
         #expect(
             try await eventually {
@@ -472,62 +496,62 @@ extension LibraryModelTests {
         CloudConnection(provider: provider, detail: account)
     }
 
-    private func isSynced(_ library: LibraryModel) -> Bool {
-        if case .synced = library.syncState { true } else { false }
+    private func isSynced(_ cloud: CloudBackingModel) -> Bool {
+        if case .synced = cloud.syncState { true } else { false }
     }
 
     @Test(arguments: oauthProviders)
     func connectingShowsTheAccountAndSyncsThroughTheDrive(provider: CloudProvider) async throws {
-        let fake = FakeOAuthDrive(cloud: cloud)
-        let a = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
+        let fake = FakeOAuthDrive(cloud: cloudDirectory)
+        let a = try openDevice(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
         let b = try openOtherDevice(cloudCore: fake.cloudCore)
-        try await a.connectOAuth(provider, refreshToken: "token")
-        try await b.connectOAuth(provider, refreshToken: "token")
+        try await a.cloud.connectOAuth(provider, refreshToken: "token")
+        try await b.cloud.connectOAuth(provider, refreshToken: "token")
 
-        let id = try await importedID(a, titled: "Paper")
+        let id = try await importedID(a.library, titled: "Paper")
 
-        #expect(a.connection == Self.connection(provider))
-        #expect(try await eventually { isSynced(a) })
-        #expect(try await eventually { ids(b) == [id] })
+        #expect(a.cloud.connection == Self.connection(provider))
+        #expect(try await eventually { isSynced(a.cloud) })
+        #expect(try await eventually { ids(b.library) == [id] })
     }
 
     @Test func aDriveThatDoesntTellTheAccountShowsAGenericName() async throws {
-        let fake = FakeOAuthDrive(cloud: cloud)
+        let fake = FakeOAuthDrive(cloud: cloudDirectory)
         fake.account = ""
-        let library = try openLibrary(cloudCore: fake.cloudCore)
+        let (_, cloud) = try openDevice(cloudCore: fake.cloudCore)
 
-        try await library.connectOAuth(.googleDrive, refreshToken: "token")
-        #expect(library.connection == Self.connection(.googleDrive, "Google Account"))
+        try await cloud.connectOAuth(.googleDrive, refreshToken: "token")
+        #expect(cloud.connection == Self.connection(.googleDrive, "Google Account"))
 
-        try await library.connectOAuth(.oneDrive, refreshToken: "token")
-        #expect(library.connection == Self.connection(.oneDrive, "Microsoft Account"))
+        try await cloud.connectOAuth(.oneDrive, refreshToken: "token")
+        #expect(cloud.connection == Self.connection(.oneDrive, "Microsoft Account"))
     }
 
     @Test(arguments: oauthProviders)
     func theTokenAndAccountSurviveARelaunchAndAreForgottenOnDisconnect(provider: CloudProvider) async throws {
-        let fake = FakeOAuthDrive(cloud: cloud)
-        let first = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
-        try await first.connectOAuth(provider, refreshToken: "token")
+        let fake = FakeOAuthDrive(cloud: cloudDirectory)
+        let first = try openDevice(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
+        try await first.cloud.connectOAuth(provider, refreshToken: "token")
         #expect(credentials.load() == .oauth(provider, refreshToken: "token", account: "reader@example.com"))
 
         // Relaunch: Connected again with the saved token, without signing in.
-        let library = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
-        #expect(library.connection == Self.connection(provider))
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
+        #expect(cloud.connection == Self.connection(provider))
         #expect(fake.tokensGiven == ["token", "token"])
-        #expect(try await eventually { isSynced(library) })
+        #expect(try await eventually { isSynced(cloud) })
 
-        await library.disconnect()
+        await cloud.disconnect()
 
-        #expect(library.connection == nil)
+        #expect(cloud.connection == nil)
         #expect(credentials.load() == nil)
-        #expect(try openLibrary(cloudCore: fake.cloudCore).connection == nil)
+        #expect(try openDevice(cloudCore: fake.cloudCore).cloud.connection == nil)
     }
 
     @Test(arguments: oauthProviders)
     func aRotatedRefreshTokenReplacesTheSavedOne(provider: CloudProvider) async throws {
-        let fake = FakeOAuthDrive(cloud: cloud)
-        let library = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
-        try await library.connectOAuth(provider, refreshToken: "token")
+        let fake = FakeOAuthDrive(cloud: cloudDirectory)
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
+        try await cloud.connectOAuth(provider, refreshToken: "token")
 
         fake.rotate(to: "rotated")
 
@@ -536,17 +560,17 @@ extension LibraryModelTests {
                 credentials.load() == .oauth(provider, refreshToken: "rotated", account: "reader@example.com")
             })
         // A relaunch resumes with it.
-        _ = try openLibrary(cloudCore: fake.cloudCore)
+        _ = try openDevice(cloudCore: fake.cloudCore)
         #expect(fake.tokensGiven.last == "rotated")
     }
 
     @Test(arguments: oauthProviders)
     func aRefreshTokenRotatedWhileConnectingIsTheOneSaved(provider: CloudProvider) async throws {
-        let fake = FakeOAuthDrive(cloud: cloud)
+        let fake = FakeOAuthDrive(cloud: cloudDirectory)
         fake.rotatesWhileConnecting = "rotated"
-        let library = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
 
-        try await library.connectOAuth(provider, refreshToken: "token")
+        try await cloud.connectOAuth(provider, refreshToken: "token")
         try await Task.sleep(for: .milliseconds(100))
 
         #expect(credentials.load() == .oauth(provider, refreshToken: "rotated", account: "reader@example.com"))
@@ -554,47 +578,47 @@ extension LibraryModelTests {
 
     @Test(arguments: oauthProviders)
     func aTokenTheProviderRefusesLeavesCloudBackingOff(provider: CloudProvider) async throws {
-        let fake = FakeOAuthDrive(cloud: cloud)
+        let fake = FakeOAuthDrive(cloud: cloudDirectory)
         fake.refusal = .AccessDenied
-        let library = try openLibrary(cloudCore: fake.cloudCore)
+        let (_, cloud) = try openDevice(cloudCore: fake.cloudCore)
 
         await #expect(throws: ConnectError.AccessDenied) {
-            try await library.connectOAuth(provider, refreshToken: "token")
+            try await cloud.connectOAuth(provider, refreshToken: "token")
         }
 
-        #expect(library.connection == nil)
+        #expect(cloud.connection == nil)
         #expect(credentials.load() == nil)
     }
 
     @Test func aWorkOrSchoolAccountIsRefusedWithAMessage() async throws {
-        let fake = FakeOAuthDrive(cloud: cloud)
+        let fake = FakeOAuthDrive(cloud: cloudDirectory)
         fake.refusal = .UnsupportedAccount
-        let library = try openLibrary(cloudCore: fake.cloudCore)
+        let (_, cloud) = try openDevice(cloudCore: fake.cloudCore)
 
         await #expect(throws: ConnectError.UnsupportedAccount) {
-            try await library.connectOAuth(.oneDrive, refreshToken: "token")
+            try await cloud.connectOAuth(.oneDrive, refreshToken: "token")
         }
 
-        #expect(library.connection == nil)
+        #expect(cloud.connection == nil)
         #expect(credentials.load() == nil)
     }
 
     @Test(arguments: oauthProviders)
     func lostAccessIsReconnectedWithANewSignIn(provider: CloudProvider) async throws {
-        let fake = FakeOAuthDrive(cloud: cloud)
-        let library = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
-        try await library.connectOAuth(provider, refreshToken: "old")
-        #expect(try await eventually { isSynced(library) })
+        let fake = FakeOAuthDrive(cloud: cloudDirectory)
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
+        try await cloud.connectOAuth(provider, refreshToken: "old")
+        #expect(try await eventually { isSynced(cloud) })
         // The provider refuses access, as after the user revoked it.
-        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: cloud.path)
-        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cloud.path) }
-        #expect(try await eventually { library.syncState == .accessLost })
-        #expect(library.syncIndicator == .failed(canRetry: false))
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: cloudDirectory.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cloudDirectory.path) }
+        #expect(try await eventually { cloud.syncState == .accessLost })
+        #expect(cloud.syncIndicator == .failed(canRetry: false))
 
         fake.account = "other@example.com"
-        try await library.reconnectOAuth(refreshToken: "new")
+        try await cloud.reconnectOAuth(refreshToken: "new")
 
-        #expect(library.connection == Self.connection(provider, "other@example.com"))
+        #expect(cloud.connection == Self.connection(provider, "other@example.com"))
         #expect(credentials.load() == .oauth(provider, refreshToken: "new", account: "other@example.com"))
     }
 
@@ -602,25 +626,25 @@ extension LibraryModelTests {
     func reconnectingWithATokenTheProviderRefusesLeavesTheConnectionAndTheSavedTokenAlone(
         provider: CloudProvider
     ) async throws {
-        let fake = FakeOAuthDrive(cloud: cloud)
-        let library = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
-        try await library.connectOAuth(provider, refreshToken: "old")
+        let fake = FakeOAuthDrive(cloud: cloudDirectory)
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
+        try await cloud.connectOAuth(provider, refreshToken: "old")
         fake.refusal = .AccessDenied
 
         await #expect(throws: ConnectError.AccessDenied) {
-            try await library.reconnectOAuth(refreshToken: "new")
+            try await cloud.reconnectOAuth(refreshToken: "new")
         }
 
-        #expect(library.connection == Self.connection(provider))
+        #expect(cloud.connection == Self.connection(provider))
         #expect(credentials.load() == .oauth(provider, refreshToken: "old", account: "reader@example.com"))
     }
 
     @Test func reconnectingOAuthWithoutAnOAuthConnectionDoesNothing() async throws {
-        let fake = FakeOAuthDrive(cloud: cloud)
-        let library = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
-        try await library.connect(directory: cloud)
+        let fake = FakeOAuthDrive(cloud: cloudDirectory)
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
+        try await cloud.connect(directory: cloudDirectory)
 
-        try await library.reconnectOAuth(refreshToken: "new")
+        try await cloud.reconnectOAuth(refreshToken: "new")
 
         #expect(fake.tokensGiven.isEmpty)
         #expect(credentials.load() == nil)
@@ -773,15 +797,15 @@ extension LibraryModelTests {
         #expect(credentials.save(.webDAV(account)))
 
         // Relaunch: Connected again without contacting the server, which is down.
-        let library = try openLibrary(syncIntervals: Self.fast)
-        #expect(library.connection == CloudConnection(provider: .webDAV, detail: account.url))
-        #expect(try await eventually { library.syncState == .offline })
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast)
+        #expect(cloud.connection == CloudConnection(provider: .webDAV, detail: account.url))
+        #expect(try await eventually { cloud.syncState == .offline })
 
-        await library.disconnect()
+        await cloud.disconnect()
 
-        #expect(library.connection == nil)
+        #expect(cloud.connection == nil)
         #expect(credentials.load() == nil)
-        #expect(try openLibrary().connection == nil)
+        #expect(try openDevice().cloud.connection == nil)
     }
 
     @Test func savedCredentialsHoldOnlyTheLatestConnection() {
@@ -817,45 +841,46 @@ extension LibraryModelTests {
     }
 
     @Test func theTransferBarCountsUpDuringAMultiFileSyncAndIsGoneAfterwards() async throws {
-        let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())
+        let (a, b) = (try openDevice(syncIntervals: Self.fast), try openOtherDevice())
         let count = 8
-        for number in 0..<count { _ = try await importedID(a, titled: "Doc \(number)") }
-        try await a.connect(directory: cloud)
+        for number in 0..<count { _ = try await importedID(a.library, titled: "Doc \(number)") }
+        try await a.cloud.connect(directory: cloudDirectory)
         // All Files are in the cloud, so B downloads them in one Sync.
         #expect(
             try await eventually {
-                if case .synced = a.syncState { true } else { false }
+                if case .synced = a.cloud.syncState { true } else { false }
             })
 
-        try await b.connect(directory: cloud)
+        try await b.cloud.connect(directory: cloudDirectory)
         var seen: [Int] = []
         for _ in 0..<5000 {
-            if let done = b.transfer?.done, seen.last != done { seen.append(done) }
-            if b.documents.count == count && b.transfer == nil { break }
+            if let done = b.cloud.transfer?.done, seen.last != done { seen.append(done) }
+            if b.library.documents.count == count && b.cloud.transfer == nil { break }
             try await Task.sleep(for: .milliseconds(1))
         }
 
         #expect(!seen.isEmpty)
         #expect(seen == seen.sorted())
-        #expect(b.documents.count == count)
-        #expect(b.transfer == nil)
+        #expect(b.library.documents.count == count)
+        #expect(b.cloud.transfer == nil)
     }
 
     @Test func syncsOfStateOnlyShowNoTransferBar() async throws {
         let (a, b, _) = try await twoDevicesWithADocument()
-        let onA = try #require(a.documents.first)
-        let onB = try #require(b.documents.first)
-        let before = b.markupRevision(of: onB)
+        let onA = try #require(a.library.documents.first)
+        let onB = try #require(b.library.documents.first)
+        let before = b.library.markupRevision(of: onB)
 
-        _ = try #require(await a.addHighlight(anchor, quotedText: quote, to: onA))
-        await a.saveProgress(place, of: onA, at: lastRead)
+        _ = try #require(await a.library.addHighlight(anchor, quotedText: quote, to: onA))
+        await a.library.saveProgress(place, of: onA, at: lastRead)
         var bars: [FileTransfer] = []
-        for _ in 0..<500 where b.markupRevision(of: onB) == before || b.documents.first?.place == nil {
-            bars += [a.transfer, b.transfer].compactMap { $0 }
+        for _ in 0..<500
+        where b.library.markupRevision(of: onB) == before || b.library.documents.first?.place == nil {
+            bars += [a.cloud.transfer, b.cloud.transfer].compactMap { $0 }
             try await Task.sleep(for: .milliseconds(10))
         }
 
-        #expect(b.markupRevision(of: onB) > before)
+        #expect(b.library.markupRevision(of: onB) > before)
         #expect(bars.isEmpty)
     }
 
@@ -887,46 +912,46 @@ extension LibraryModelTests {
         // Offline: the server is down. Trying again can help.
         let account = WebDAVAccount(url: "https://127.0.0.1:1", username: "reader", password: "secret")
         #expect(credentials.save(.webDAV(account)))
-        let offline = try openLibrary(syncIntervals: Self.fast)
+        let (_, offline) = try openDevice(syncIntervals: Self.fast)
         #expect(try await eventually { offline.syncState == .offline })
         #expect(offline.syncIndicator == .failed(canRetry: true))
         await offline.disconnect()
 
         // Not Connected.
-        let library = try openLibrary(syncIntervals: Self.fast)
-        #expect(library.syncIndicator == nil)
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast)
+        #expect(cloud.syncIndicator == nil)
 
         // Blocked: the cloud refuses access, as a server does with a changed password.
-        try await library.connect(directory: cloud)
-        #expect(try await eventually { if case .synced = library.syncState { true } else { false } })
-        if case .synced(let at) = library.syncState {
-            #expect(library.syncIndicator == .synced(Date(milliseconds: at)))
+        try await cloud.connect(directory: cloudDirectory)
+        #expect(try await eventually { if case .synced = cloud.syncState { true } else { false } })
+        if case .synced(let at) = cloud.syncState {
+            #expect(cloud.syncIndicator == .synced(Date(milliseconds: at)))
         }
-        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: cloud.path)
-        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cloud.path) }
-        #expect(try await eventually { library.syncState == .accessLost })
-        #expect(library.syncIndicator == .failed(canRetry: false))
-        #expect(library.connection != nil)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: cloudDirectory.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cloudDirectory.path) }
+        #expect(try await eventually { cloud.syncState == .accessLost })
+        #expect(cloud.syncIndicator == .failed(canRetry: false))
+        #expect(cloud.connection != nil)
 
-        await library.disconnect()
-        #expect(library.syncIndicator == nil)
+        await cloud.disconnect()
+        #expect(cloud.syncIndicator == nil)
     }
 
     @Test func withoutANetworkNothingSyncsAndTheIndicatorWarns() async throws {
-        let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())
-        a.setOnline(false)
-        try await a.connect(directory: cloud)
-        try await b.connect(directory: cloud)
-        let id = try await importedID(a, titled: "Paper")
+        let (a, b) = (try openDevice(syncIntervals: Self.fast), try openOtherDevice())
+        a.cloud.setOnline(false)
+        try await a.cloud.connect(directory: cloudDirectory)
+        try await b.cloud.connect(directory: cloudDirectory)
+        let id = try await importedID(a.library, titled: "Paper")
 
-        #expect(a.syncIndicator == .noConnection)
+        #expect(a.cloud.syncIndicator == .noConnection)
         try await Task.sleep(for: .milliseconds(200))
-        #expect(ids(b).isEmpty)
+        #expect(ids(b.library).isEmpty)
 
-        a.setOnline(true)
+        a.cloud.setOnline(true)
 
-        #expect(try await eventually { ids(b) == [id] })
-        #expect(a.syncIndicator == SyncIndicator(a.syncState))
+        #expect(try await eventually { ids(b.library) == [id] })
+        #expect(a.cloud.syncIndicator == SyncIndicator(a.cloud.syncState))
     }
 
     @Test func theIndicatorsMessageSaysWhenSyncLastSucceeded() {
@@ -947,60 +972,72 @@ extension LibraryModelTests {
     {
         let account = WebDAVAccount(url: "https://127.0.0.1:1", username: "reader", password: "old")
         #expect(credentials.save(.webDAV(account)))
-        let library = try openLibrary(syncIntervals: Self.fast)
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast)
 
-        await #expect(throws: ConnectError.Unreachable) { try await library.reconnect(password: "new") }
+        await #expect(throws: ConnectError.Unreachable) { try await cloud.reconnect(password: "new") }
 
-        #expect(library.connection == CloudConnection(provider: .webDAV, detail: account.url))
+        #expect(cloud.connection == CloudConnection(provider: .webDAV, detail: account.url))
         #expect(credentials.load() == .webDAV(account))
     }
 
     @Test func reconnectingWithoutASavedConnectionDoesNothing() async throws {
-        let library = try openLibrary(syncIntervals: Self.fast)
-        try await library.connect(directory: cloud)
+        let (_, cloud) = try openDevice(syncIntervals: Self.fast)
+        try await cloud.connect(directory: cloudDirectory)
 
-        try await library.reconnect(password: "new")
+        try await cloud.reconnect(password: "new")
 
-        #expect(library.connection == CloudConnection(provider: .webDAV, detail: cloud.path))
+        #expect(cloud.connection == CloudConnection(provider: .webDAV, detail: cloudDirectory.path))
         #expect(credentials.load() == nil)
     }
 
     /// Two connected Devices that both hold one Document, imported on the first.
-    private func twoDevicesWithADocument() async throws -> (LibraryModel, LibraryModel, String) {
-        let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())
-        try await a.connect(directory: cloud)
-        try await b.connect(directory: cloud)
-        let id = try await importedID(a, titled: "Paper")
-        #expect(try await eventually { ids(b) == [id] })
+    private func twoDevicesWithADocument() async throws -> (Device, Device, String) {
+        let (a, b) = (try openDevice(syncIntervals: Self.fast), try openOtherDevice())
+        try await a.cloud.connect(directory: cloudDirectory)
+        try await b.cloud.connect(directory: cloudDirectory)
+        let id = try await importedID(a.library, titled: "Paper")
+        #expect(try await eventually { ids(b.library) == [id] })
         return (a, b, id)
     }
 
+    // MARK: Markup and Reading Progress through Sync
+
+    private let place = Place.pdf(pageIndex: 7, point: CGPoint(x: 12.5, y: 700.25))
+    private let lastRead = Date(timeIntervalSince1970: 1_700_000_000.5)
+    private let anchor = Anchor.pdf([
+        PageRects(pageIndex: 2, rects: [CGRect(x: 72, y: 700.5, width: 200, height: 12)]),
+        PageRects(
+            pageIndex: 3,
+            rects: [CGRect(x: 72, y: 720, width: 100, height: 12), CGRect(x: 72, y: 706, width: 40, height: 12)]),
+    ])
+    private let quote = "the passage"
+
     @Test func aHighlightAddedOnOneDeviceAppearsOnTheOtherAndTheReaderIsTold() async throws {
         let (a, b, id) = try await twoDevicesWithADocument()
-        let onB = try #require(b.documents.first)
-        let before = b.markupRevision(of: onB)
+        let onB = try #require(b.library.documents.first)
+        let before = b.library.markupRevision(of: onB)
 
-        let onA = try #require(a.documents.first)
-        let added = try #require(await a.addHighlight(anchor, quotedText: quote, to: onA))
+        let onA = try #require(a.library.documents.first)
+        let added = try #require(await a.library.addHighlight(anchor, quotedText: quote, to: onA))
 
-        #expect(try await eventually { b.markupRevision(of: onB) > before })
-        #expect(await b.markup(of: onB).highlights == [added])
+        #expect(try await eventually { b.library.markupRevision(of: onB) > before })
+        #expect(await b.library.markup(of: onB).highlights == [added])
         #expect(onB.id == id)
     }
 
     @Test func aNoteAndAPageNoteAddedOnOneDeviceAppearOnTheOther() async throws {
         let (a, b, _) = try await twoDevicesWithADocument()
-        let onA = try #require(a.documents.first)
-        let onB = try #require(b.documents.first)
-        let highlight = try #require(await a.addHighlight(anchor, quotedText: quote, to: onA))
-        await a.setNote("worth a note", of: highlight, in: onA)
-        let pageNote = try #require(await a.addPageNote(at: place, to: onA))
-        await a.setText("page note", of: pageNote, in: onA)
+        let onA = try #require(a.library.documents.first)
+        let onB = try #require(b.library.documents.first)
+        let highlight = try #require(await a.library.addHighlight(anchor, quotedText: quote, to: onA))
+        await a.library.setNote("worth a note", of: highlight, in: onA)
+        let pageNote = try #require(await a.library.addPageNote(at: place, to: onA))
+        await a.library.setText("page note", of: pageNote, in: onA)
 
         #expect(
             try await eventuallyAsync {
-                let note = await b.markup(of: onB).highlights.first?.note
-                let pageNotes = await b.markup(of: onB).pageNotes
+                let note = await b.library.markup(of: onB).highlights.first?.note
+                let pageNotes = await b.library.markup(of: onB).pageNotes
                 return note == "worth a note" && pageNotes.count == 1
             })
     }
@@ -1008,33 +1045,100 @@ extension LibraryModelTests {
     @Test func incomingReadingProgressShowsInTheGalleryButNeverMovesAnOpenReader() async throws {
         let (a, b, _) = try await twoDevicesWithADocument()
         // What the Reader of B holds: the Document as it was opened.
-        let open = try #require(b.documents.first)
-        await b.saveProgress(place, of: open, at: lastRead)
-        let opened = try #require(b.documents.first)
+        let open = try #require(b.library.documents.first)
+        await b.library.saveProgress(place, of: open, at: lastRead)
+        let opened = try #require(b.library.documents.first)
 
-        await a.saveProgress(
-            Place.pdf(pageIndex: 3, point: .zero), of: try #require(a.documents.first),
+        await a.library.saveProgress(
+            Place.pdf(pageIndex: 3, point: .zero), of: try #require(a.library.documents.first),
             at: lastRead.addingTimeInterval(60))
 
-        #expect(try await eventually { b.documents.first?.place?.pageIndex == 3 })
+        #expect(try await eventually { b.library.documents.first?.place?.pageIndex == 3 })
         #expect(opened.place == place)
         // Its next save carries the newer Last Read, so it wins everywhere.
         let later = lastRead.addingTimeInterval(120)
-        await b.saveProgress(place, of: opened, at: later)
-        #expect(try await eventually { a.documents.first?.lastRead == later })
-        #expect(a.documents.first?.place == place)
+        await b.library.saveProgress(place, of: opened, at: later)
+        #expect(try await eventually { a.library.documents.first?.lastRead == later })
+        #expect(a.library.documents.first?.place == place)
     }
 
     @Test func customColorsAndTheDefaultHighlightColorSyncBetweenDevices() async throws {
-        let (a, b) = (try openLibrary(syncIntervals: Self.fast), try openOtherDevice())
-        try await a.connect(directory: cloud)
-        try await b.connect(directory: cloud)
+        let (a, b) = (try openDevice(syncIntervals: Self.fast), try openOtherDevice())
+        try await a.cloud.connect(directory: cloudDirectory)
+        try await b.cloud.connect(directory: cloudDirectory)
 
-        let custom = try #require(await a.addCustomColor(RGB(0.2, 0.4, 0.6)))
-        await a.setDefaultHighlightColor(custom)
+        let custom = try #require(await a.library.addCustomColor(RGB(0.2, 0.4, 0.6)))
+        await a.library.setDefaultHighlightColor(custom)
 
-        #expect(try await eventually { b.highlightColors.contains(custom) && b.defaultHighlightColor == custom })
-        await b.removeCustomColor(custom)
-        #expect(try await eventually { !a.highlightColors.contains(custom) && a.defaultHighlightColor.id == "Yellow" })
+        #expect(
+            try await eventually {
+                b.library.highlightColors.contains(custom) && b.library.defaultHighlightColor == custom
+            })
+        await b.library.removeCustomColor(custom)
+        #expect(
+            try await eventually {
+                !a.library.highlightColors.contains(custom) && a.library.defaultHighlightColor.id == "Yellow"
+            })
+    }
+
+    // MARK: The seam to the Library
+
+    /// Stands in for the Library: records what Cloud Backing tells it.
+    @MainActor private final class RecordingLibrary: SyncedLibrary {
+        private(set) var libraryChanges = 0
+        private(set) var markupChanges: [String] = []
+
+        func libraryChanged() { libraryChanges += 1 }
+        func markupChanged(of id: String) { markupChanges.append(id) }
+    }
+
+    /// Cloud Backing of this test's root, reporting to `library` instead of a LibraryModel.
+    private func openCloud(reportingTo library: RecordingLibrary) throws -> CloudBackingModel {
+        CloudBackingModel(
+            core: try LeafCore.Library.open(root: root.path), library: library, credentials: credentials,
+            syncIntervals: Self.fast)
+    }
+
+    @Test func aChangeFromTheCloudTellsTheLibraryItChanged() async throws {
+        let recorder = RecordingLibrary()
+        let cloud = try openCloud(reportingTo: recorder)
+        let other = try openOtherDevice()
+        try await cloud.connect(directory: cloudDirectory)
+        try await other.cloud.connect(directory: cloudDirectory)
+
+        _ = try await importedID(other.library, titled: "Paper")
+
+        #expect(try await eventually { recorder.libraryChanges > 0 })
+    }
+
+    @Test func aMarkupChangeFromTheCloudNamesTheDocumentThatChanged() async throws {
+        let recorder = RecordingLibrary()
+        let cloud = try openCloud(reportingTo: recorder)
+        let other = try openOtherDevice()
+        try await cloud.connect(directory: cloudDirectory)
+        try await other.cloud.connect(directory: cloudDirectory)
+        let id = try await importedID(other.library, titled: "Paper")
+        let document = try #require(other.library.documents.first)
+
+        _ = try #require(await other.library.addHighlight(anchor, quotedText: quote, to: document))
+
+        #expect(try await eventually { recorder.markupChanges.contains(id) })
+    }
+
+    @Test func aDisconnectedDeviceTellsTheLibraryNothingMore() async throws {
+        let recorder = RecordingLibrary()
+        let cloud = try openCloud(reportingTo: recorder)
+        let other = try openOtherDevice()
+        try await cloud.connect(directory: cloudDirectory)
+        try await other.cloud.connect(directory: cloudDirectory)
+        _ = try await importedID(other.library, titled: "First")
+        #expect(try await eventually { recorder.libraryChanges > 0 })
+
+        await cloud.disconnect()
+        let reported = recorder.libraryChanges
+        _ = try await importedID(other.library, titled: "Second")
+        try await Task.sleep(for: .milliseconds(300))
+
+        #expect(recorder.libraryChanges == reported)
     }
 }

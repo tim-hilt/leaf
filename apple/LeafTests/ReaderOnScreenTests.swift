@@ -15,10 +15,9 @@
             // Drawn in the first pass, rather than drawn in after the pages.
             let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
             let defaults = try #require(UserDefaults(suiteName: root.lastPathComponent))
-            let library = try LibraryModel(
-                root: root, coversFolder: root.appending(path: "covers"), defaults: defaults,
-                credentials: CloudCredentials(defaults: defaults, service: "leaf-test-\(root.lastPathComponent)"),
-                syncIntervals: .standard, inbox: nil)
+            let library = LibraryModel(
+                core: try LeafCore.Library.open(root: root.path), coversFolder: root.appending(path: "covers"),
+                defaults: defaults, inbox: nil)
             guard case .opened(let document) = await library.import(try writePDF(named: "a.pdf", pageCount: 2))
             else { throw ImportFailure() }
             let anchor = Anchor.pdf([PageRects(pageIndex: 0, rects: [CGRect(x: 100, y: 300, width: 400, height: 300)])])
@@ -37,10 +36,9 @@
         @Test func anEPUBOpensInTheWebView() async throws {
             let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
             let defaults = try #require(UserDefaults(suiteName: root.lastPathComponent))
-            let library = try LibraryModel(
-                root: root, coversFolder: root.appending(path: "covers"), defaults: defaults,
-                credentials: CloudCredentials(defaults: defaults, service: "leaf-test-\(root.lastPathComponent)"),
-                syncIntervals: .standard, inbox: nil)
+            let library = LibraryModel(
+                core: try LeafCore.Library.open(root: root.path), coversFolder: root.appending(path: "covers"),
+                defaults: defaults, inbox: nil)
             guard
                 case .opened(let epub) = await library.import(
                     try writeEPUB(named: "b.epub", body: "<p>Hello from the book</p>"))
@@ -82,10 +80,9 @@
         @Test func bottomSafeAreaShowsDarkPagesNotWhiteStrip() async throws {
             let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
             let defaults = try #require(UserDefaults(suiteName: root.lastPathComponent))
-            let library = try LibraryModel(
-                root: root, coversFolder: root.appending(path: "covers"), defaults: defaults,
-                credentials: CloudCredentials(defaults: defaults, service: "leaf-test-\(root.lastPathComponent)"),
-                syncIntervals: .standard, inbox: nil)
+            let library = LibraryModel(
+                core: try LeafCore.Library.open(root: root.path), coversFolder: root.appending(path: "covers"),
+                defaults: defaults, inbox: nil)
             guard case .opened(let first) = await library.import(try writePDF(named: "a.pdf", pageCount: 2))
             else { throw ImportFailure() }
             let settings = AppSettings(defaults: defaults)

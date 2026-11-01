@@ -1384,10 +1384,9 @@ struct ImportFailed: Error {}
 func makeLibrary() throws -> LibraryModel {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     let defaults = try #require(UserDefaults(suiteName: root.lastPathComponent))
-    return try LibraryModel(
-        root: root, coversFolder: root.appending(path: "covers"), defaults: defaults,
-        credentials: CloudCredentials(defaults: defaults, service: "leaf-test-\(root.lastPathComponent)"),
-        syncIntervals: .standard, inbox: nil)
+    return LibraryModel(
+        core: try LeafCore.Library.open(root: root.path), coversFolder: root.appending(path: "covers"),
+        defaults: defaults, inbox: nil)
 }
 
 /// An EPUB of `chapters`, imported.
