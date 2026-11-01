@@ -86,7 +86,7 @@ extension LibraryModelTests {
         let id = try await importedID(a, titled: "Paper")
         #expect(try await eventually { ids(b) == [id] })
 
-        a.remove(a.documents[0])
+        await a.remove(a.documents[0])
 
         #expect(try await eventually { b.documents.isEmpty })
     }

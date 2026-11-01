@@ -482,9 +482,11 @@ impl Library {
         Ok(per_chunk.into_iter().flatten().flatten().collect())
     }
 
-    /// The Documents in the order of `sort`, ready for Library Search.
+    /// The Documents as a `Listing` in the order of `sort`, ready for Library
+    /// Search. The Listing owns them, so it is all a client needs to show the
+    /// Library.
     pub fn listing(&self, sort: Sort) -> io::Result<Listing> {
-        Ok(Listing::new(&self.documents()?, sort))
+        Ok(Listing::new(self.documents()?, sort))
     }
 
     /// The Documents the Library document lists, in no order.
@@ -1837,10 +1839,10 @@ mod tests {
         let sort = |key, reversed| Sort { key, reversed };
         let by = |key, reversed, search: &str| -> Vec<String> {
             let listing = library.listing(sort(key, reversed)).unwrap();
-            listing
-                .matching(search)
+            let matched = listing.matching(search);
+            matched
                 .into_iter()
-                .map(str::to_owned)
+                .map(|i| listing.documents()[i].id.clone())
                 .collect()
         };
         let [zebra, ten, two] = [&ids[0], &ids[1], &ids[2]].map(String::as_str);

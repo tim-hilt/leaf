@@ -99,7 +99,7 @@ struct FileGalleryView: View {
             .navigationTitle("Leaf")
             .navigationDestination(isPresented: showsReader) {
                 // A new Reader per Document, so that nothing of the previous one carries over.
-                if let loaded, let document = library.documents.first(where: { $0.id == loaded.id }) {
+                if let loaded, let document = library.document(id: loaded.id) {
                     ReaderView(document: document, loaded: loaded).id(loaded.id)
                 }
             }
@@ -203,7 +203,7 @@ struct FileGalleryView: View {
 
     /// The Document in the Reader; nil while the Gallery shows.
     private var openDocument: LibraryDocument? {
-        library.documents.first { $0.id == openID }
+        openID.flatMap { library.document(id: $0) }
     }
 
     private var isShowingReader: Bool { loaded != nil }
@@ -332,7 +332,7 @@ private struct GalleryAlerts: ViewModifier {
                 "Remove “\(removal?.title ?? "")”?", isPresented: Binding(isPresenting: $removal),
                 titleVisibility: .visible, presenting: removal
             ) { document in
-                Button("Remove", role: .destructive) { library.remove(document) }
+                Button("Remove", role: .destructive) { Task { await library.remove(document) } }
             } message: { _ in
                 Text("The file, its markup and your reading progress are deleted on all your devices.")
             }

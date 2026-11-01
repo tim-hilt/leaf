@@ -325,10 +325,18 @@ pub struct Listing(listing::Listing);
 
 #[uniffi::export]
 impl Listing {
-    /// The IDs of the Documents matching `search`, in order.
-    pub fn matching(&self, search: &str) -> Vec<String> {
-        let found = self.0.matching(search).into_iter();
-        found.map(str::to_owned).collect()
+    /// The Documents, newest Import first. `matching` gives positions in them.
+    pub fn documents(&self) -> Vec<Document> {
+        self.0.documents().iter().cloned().map(Into::into).collect()
+    }
+
+    /// Positions in `documents` of the Documents matching `search`, in order.
+    pub fn matching(&self, search: &str) -> Vec<u32> {
+        self.0
+            .matching(search)
+            .into_iter()
+            .map(|i| i as u32)
+            .collect()
     }
 }
 
@@ -828,10 +836,6 @@ impl Library {
         self.written(self.core.remove_custom_color(&id))
     }
 
-    pub fn documents(&self) -> Result<Vec<Document>, LibraryError> {
-        Ok(self.core.documents()?.into_iter().map(Into::into).collect())
-    }
-
     /// The Documents in the order of `sort`, ready for Library Search.
     pub fn listing(&self, sort: Sort) -> Result<Arc<Listing>, LibraryError> {
         Ok(Arc::new(Listing(self.core.listing(sort)?)))
@@ -973,7 +977,12 @@ mod tests {
         }
         let listed = |key, reversed, search: &str| {
             let listing = library.listing(Sort { key, reversed }).unwrap();
-            listing.matching(search)
+            let documents = listing.documents();
+            let matched = listing.matching(search);
+            matched
+                .into_iter()
+                .map(|i| documents[i as usize].id.clone())
+                .collect::<Vec<_>>()
         };
         let [zebra, ten, two] = [&ids[0], &ids[1], &ids[2]].map(String::as_str);
         assert_eq!(listed(SortKey::DateImported, false, ""), [two, ten, zebra]);
@@ -982,6 +991,15 @@ mod tests {
         assert_eq!(listed(SortKey::Title, false, "emile"), [ten]);
         assert_eq!(listed(SortKey::Title, false, "2.PDF"), [two]);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The Library's Documents, in the order the Gallery lists them by default.
+    fn listed_documents(library: &Library) -> Vec<Document> {
+        let sort = Sort {
+            key: SortKey::DateImported,
+            reversed: false,
+        };
+        library.listing(sort).unwrap().documents()
     }
 
     struct NoProgress;
@@ -1002,7 +1020,7 @@ mod tests {
         assert_eq!(format_of_file(path.clone()).unwrap(), None);
         let refused = library.import(path, Arc::new(NoProgress));
         assert!(matches!(refused, Err(LibraryError::UnsupportedFormat)));
-        assert_eq!(library.documents().unwrap().len(), 0);
+        assert_eq!(listed_documents(&library).len(), 0);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1046,7 +1064,7 @@ mod tests {
         // Each write runs on the Library's only Document, if any.
         let write = |name: &str, write: &dyn Fn(&Library, String)| {
             let before = steps.0.load(Relaxed);
-            let id = library.documents().unwrap().first().map(|d| d.id.clone());
+            let id = listed_documents(&library).first().map(|d| d.id.clone());
             write(&library, id.unwrap_or_default());
             another_step(&steps, before, name);
         };

@@ -154,14 +154,31 @@ extension Date {
     var millisecondsSince1970: UInt64 { UInt64(max(0, timeIntervalSince1970 * 1000).rounded()) }
 }
 
+/// The Library as the core listed it at one change: the Documents, newest
+/// Import first, and the core's `Listing` that orders and searches those same
+/// Documents. One core call makes both, so they can't disagree.
+private struct LibraryListing: Sendable {
+    let documents: [LibraryDocument]
+    /// The same Documents by ID.
+    let byID: [String: LibraryDocument]
+    /// Library Search over `documents`: positions in them, in Sort order.
+    let sorted: Listing
+
+    /// Nil if the core can't list the Library.
+    init?(_ core: LeafCore.Library, sort: LeafCore.Sort) {
+        guard let sorted = try? core.listing(sort: sort) else { return nil }
+        self.sorted = sorted
+        documents = sorted.documents().map(LibraryDocument.init)
+        byID = Dictionary(documents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+}
+
 /// The Library as the clients see it: the core's Library folder plus its
 /// Documents. One per app, shared by all windows.
 @MainActor @Observable
 final class LibraryModel {
     /// Every Document, newest Import first.
-    private(set) var documents: [LibraryDocument] = [] {
-        didSet { relist() }
-    }
+    var documents: [LibraryDocument] { listing?.documents ?? [] }
     /// How the Gallery orders its Documents. Remembered on this device (user
     /// defaults, not synced) and shared by all windows; setting it re-orders once the
     /// core has the new listing.
@@ -169,16 +186,12 @@ final class LibraryModel {
         didSet {
             guard sort != oldValue else { return }
             sort.save(to: defaults)
-            relist()
+            Task { await relist { _ in } }
         }
     }
-    /// The core's listing of the Documents in `sort` order, kept up to date as
-    /// Titles arrive. Nil only if the core couldn't list them.
-    private var listing: Listing?
-    /// Counts `relist` calls, so a listing overtaken by a newer one is dropped.
-    @ObservationIgnored private var listings = 0
-    /// The latest `relist`.
-    @ObservationIgnored private var relisting: Task<Void, Never>?
+    /// The Library as the core last listed it, in `sort` order: what the Gallery
+    /// shows. Nil only if the core couldn't list it.
+    private var listing: LibraryListing?
     /// The Highlight Colors to choose from: the built-in ones, yellow first, then
     /// the Custom Colors in the order added. Kept in the Library's Preferences.
     private(set) var highlightColors: [HighlightColor]
@@ -229,8 +242,6 @@ final class LibraryModel {
     @ObservationIgnored private var lastImportFiles: Task<Void, Never>?
     /// The latest access to a Document's state in the core; the next one waits for it.
     @ObservationIgnored private var lastStateAccess: Task<Void, Never>?
-    /// Counts `reload` calls, so a listing overtaken by a newer one is dropped.
-    @ObservationIgnored private var reloads = 0
     /// Covers decoded lately, by Document ID; the system evicts them as memory gets tight.
     @ObservationIgnored private let decodedCovers = {
         let cache = NSCache<NSString, CGImage>()
@@ -263,9 +274,8 @@ final class LibraryModel {
         let stored = core.highlightColors()
         highlightColors = stored.colors
         defaultHighlightColor = stored.defaultColor
-        refresh()
-        // Built at once, so the Gallery opens in order rather than filling in.
-        listing = try? core.listing(sort: sort.core)
+        // Listed at once, so the Gallery opens in order rather than filling in.
+        listing = LibraryListing(core, sort: sort.core)
         readMissingDetails()
         if let saved = credentials.load() {
             let id = newConnection()
@@ -552,7 +562,7 @@ final class LibraryModel {
             libraryChanged: { [weak self] in
                 guard let self, connectionID == id else { return }
                 Task {
-                    await self.reload()
+                    await self.relist { _ in }
                     self.readMissingDetails()
                 }
                 Task { await self.reloadHighlightColors() }
@@ -584,10 +594,11 @@ final class LibraryModel {
     /// Author arrive.
     func visibleDocuments(matching searchText: String) -> [LibraryDocument] {
         guard let listing else { return [] }
-        let byID = Dictionary(documents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        // A Document Removed since the listing was built is skipped.
-        return listing.matching(search: searchText).compactMap { byID[$0] }
+        return listing.sorted.matching(search: searchText).map { listing.documents[Int($0)] }
     }
+
+    /// The Document with `id`, if it is in the Library.
+    func document(id: String) -> LibraryDocument? { listing?.byID[id] }
 
     /// The saved Cover of `document`, loaded and decoded off the main thread,
     /// or nil if there is none. Cheap, so safe to call while scrolling; never renders.
@@ -674,19 +685,12 @@ final class LibraryModel {
             }.value
             if let cover = read?.cover { covers.save(cover, id: stored.id) }
             let id = stored.id
-            // With its details.
-            guard let listed = await Task.detached(operation: { try? core.document(id: id) }).value else {
+            // Listed with the Document, so the Gallery shows it too.
+            guard let listed = await relist(after: { try? $0.document(id: id) }) else {
                 return .failed("The imported file couldn't be opened.")
             }
             let document = LibraryDocument(listed)
             runningImport?.title = document.title
-            if let index = documents.firstIndex(where: { $0.id == id }) {
-                documents[index] = document
-            } else {
-                // The newest Import.
-                documents.insert(document, at: 0)
-            }
-            await relisting?.value
             return isNew ? .opened(document) : .duplicate(document)
         } catch LibraryError.Failed(let message) {
             return .failed(message)
@@ -748,10 +752,9 @@ final class LibraryModel {
 
     /// Deletes the Document, its File, its details and its Cover. If that
     /// fails, the Document stays in `documents`.
-    func remove(_ document: LibraryDocument) {
-        guard (try? core.remove(id: document.id)) != nil else { return }
-        removeCover(document.id)
-        documents.removeAll { $0.id == document.id }
+    func remove(_ document: LibraryDocument) async {
+        let id = document.id
+        await relist { try? $0.remove(id: id) }
     }
 
     /// EPUB `document`, opened for reading off the main thread. Nil for a PDF, and
@@ -769,12 +772,7 @@ final class LibraryModel {
     func saveProgress(_ place: Place, of document: LibraryDocument, at lastRead: Date = .now) async {
         let progress = ReadingProgress(place: place, lastRead: lastRead.millisecondsSince1970)
         let id = document.id
-        update(
-            await inStateOrder {
-                try? $0.saveProgress(id: id, progress: progress)
-                return try? $0.document(id: id)
-            })
-        await relisting?.value
+        await relist { try? $0.saveProgress(id: id, progress: progress) }
     }
 
     /// The Highlights and page Notes of `document`, each oldest first, read at
@@ -929,58 +927,19 @@ final class LibraryModel {
         }
     }
 
-    /// Asks the core for a new listing off the main thread, which replaces
-    /// `listing` unless a newer request overtook it. The core lists what it
-    /// has stored, which is at least as new as `documents`.
-    private func relist() {
-        listings += 1
-        let current = listings
-        let core = core
+    /// Changes the Library in the core, off the main thread and in order with
+    /// its other changes, then shows the Library as the core lists it after
+    /// `change`. Each listing includes every change before it and is shown as
+    /// it arrives, so the last one shown is the newest. Returns what `change` returned.
+    @discardableResult
+    private func relist<T: Sendable>(after change: @escaping @Sendable (LeafCore.Library) -> T) async -> T {
         let sort = sort.core
-        relisting = Task { [weak self] in
-            let built = await Task.detached(priority: .userInitiated) { try? core.listing(sort: sort) }.value
-            guard let self, current == listings, let built else { return }
-            listing = built
-        }
-    }
-
-    /// Reloads `documents` from the core. If the listing fails, `documents`
-    /// stays as it was rather than looking as if everything was Removed.
-    private func refresh() { apply(try? core.documents()) }
-
-    /// `refresh`, listing off the main thread. A reload overtaken by a newer
-    /// one changes nothing.
-    private func reload() async {
-        reloads += 1
-        let reload = reloads
-        let core = core
-        let stored = await Task.detached(priority: .userInitiated) { try? core.documents() }.value
-        guard reload == reloads else { return }
-        apply(stored)
-        await relisting?.value
-    }
-
-    private func apply(_ stored: [LeafCore.Document]?) {
-        guard let stored else { return }
-        let kept = Set(stored.map(\.id))
-        // Removed on another Device.
-        for gone in documents where !kept.contains(gone.id) { removeCover(gone.id) }
-        let reloaded = stored.map(LibraryDocument.init)
-        if reloaded != documents { documents = reloaded }
-    }
-
-    /// Replaces a Document in `documents` with `stored`, its newer copy from
-    /// the core; nothing if it was Removed meanwhile.
-    private func update(_ stored: LeafCore.Document?) { update(stored.map { [$0] } ?? []) }
-
-    /// `update` for several Documents at once, so the listing is made once.
-    private func update(_ stored: [LeafCore.Document]) {
-        var updated = documents
-        for stored in stored {
-            guard let index = updated.firstIndex(where: { $0.id == stored.id }) else { continue }
-            updated[index] = LibraryDocument(stored)
-        }
-        if updated != documents { documents = updated }
+        let (result, listed) = await inStateOrder { core in (change(core), LibraryListing(core, sort: sort)) }
+        guard let listed else { return result }
+        // Gone from the Library, here or on another Device: so is its Cover.
+        for gone in documents where listed.byID[gone.id] == nil { removeCover(gone.id) }
+        listing = listed
+        return result
     }
 
     /// Reads the details of Documents the core has none of from their PDFs,
@@ -993,25 +952,29 @@ final class LibraryModel {
         readingDetails.formUnion(missing.map(\.0))
         Task(priority: .utility) { [weak self] in
             // Each publish lists every Document again, so not one by one.
-            var read: [LeafCore.Document] = []
+            var read: [(id: String, details: PDFDetails)] = []
             var published = ContinuousClock.now
             for (id, file) in missing {
                 let details = await Task.detached(priority: .utility) { PDFDocument(url: file)?.details }.value
                 guard let self else { return }
                 readingDetails.remove(id)
                 guard let details else { continue }
-                let stored = await inStateOrder {
-                    try? $0.setDetails(id, details)
-                    return try? $0.document(id: id)
-                }
-                if let stored { read.append(stored) }
+                read.append((id, details))
                 if read.count >= 16 || published.duration(to: .now) > .milliseconds(500) {
-                    update(read)
+                    await keepDetails(read)
                     read = []
                     published = .now
                 }
             }
-            self?.update(read)
+            await self?.keepDetails(read)
+        }
+    }
+
+    /// Keeps the details read for Documents, by ID, then lists the Library again.
+    private func keepDetails(_ read: [(id: String, details: PDFDetails)]) async {
+        guard !read.isEmpty else { return }
+        await relist { core in
+            for (id, details) in read { try? core.setDetails(id, details) }
         }
     }
 }

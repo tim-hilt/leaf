@@ -402,7 +402,7 @@ import UniformTypeIdentifiers
             return
         }
 
-        library.remove(doomed)
+        await library.remove(doomed)
 
         #expect(library.documents == [kept])
         #expect(try openLibrary().documents == [kept])
@@ -550,7 +550,7 @@ import UniformTypeIdentifiers
             return
         }
 
-        library.remove(document)
+        await library.remove(document)
 
         #expect(savedCovers().isEmpty)
     }
@@ -822,7 +822,7 @@ import UniformTypeIdentifiers
             return
         }
 
-        library.remove(document)
+        await library.remove(document)
 
         #expect(library.documents.isEmpty)
         #expect(savedCovers().isEmpty)
@@ -932,12 +932,24 @@ import UniformTypeIdentifiers
     @Test func savingForARemovedDocumentDoesNothing() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        library.remove(document)
+        await library.remove(document)
 
         await library.saveProgress(place, of: document, at: lastRead)
 
         #expect(library.documents.isEmpty)
         #expect(try openLibrary().documents.isEmpty)
+    }
+
+    @Test func aDocumentIsFoundByIDUntilItIsRemoved() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+
+        #expect(library.document(id: document.id) == document)
+        #expect(library.document(id: "unknown") == nil)
+
+        await library.remove(document)
+
+        #expect(library.document(id: document.id) == nil)
     }
 
     // MARK: Markup
@@ -1007,7 +1019,7 @@ import UniformTypeIdentifiers
     @Test func highlightingARemovedDocumentDoesNothing() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        library.remove(document)
+        await library.remove(document)
 
         #expect(await library.addHighlight(anchor, quotedText: quote, to: document) == nil)
         #expect(await library.markup(of: document).highlights == [])
@@ -1019,7 +1031,7 @@ import UniformTypeIdentifiers
         guard case .opened(let document) = await library.import(source) else { throw ImportFailed() }
         _ = await library.addHighlight(anchor, quotedText: quote, to: document)
 
-        library.remove(document)
+        await library.remove(document)
         _ = await library.import(source)
 
         #expect(await library.markup(of: document).highlights == [])
@@ -1112,7 +1124,7 @@ import UniformTypeIdentifiers
     @Test func addingAPageNoteToARemovedDocumentDoesNothing() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)
-        library.remove(document)
+        await library.remove(document)
 
         #expect(await library.addPageNote(at: Place.pdf(pageIndex: 0, point: .zero), to: document) == nil)
     }
@@ -1133,7 +1145,7 @@ import UniformTypeIdentifiers
         let library = try openLibrary()
         let document = try await importDocument(into: library)
         let added = try #require(await library.addHighlight(anchor, quotedText: quote, to: document))
-        library.remove(document)
+        await library.remove(document)
 
         await library.setHighlightColor(library.highlightColors[1].tint, of: added, in: document)
         await library.removeHighlight(added, from: document)

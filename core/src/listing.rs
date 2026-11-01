@@ -51,12 +51,12 @@ impl From<&Document> for Item {
     }
 }
 
-/// Documents in the order of a `Sort`, ready for Library Search. Built once
-/// per change of the Documents or the Sort; each search is then cheap.
+/// The Documents of a Library in a `Sort`, ready for Library Search. Built
+/// once per change of the Documents or the Sort; each search is then cheap.
 pub struct Listing {
-    /// The Documents' IDs, in the order they were given.
-    ids: Vec<String>,
-    /// Positions in `ids`, in Sort order.
+    /// The Documents, in the order they were given: newest Import first.
+    documents: Vec<Document>,
+    /// Positions in `documents`, in Sort order.
     order: Vec<usize>,
     /// Each Document's Title, file name and Author, `fold`ed and joined by a
     /// NUL, so a search never matches across two of them.
@@ -67,7 +67,7 @@ impl Listing {
     /// `documents` in `sort` order. Documents the Sort can't tell apart (same
     /// Title, same Last Read) keep Date Imported order, newest first, and then
     /// their order in `documents`.
-    pub fn new(documents: &[Document], sort: Sort) -> Self {
+    pub fn new(documents: Vec<Document>, sort: Sort) -> Self {
         let items: Vec<Item> = documents.iter().map(Item::from).collect();
         let items = items.as_slice();
         let flip = |mut order: Vec<usize>| {
@@ -103,23 +103,26 @@ impl Listing {
                 [&item.title, &item.file_name, author].map(fold).join("\0")
             })
             .collect();
-        let ids = documents.iter().map(|d| d.id.clone()).collect();
         Self {
-            ids,
+            documents,
             order,
             searched,
         }
     }
 
-    /// The IDs of the Documents whose Title, file name or Author contains
-    /// `search`, ignoring case and accents, in this Listing's order. A blank
-    /// `search` matches every Document.
-    pub fn matching(&self, search: &str) -> Vec<&str> {
+    /// The Documents, in the order they were given: newest Import first.
+    pub fn documents(&self) -> &[Document] {
+        &self.documents
+    }
+
+    /// The positions in `documents()` of the Documents whose Title, file name
+    /// or Author contains `search`, ignoring case and accents, in this
+    /// Listing's order. A blank `search` matches every Document.
+    pub fn matching(&self, search: &str) -> Vec<usize> {
         let search = fold(search.trim());
         let order = self.order.iter().copied();
         order
             .filter(|&i| self.searched[i].contains(&search))
-            .map(|i| self.ids[i].as_str())
             .collect()
     }
 }
@@ -205,9 +208,21 @@ mod tests {
     }
 
     fn titles(documents: &[Document], key: SortKey, reversed: bool, search: &str) -> Vec<String> {
-        let listing = Listing::new(documents, Sort { key, reversed });
-        let by_id = |id: &str| documents.iter().find(|d| d.id == id).unwrap().title();
-        listing.matching(search).into_iter().map(by_id).collect()
+        let listing = Listing::new(documents.to_vec(), Sort { key, reversed });
+        listing
+            .matching(search)
+            .into_iter()
+            .map(|i| listing.documents()[i].title())
+            .collect()
+    }
+
+    /// The IDs of the Documents `listing` matches for `search`, in its order.
+    fn ids<'a>(listing: &'a Listing, search: &str) -> Vec<&'a str> {
+        listing
+            .matching(search)
+            .into_iter()
+            .map(|i| listing.documents()[i].id.as_str())
+            .collect()
     }
 
     #[test]
@@ -247,8 +262,8 @@ mod tests {
             item("same", 3, None),
             item("Same", 2, None),
         ];
-        let listing = Listing::new(&items, sort(SortKey::Title));
-        assert_eq!(listing.matching(""), ["3", "2", "1"]);
+        let listing = Listing::new(items, sort(SortKey::Title));
+        assert_eq!(ids(&listing, ""), ["3", "2", "1"]);
     }
 
     #[test]
@@ -271,12 +286,12 @@ mod tests {
         let mut items = vec![item("Moby-Dick", 1, None), item("Walden", 2, None)];
         author(&mut items[0], "Herman Melville");
         items[1].path = "/library/2/scan0042.pdf".into();
-        let listing = Listing::new(&items, sort(SortKey::Title));
+        let listing = Listing::new(items, sort(SortKey::Title));
 
-        assert_eq!(listing.matching("oby"), ["1"]);
-        assert_eq!(listing.matching("can004"), ["2"]);
-        assert_eq!(listing.matching("melv"), ["1"]);
-        assert!(listing.matching("xyz").is_empty());
+        assert_eq!(ids(&listing, "oby"), ["1"]);
+        assert_eq!(ids(&listing, "can004"), ["2"]);
+        assert_eq!(ids(&listing, "melv"), ["1"]);
+        assert!(ids(&listing, "xyz").is_empty());
     }
 
     #[test]
@@ -298,7 +313,7 @@ mod tests {
         let mut items = vec![item("Moby", 1, None)];
         author(&mut items[0], "Dick");
         items[0].path = "/library/1/x.pdf".into();
-        let listing = Listing::new(&items, sort(SortKey::Title));
+        let listing = Listing::new(items, sort(SortKey::Title));
         assert!(listing.matching("mobydick").is_empty());
         assert!(listing.matching("moby dick").is_empty());
     }
@@ -324,6 +339,13 @@ mod tests {
             last_read: Some(9),
         };
         assert_eq!(Item::from(&document), expected);
+    }
+
+    #[test]
+    fn the_listing_keeps_its_documents_in_the_order_given() {
+        let items = shelf();
+        let listing = Listing::new(items.clone(), sort(SortKey::Title));
+        assert_eq!(listing.documents(), items);
     }
 
     fn sort(key: SortKey) -> Sort {
