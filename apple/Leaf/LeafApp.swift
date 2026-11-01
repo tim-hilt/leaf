@@ -53,7 +53,7 @@ struct LeafApp: App {
             .environment(library)
             .environment(cloud)
             .environment(settings)
-            .onChange(of: settings.theme, initial: true) { settings.theme.apply() }
+            .applying(settings.theme)
             .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
