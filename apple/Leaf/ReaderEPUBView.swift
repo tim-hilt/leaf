@@ -529,6 +529,27 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     #if os(iOS)
         private var sizeBeforePinch = TextSize.normal
 
+        /// The size the page was last inset for.
+        private var insetSize = CGSize.zero
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            insetUnderBars()
+        }
+
+        /// Insets the page by the bars as they are when the view gets its size. Bars come
+        /// and go over the page (Immersive Mode), changing only the safe area; following it,
+        /// the web view would move the page along with the bars.
+        private func insetUnderBars() {
+            scrollView.contentInsetAdjustmentBehavior = .never
+            guard bounds.size != insetSize else { return }
+            insetSize = bounds.size
+            // Obscured: places land below the bars. Content inset: the book's ends scroll clear of them.
+            obscuredContentInsets = UIEdgeInsets(top: safeAreaInsets.top, left: 0, bottom: 0, right: 0)
+            scrollView.contentInset = UIEdgeInsets(
+                top: safeAreaInsets.top, left: 0, bottom: safeAreaInsets.bottom, right: 0)
+        }
+
         @objc private func panned(_ pan: UIPanGestureRecognizer) {
             if pan.state == .began { callbacks.onDragScroll() }
         }

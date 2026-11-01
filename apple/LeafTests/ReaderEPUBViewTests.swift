@@ -276,6 +276,36 @@ import WebKit
             try await eventually { pan.isEnabled }
             #expect(pan.isEnabled)
         }
+
+        /// Immersive Mode hides the bars over the page: only the safe area changes.
+        @Test(arguments: [(100.0, 0.0), (0.0, 100.0)])
+        func thePageStaysPutWhenTheSafeAreaChanges(from top: CGFloat, to newTop: CGFloat) async throws {
+            let reader = try await openReader(book: importedBook(chapters: [paragraphs(40)]))
+            let controller = UIViewController()
+            controller.additionalSafeAreaInsets.top = top
+            let window = UIWindow(frame: reader.frame)
+            window.rootViewController = controller
+            window.makeKeyAndVisible()
+            controller.view.addSubview(reader)
+            openWindows.append(window)
+            controller.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(300))
+            try await reader.scrollAsReader("window.scrollTo(0, 2000)")
+            try await Task.sleep(for: .milliseconds(300))
+            let before = reader.scrollView.contentOffset.y
+            let barsTop = reader.safeAreaInsets.top
+
+            controller.additionalSafeAreaInsets.top = newTop
+            controller.view.layoutIfNeeded()
+            reader.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(300))
+
+            #expect(before == 2000 - barsTop, "A place lands below the bars")
+            #expect(reader.scrollView.contentOffset.y == before)
+            try await reader.scrollAsReader("window.scrollTo(0, 0)")
+            try await Task.sleep(for: .milliseconds(300))
+            #expect(reader.scrollView.contentOffset.y == -barsTop, "The start shows below the bars")
+        }
     #endif
 
     // MARK: Page Style
