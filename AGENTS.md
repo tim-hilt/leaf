@@ -29,6 +29,12 @@ Native, cross platform PDF Reader with cloud syncing
 
 - Write tests inside the source code files
 
+## Simulated Device Testing
+
+Please target the following devices when running a simulated Apple device client:
+
+- iPhone 15 Pro
+- iPad Pro 3rd Gen 12.9in
 
 ## Agent skills
 
