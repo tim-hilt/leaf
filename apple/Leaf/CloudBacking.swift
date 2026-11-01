@@ -145,6 +145,22 @@ extension ConnectError {
     }
 }
 
+/// The core's calls that Connect a Cloud, see `LeafCore.Library`. Tests replace
+/// them to stand in for the Cloud Providers behind OAuth.
+struct CloudCore: Sendable {
+    /// Connects `cloud` and starts syncing with it; returns its account, empty if the provider doesn't tell.
+    var connect: @Sendable (LeafCore.Library, Cloud, SyncObserver, SyncIntervals) throws -> String
+    /// Like `connect`, contacting nobody.
+    var resume: @Sendable (LeafCore.Library, Cloud, SyncObserver, SyncIntervals) throws -> Void
+    /// Gives the running Connection `cloud`, after access was lost; returns its account.
+    var reconnect: @Sendable (LeafCore.Library, Cloud) throws -> String
+
+    static let system = CloudCore(
+        connect: { try $0.connect(cloud: $1, observer: $2, intervals: $3) },
+        resume: { try $0.resume(cloud: $1, observer: $2, intervals: $3) },
+        reconnect: { try $0.reconnect(cloud: $1) })
+}
+
 /// Forwards what the core's Sync loop reports, on its thread, to the main actor.
 final class SyncRelay: SyncObserver {
     private let onStatus: @Sendable @MainActor (Status) -> Void

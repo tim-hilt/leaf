@@ -22,7 +22,7 @@ extension LibraryModelTests {
 
     /// A second Device with a Library of its own.
     private func openOtherDevice(
-        iCloudDrive: ICloudDrive = .system, oauth: [CloudProvider: OAuthDrive] = OAuthDrive.system
+        iCloudDrive: ICloudDrive = .system, cloudCore: CloudCore = .system
     ) throws -> LibraryModel {
         let name = "\(root.lastPathComponent)-other"
         let parent = root.deletingLastPathComponent()
@@ -31,7 +31,7 @@ extension LibraryModelTests {
             root: parent.appending(path: name, directoryHint: .isDirectory),
             coversFolder: parent.appending(path: "\(name)-covers"), defaults: defaults,
             credentials: CloudCredentials(defaults: defaults, service: "leaf-test-\(name)"),
-            iCloudDrive: iCloudDrive, oauth: oauth, syncIntervals: Self.fast
+            iCloudDrive: iCloudDrive, cloudCore: cloudCore, syncIntervals: Self.fast
         )
     }
 
@@ -436,19 +436,33 @@ extension LibraryModelTests {
             }
         }
 
-        var drive: OAuthDrive {
-            OAuthDrive(
-                connect: { core, token, tokens, observer, intervals in
+        /// The core's calls: this fake answers for the OAuth Clouds, the core for the others.
+        var cloudCore: CloudCore {
+            CloudCore(
+                connect: { core, target, observer, intervals in
+                    guard case .oAuth(_, _, let token, let tokens) = target else {
+                        return try CloudCore.system.connect(core, target, observer, intervals)
+                    }
                     let account = try self.take(token, tokens)
-                    try core.connectDirectory(path: self.cloud.path, observer: observer, intervals: intervals)
+                    _ = try core.connect(
+                        cloud: .directory(path: self.cloud.path), observer: observer, intervals: intervals)
                     if let rotated = self.rotatesWhileConnecting { tokens.newRefreshToken(token: rotated) }
                     return account
                 },
-                resume: { core, token, tokens, observer, intervals in
+                resume: { core, target, observer, intervals in
+                    guard case .oAuth(_, _, let token, let tokens) = target else {
+                        return try CloudCore.system.resume(core, target, observer, intervals)
+                    }
                     _ = try? self.take(token, tokens)
-                    try? core.connectDirectory(path: self.cloud.path, observer: observer, intervals: intervals)
+                    try? core.resume(
+                        cloud: .directory(path: self.cloud.path), observer: observer, intervals: intervals)
                 },
-                reconnect: { _, token, tokens in try self.take(token, tokens) })
+                reconnect: { core, target in
+                    guard case .oAuth(_, _, let token, let tokens) = target else {
+                        return try CloudCore.system.reconnect(core, target)
+                    }
+                    return try self.take(token, tokens)
+                })
         }
     }
 
@@ -465,8 +479,8 @@ extension LibraryModelTests {
     @Test(arguments: oauthProviders)
     func connectingShowsTheAccountAndSyncsThroughTheDrive(provider: CloudProvider) async throws {
         let fake = FakeOAuthDrive(cloud: cloud)
-        let a = try openLibrary(syncIntervals: Self.fast, oauth: [provider: fake.drive])
-        let b = try openOtherDevice(oauth: [provider: fake.drive])
+        let a = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
+        let b = try openOtherDevice(cloudCore: fake.cloudCore)
         try await a.connectOAuth(provider, refreshToken: "token")
         try await b.connectOAuth(provider, refreshToken: "token")
 
@@ -480,7 +494,7 @@ extension LibraryModelTests {
     @Test func aDriveThatDoesntTellTheAccountShowsAGenericName() async throws {
         let fake = FakeOAuthDrive(cloud: cloud)
         fake.account = ""
-        let library = try openLibrary(oauth: [.googleDrive: fake.drive, .oneDrive: fake.drive])
+        let library = try openLibrary(cloudCore: fake.cloudCore)
 
         try await library.connectOAuth(.googleDrive, refreshToken: "token")
         #expect(library.connection == Self.connection(.googleDrive, "Google Account"))
@@ -492,12 +506,12 @@ extension LibraryModelTests {
     @Test(arguments: oauthProviders)
     func theTokenAndAccountSurviveARelaunchAndAreForgottenOnDisconnect(provider: CloudProvider) async throws {
         let fake = FakeOAuthDrive(cloud: cloud)
-        let first = try openLibrary(syncIntervals: Self.fast, oauth: [provider: fake.drive])
+        let first = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
         try await first.connectOAuth(provider, refreshToken: "token")
         #expect(credentials.load() == .oauth(provider, refreshToken: "token", account: "reader@example.com"))
 
         // Relaunch: Connected again with the saved token, without signing in.
-        let library = try openLibrary(syncIntervals: Self.fast, oauth: [provider: fake.drive])
+        let library = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
         #expect(library.connection == Self.connection(provider))
         #expect(fake.tokensGiven == ["token", "token"])
         #expect(try await eventually { isSynced(library) })
@@ -506,13 +520,13 @@ extension LibraryModelTests {
 
         #expect(library.connection == nil)
         #expect(credentials.load() == nil)
-        #expect(try openLibrary(oauth: [provider: fake.drive]).connection == nil)
+        #expect(try openLibrary(cloudCore: fake.cloudCore).connection == nil)
     }
 
     @Test(arguments: oauthProviders)
     func aRotatedRefreshTokenReplacesTheSavedOne(provider: CloudProvider) async throws {
         let fake = FakeOAuthDrive(cloud: cloud)
-        let library = try openLibrary(syncIntervals: Self.fast, oauth: [provider: fake.drive])
+        let library = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
         try await library.connectOAuth(provider, refreshToken: "token")
 
         fake.rotate(to: "rotated")
@@ -522,7 +536,7 @@ extension LibraryModelTests {
                 credentials.load() == .oauth(provider, refreshToken: "rotated", account: "reader@example.com")
             })
         // A relaunch resumes with it.
-        _ = try openLibrary(oauth: [provider: fake.drive])
+        _ = try openLibrary(cloudCore: fake.cloudCore)
         #expect(fake.tokensGiven.last == "rotated")
     }
 
@@ -530,7 +544,7 @@ extension LibraryModelTests {
     func aRefreshTokenRotatedWhileConnectingIsTheOneSaved(provider: CloudProvider) async throws {
         let fake = FakeOAuthDrive(cloud: cloud)
         fake.rotatesWhileConnecting = "rotated"
-        let library = try openLibrary(syncIntervals: Self.fast, oauth: [provider: fake.drive])
+        let library = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
 
         try await library.connectOAuth(provider, refreshToken: "token")
         try await Task.sleep(for: .milliseconds(100))
@@ -542,7 +556,7 @@ extension LibraryModelTests {
     func aTokenTheProviderRefusesLeavesCloudBackingOff(provider: CloudProvider) async throws {
         let fake = FakeOAuthDrive(cloud: cloud)
         fake.refusal = .AccessDenied
-        let library = try openLibrary(oauth: [provider: fake.drive])
+        let library = try openLibrary(cloudCore: fake.cloudCore)
 
         await #expect(throws: ConnectError.AccessDenied) {
             try await library.connectOAuth(provider, refreshToken: "token")
@@ -555,7 +569,7 @@ extension LibraryModelTests {
     @Test func aWorkOrSchoolAccountIsRefusedWithAMessage() async throws {
         let fake = FakeOAuthDrive(cloud: cloud)
         fake.refusal = .UnsupportedAccount
-        let library = try openLibrary(oauth: [.oneDrive: fake.drive])
+        let library = try openLibrary(cloudCore: fake.cloudCore)
 
         await #expect(throws: ConnectError.UnsupportedAccount) {
             try await library.connectOAuth(.oneDrive, refreshToken: "token")
@@ -568,7 +582,7 @@ extension LibraryModelTests {
     @Test(arguments: oauthProviders)
     func lostAccessIsReconnectedWithANewSignIn(provider: CloudProvider) async throws {
         let fake = FakeOAuthDrive(cloud: cloud)
-        let library = try openLibrary(syncIntervals: Self.fast, oauth: [provider: fake.drive])
+        let library = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
         try await library.connectOAuth(provider, refreshToken: "old")
         #expect(try await eventually { isSynced(library) })
         // The provider refuses access, as after the user revoked it.
@@ -589,7 +603,7 @@ extension LibraryModelTests {
         provider: CloudProvider
     ) async throws {
         let fake = FakeOAuthDrive(cloud: cloud)
-        let library = try openLibrary(syncIntervals: Self.fast, oauth: [provider: fake.drive])
+        let library = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
         try await library.connectOAuth(provider, refreshToken: "old")
         fake.refusal = .AccessDenied
 
@@ -603,7 +617,7 @@ extension LibraryModelTests {
 
     @Test func reconnectingOAuthWithoutAnOAuthConnectionDoesNothing() async throws {
         let fake = FakeOAuthDrive(cloud: cloud)
-        let library = try openLibrary(syncIntervals: Self.fast, oauth: [.oneDrive: fake.drive])
+        let library = try openLibrary(syncIntervals: Self.fast, cloudCore: fake.cloudCore)
         try await library.connect(directory: cloud)
 
         try await library.reconnectOAuth(refreshToken: "new")

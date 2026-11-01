@@ -449,6 +449,91 @@ impl OAuthProvider {
     }
 }
 
+/// A Cloud Provider to Connect to, see `Library::connect`: what it takes to
+/// reach it, and where its storage lives in the core.
+#[derive(uniffi::Enum)]
+pub enum Cloud {
+    /// The WebDAV server at `url`, reached as `username` with `password`.
+    /// Connecting checks them and creates the `Leaf` folder if needed.
+    WebDav {
+        url: String,
+        username: String,
+        password: String,
+    },
+    /// The `Leaf` folder in the granted iCloud Drive, at `folder`, created if
+    /// missing. Files other Devices wrote that iCloud hasn't downloaded yet are
+    /// not there for Sync until `downloads` has fetched them. `AccessDenied` if
+    /// `folder` can't be opened.
+    ICloudDrive {
+        folder: String,
+        downloads: Arc<dyn DownloadRequester>,
+    },
+    /// Google Drive or OneDrive (`provider`) of the user who owns
+    /// `refresh_token`, a token of the public OAuth client `client_id`. Every
+    /// token the provider rotates goes to `tokens`.
+    OAuth {
+        provider: OAuthProvider,
+        client_id: String,
+        refresh_token: String,
+        tokens: Arc<dyn RefreshTokenObserver>,
+    },
+    /// The directory `path`, as if it were a cloud, for tests.
+    Directory { path: String },
+}
+
+impl Cloud {
+    /// Its storage and its account, empty if the provider doesn't tell it.
+    /// Contacts the provider, if the Cloud has one.
+    fn connect(self) -> Result<(Arc<dyn Storage>, String), ConnectError> {
+        match self {
+            Self::WebDav {
+                url,
+                username,
+                password,
+            } => {
+                let storage = WebDavStorage::connect(&url, &username, &password)?;
+                Ok((Arc::new(storage), String::new()))
+            }
+            Self::OAuth {
+                provider,
+                client_id,
+                refresh_token,
+                tokens,
+            } => provider.connect(&client_id, &refresh_token, tokens),
+            cloud => Ok((cloud.resume()?, String::new())),
+        }
+    }
+
+    /// Its storage, without contacting anyone.
+    fn resume(self) -> Result<Arc<dyn Storage>, ConnectError> {
+        match self {
+            Self::WebDav {
+                url,
+                username,
+                password,
+            } => Ok(Arc::new(WebDavStorage::resume(&url, &username, &password)?)),
+            Self::ICloudDrive { folder, downloads } => {
+                let storage = DirStorage::open(folder)
+                    .map_err(|_| ConnectError::AccessDenied)?
+                    .on_download_needed(move |path| {
+                        downloads.request_download(path.to_string_lossy().into_owned());
+                    });
+                Ok(Arc::new(storage))
+            }
+            Self::OAuth {
+                provider,
+                client_id,
+                refresh_token,
+                tokens,
+            } => Ok(provider.resume(&client_id, &refresh_token, tokens)),
+            Self::Directory { path } => {
+                let storage = DirStorage::open(path).map_err(|_| ConnectError::AccessDenied)?;
+                Ok(Arc::new(storage))
+            }
+        }
+    }
+}
+
 /// When Sync steps run, see `leaf_core::sync_loop::Intervals`.
 #[derive(uniffi::Record)]
 pub struct SyncIntervals {
@@ -556,142 +641,45 @@ impl Library {
         }))
     }
 
-    /// Connects to the WebDAV server at `url` and starts syncing with it: the
-    /// first step merges the Library with the cloud's. Checks the details first
-    /// and creates the `Leaf` folder if needed; blocks while it talks to the
-    /// server. Replaces any earlier Connection.
-    pub fn connect_webdav(
+    /// Connects to `cloud` and starts syncing with it: the first step merges
+    /// the Library with the cloud's. Blocks while it talks to the provider.
+    /// Returns the user's account, empty if the provider doesn't tell it or the
+    /// Cloud has none. Fails with `UnsupportedAccount` for a OneDrive work or
+    /// school account. Replaces any earlier Connection.
+    pub fn connect(
         &self,
-        url: String,
-        username: String,
-        password: String,
-        observer: Arc<dyn SyncObserver>,
-        intervals: SyncIntervals,
-    ) -> Result<(), ConnectError> {
-        let storage = WebDavStorage::connect(&url, &username, &password)?;
-        self.start_sync(Arc::new(storage), observer, intervals);
-        Ok(())
-    }
-
-    /// Like `connect_webdav` for a server connected before, e.g. at the last
-    /// launch: contacts nobody, so it works offline.
-    pub fn resume_webdav(
-        &self,
-        url: String,
-        username: String,
-        password: String,
-        observer: Arc<dyn SyncObserver>,
-        intervals: SyncIntervals,
-    ) -> Result<(), ConnectError> {
-        let storage = WebDavStorage::resume(&url, &username, &password)?;
-        self.start_sync(Arc::new(storage), observer, intervals);
-        Ok(())
-    }
-
-    /// Reconnects the running Connection to the WebDAV server, after its
-    /// status became `AccessLost`: checks the credentials like `connect_webdav`
-    /// and, if they are right, resumes syncing at once. Blocks while it talks to the server.
-    /// Does nothing if not Connected.
-    pub fn reconnect_webdav(
-        &self,
-        url: String,
-        username: String,
-        password: String,
-    ) -> Result<(), ConnectError> {
-        let storage = WebDavStorage::connect(&url, &username, &password)?;
-        if let Some(sync) = &*self.sync() {
-            sync.use_storage(Arc::new(storage));
-        }
-        Ok(())
-    }
-
-    /// Connects to iCloud Drive and starts syncing with it: the first step
-    /// merges the Library with the cloud's. `folder` is `Leaf` in the
-    /// granted iCloud Drive, created if missing. Files other Devices wrote that
-    /// iCloud hasn't downloaded yet are not there for Sync until `downloads` has
-    /// fetched them. Contacts nobody, so it serves to resume a Connection too,
-    /// and to Reconnect after access was lost. Replaces any earlier Connection.
-    pub fn connect_icloud_drive(
-        &self,
-        folder: String,
-        downloads: Arc<dyn DownloadRequester>,
-        observer: Arc<dyn SyncObserver>,
-        intervals: SyncIntervals,
-    ) -> Result<(), ConnectError> {
-        let storage = DirStorage::open(folder)
-            .map_err(|_| ConnectError::AccessDenied)?
-            .on_download_needed(move |path| {
-                downloads.request_download(path.to_string_lossy().into_owned());
-            });
-        self.start_sync(Arc::new(storage), observer, intervals);
-        Ok(())
-    }
-
-    /// Connects to the Google Drive or OneDrive (`provider`) of the user who
-    /// owns `refresh_token`, a token of the public OAuth client `client_id`,
-    /// and starts syncing with it: the first step merges the Library with the
-    /// cloud's. Blocks while it talks to the provider. Returns the user's
-    /// account, empty if the provider doesn't tell. Fails with
-    /// `UnsupportedAccount` for a OneDrive work or school account. Every token
-    /// the provider rotates later goes to `tokens`. Replaces any earlier
-    /// Connection.
-    pub fn connect_oauth(
-        &self,
-        provider: OAuthProvider,
-        client_id: String,
-        refresh_token: String,
-        tokens: Arc<dyn RefreshTokenObserver>,
+        cloud: Cloud,
         observer: Arc<dyn SyncObserver>,
         intervals: SyncIntervals,
     ) -> Result<String, ConnectError> {
-        let (storage, account) = provider.connect(&client_id, &refresh_token, tokens)?;
+        let (storage, account) = cloud.connect()?;
         self.start_sync(storage, observer, intervals);
         Ok(account)
     }
 
-    /// Like `connect_oauth` for a Connection made before, e.g. at the last
-    /// launch: contacts nobody, so it works offline.
-    pub fn resume_oauth(
+    /// Like `connect` for a Cloud connected before, e.g. at the last launch:
+    /// contacts nobody, so it works offline.
+    pub fn resume(
         &self,
-        provider: OAuthProvider,
-        client_id: String,
-        refresh_token: String,
-        tokens: Arc<dyn RefreshTokenObserver>,
+        cloud: Cloud,
         observer: Arc<dyn SyncObserver>,
         intervals: SyncIntervals,
-    ) {
-        let storage = provider.resume(&client_id, &refresh_token, tokens);
+    ) -> Result<(), ConnectError> {
+        let storage = cloud.resume()?;
         self.start_sync(storage, observer, intervals);
+        Ok(())
     }
 
-    /// Reconnects the running Connection with the new `refresh_token`, after
-    /// its status became `AccessLost`: checks it like `connect_oauth` and, if
-    /// it is right, resumes syncing at once. Returns the account. Does nothing
-    /// if not Connected.
-    pub fn reconnect_oauth(
-        &self,
-        provider: OAuthProvider,
-        client_id: String,
-        refresh_token: String,
-        tokens: Arc<dyn RefreshTokenObserver>,
-    ) -> Result<String, ConnectError> {
-        let (storage, account) = provider.connect(&client_id, &refresh_token, tokens)?;
+    /// Reconnects the running Connection to `cloud`, after its status became
+    /// `AccessLost`: checks it like `connect` and, if it is right, resumes
+    /// syncing at once. Blocks while it talks to the provider. Returns the
+    /// account. Does nothing if not Connected.
+    pub fn reconnect(&self, cloud: Cloud) -> Result<String, ConnectError> {
+        let (storage, account) = cloud.connect()?;
         if let Some(sync) = &*self.sync() {
             sync.use_storage(storage);
         }
         Ok(account)
-    }
-
-    /// Connects to the directory `path` as if it were a cloud, for tests.
-    pub fn connect_directory(
-        &self,
-        path: String,
-        observer: Arc<dyn SyncObserver>,
-        intervals: SyncIntervals,
-    ) -> Result<(), LibraryError> {
-        let storage = DirStorage::open(path)?;
-        self.start_sync(Arc::new(storage), observer, intervals);
-        Ok(())
     }
 
     /// Stops syncing and cancels running transfers. Keeps everything in the
@@ -907,9 +895,11 @@ mod tests {
         let hour = 3_600_000;
 
         library
-            .connect_icloud_drive(
-                folder.display().to_string(),
-                requests.clone(),
+            .connect(
+                Cloud::ICloudDrive {
+                    folder: folder.display().to_string(),
+                    downloads: requests.clone(),
+                },
                 steps.clone(),
                 SyncIntervals {
                     debounce_ms: 10,
@@ -934,9 +924,11 @@ mod tests {
         std::fs::write(dir.join("Leaf"), b"a file").unwrap();
         let library = Library::open(dir.join("library").display().to_string()).unwrap();
 
-        let result = library.connect_icloud_drive(
-            dir.join("Leaf").display().to_string(),
-            Arc::new(Requests(Mutex::default())),
+        let result = library.connect(
+            Cloud::ICloudDrive {
+                folder: dir.join("Leaf").display().to_string(),
+                downloads: Arc::new(Requests(Mutex::default())),
+            },
             Arc::new(Steps::default()),
             SyncIntervals {
                 debounce_ms: 10,
@@ -947,6 +939,77 @@ mod tests {
         );
 
         assert_eq!(result.unwrap_err(), ConnectError::AccessDenied);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn resume_syncs_the_cloud_without_connecting_it_again() {
+        let dir = std::env::temp_dir().join(format!("leaf-ffi-resume-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let library = Library::open(dir.join("library").display().to_string()).unwrap();
+        let steps = Arc::new(Steps::default());
+        let hour = 3_600_000;
+
+        library
+            .resume(
+                Cloud::Directory {
+                    path: dir.join("cloud").display().to_string(),
+                },
+                steps.clone(),
+                SyncIntervals {
+                    debounce_ms: 10,
+                    progress_ms: 10,
+                    poll_ms: hour,
+                    idle_poll_ms: hour,
+                },
+            )
+            .unwrap();
+        another_step(&steps, 0, "resuming");
+
+        library.disconnect();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn resuming_an_icloud_folder_that_is_gone_is_access_denied_and_starts_no_sync() {
+        let dir = std::env::temp_dir().join(format!("leaf-ffi-gone-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Leaf"), b"a file").unwrap();
+        let library = Library::open(dir.join("library").display().to_string()).unwrap();
+
+        let result = library.resume(
+            Cloud::ICloudDrive {
+                folder: dir.join("Leaf").display().to_string(),
+                downloads: Arc::new(Requests(Mutex::default())),
+            },
+            Arc::new(Steps::default()),
+            SyncIntervals {
+                debounce_ms: 10,
+                progress_ms: 10,
+                poll_ms: 10,
+                idle_poll_ms: 10,
+            },
+        );
+
+        assert_eq!(result.unwrap_err(), ConnectError::AccessDenied);
+        assert!(library.sync().is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reconnecting_without_a_connection_checks_the_cloud_and_starts_no_sync() {
+        let dir = std::env::temp_dir().join(format!("leaf-ffi-reconnect-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let library = Library::open(dir.join("library").display().to_string()).unwrap();
+
+        let account = library
+            .reconnect(Cloud::Directory {
+                path: dir.join("cloud").display().to_string(),
+            })
+            .unwrap();
+
+        assert_eq!(account, "");
+        assert!(library.sync().is_none());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1049,8 +1112,10 @@ mod tests {
         let steps = Arc::new(Steps::default());
         let hour = 3_600_000;
         library
-            .connect_directory(
-                dir.join("cloud").display().to_string(),
+            .connect(
+                Cloud::Directory {
+                    path: dir.join("cloud").display().to_string(),
+                },
                 steps.clone(),
                 SyncIntervals {
                     debounce_ms: 10,

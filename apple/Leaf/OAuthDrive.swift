@@ -2,46 +2,30 @@ import Foundation
 import LeafCore
 import Synchronization
 
-/// What Cloud Backing asks of the core for a Cloud Provider behind OAuth
-/// (Google Drive, OneDrive); tests stand in.
+/// A Cloud Provider behind OAuth, as the core has it: its OAuth provider and
+/// the OAuth client of this app, from Info.plist (see `Config/CloudClients.xcconfig`).
 struct OAuthDrive: Sendable {
-    typealias Connect =
-        @Sendable (LeafCore.Library, _ refreshToken: String, RefreshTokenObserver, SyncObserver, SyncIntervals) throws
-        -> String
-    typealias Resume =
-        @Sendable (LeafCore.Library, _ refreshToken: String, RefreshTokenObserver, SyncObserver, SyncIntervals) -> Void
-    typealias Reconnect = @Sendable (LeafCore.Library, _ refreshToken: String, RefreshTokenObserver) throws -> String
+    let provider: OAuthProvider
+    let clientID: String
 
-    /// Starts syncing with the Drive the token belongs to; returns its account.
-    var connect: Connect
-    /// Like `connect` for a Drive connected before; contacts nobody.
-    var resume: Resume
-    /// Gives the running Connection a new token, after access was lost; returns the account.
-    var reconnect: Reconnect
-
-    /// The core's storage of `provider`, for the OAuth client `clientID`.
-    static func core(_ provider: OAuthProvider, clientID: String) -> OAuthDrive {
-        OAuthDrive(
-            connect: { core, token, tokens, observer, intervals in
-                try core.connectOauth(
-                    provider: provider, clientId: clientID, refreshToken: token, tokens: tokens, observer: observer,
-                    intervals: intervals)
-            },
-            resume: { core, token, tokens, observer, intervals in
-                core.resumeOauth(
-                    provider: provider, clientId: clientID, refreshToken: token, tokens: tokens, observer: observer,
-                    intervals: intervals)
-            },
-            reconnect: { core, token, tokens in
-                try core.reconnectOauth(provider: provider, clientId: clientID, refreshToken: token, tokens: tokens)
-            })
+    /// Nil for a Cloud Provider without OAuth.
+    init?(_ provider: CloudProvider) {
+        switch provider {
+        case .googleDrive:
+            self.provider = .googleDrive
+            clientID = OAuthSignIn.configured(.google)?.clientID ?? ""
+        case .oneDrive:
+            self.provider = .oneDrive
+            clientID = OAuthSignIn.configured(.microsoft)?.clientID ?? ""
+        case .webDAV, .iCloudDrive:
+            return nil
+        }
     }
 
-    /// The OAuth clients of this app, from Info.plist (see `Config/CloudClients.xcconfig`).
-    static let system: [CloudProvider: OAuthDrive] = [
-        .googleDrive: .core(.googleDrive, clientID: OAuthSignIn.configured(.google)?.clientID ?? ""),
-        .oneDrive: .core(.oneDrive, clientID: OAuthSignIn.configured(.microsoft)?.clientID ?? ""),
-    ]
+    /// The core's Cloud of this drive for `refreshToken`, a token of its OAuth client.
+    func cloud(refreshToken: String, tokens: RefreshTokenObserver) -> Cloud {
+        .oAuth(provider: provider, clientId: clientID, refreshToken: refreshToken, tokens: tokens)
+    }
 }
 
 /// Keeps the latest refresh token of a Connection: the one it started with, or

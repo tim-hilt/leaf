@@ -225,7 +225,7 @@ final class LibraryModel {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let credentials: CloudCredentials
     @ObservationIgnored private let iCloudDrive: ICloudDrive
-    @ObservationIgnored private let oauthDrives: [CloudProvider: OAuthDrive]
+    @ObservationIgnored private let cloudCore: CloudCore
     /// The access to iCloud Drive that a Connection to it holds, until it ends.
     @ObservationIgnored private var iCloudGrant: ICloudGrant?
     @ObservationIgnored private let syncIntervals: SyncIntervals
@@ -259,7 +259,7 @@ final class LibraryModel {
     /// copies, deleted after `importFiles`.
     init(
         root: URL, coversFolder: URL, defaults: UserDefaults, credentials: CloudCredentials,
-        iCloudDrive: ICloudDrive = .system, oauth: [CloudProvider: OAuthDrive] = OAuthDrive.system,
+        iCloudDrive: ICloudDrive = .system, cloudCore: CloudCore = .system,
         syncIntervals: SyncIntervals = .standard, inbox: URL? = nil
     ) throws {
         core = try LeafCore.Library.open(root: root.path)
@@ -267,7 +267,7 @@ final class LibraryModel {
         self.defaults = defaults
         self.credentials = credentials
         self.iCloudDrive = iCloudDrive
-        oauthDrives = oauth
+        self.cloudCore = cloudCore
         self.syncIntervals = syncIntervals
         self.inbox = inbox
         sort = LibrarySort(from: defaults)
@@ -282,17 +282,16 @@ final class LibraryModel {
             do {
                 switch saved {
                 case .webDAV(let account):
-                    try core.resumeWebdav(
-                        url: account.url, username: account.username, password: account.password,
-                        observer: relay(for: id), intervals: syncIntervals)
+                    try resume(
+                        .webDav(url: account.url, username: account.username, password: account.password), as: id)
                     connection = CloudConnection(provider: .webDAV, detail: account.url)
                 case .iCloudDrive(let bookmark):
                     connection = Self.iCloudConnection
                     // Without the grant or iCloud Drive there is nothing to sync with until Reconnect.
                     if !resumeICloudDrive(bookmark: bookmark, id: id) { loseAccess() }
                 case .oauth(let provider, let token, let account):
-                    guard let drive = oauthDrives[provider] else { throw ConnectError.AccessDenied }
-                    drive.resume(core, token, refreshTokens(token, for: id), relay(for: id), syncIntervals)
+                    guard let drive = OAuthDrive(provider) else { throw ConnectError.AccessDenied }
+                    try resume(drive.cloud(refreshToken: token, tokens: refreshTokens(token, for: id)), as: id)
                     connection = Self.oauthConnection(provider, account)
                 }
             } catch {
@@ -334,19 +333,8 @@ final class LibraryModel {
     /// and throws a `ConnectError` if they are wrong. Keeps them, the password
     /// in the Keychain, until `disconnect`. Replaces any earlier Connection.
     func connect(url: String, username: String, password: String) async throws {
-        let core = core
         let id = newConnection()
-        let observer = relay(for: id)
-        let intervals = syncIntervals
-        do {
-            try await Task.detached {
-                try core.connectWebdav(
-                    url: url, username: username, password: password, observer: observer, intervals: intervals)
-            }.value
-        } catch {
-            if connectionID == id { connectionID = nil }
-            throw error
-        }
+        _ = try await connect(.webDav(url: url, username: username, password: password), as: id)
         connection = CloudConnection(provider: .webDAV, detail: url)
         credentials.save(.webDAV(WebDAVAccount(url: url, username: username, password: password)))
     }
@@ -358,10 +346,7 @@ final class LibraryModel {
     /// Connection is saved.
     func reconnect(password: String) async throws {
         guard case .webDAV(let account) = credentials.load(), let id = connectionID else { return }
-        let core = core
-        try await Task.detached {
-            try core.reconnectWebdav(url: account.url, username: account.username, password: password)
-        }.value
+        _ = try await reconnect(.webDav(url: account.url, username: account.username, password: password))
         // Disconnected meanwhile: nothing to keep.
         guard connectionID == id else { return }
         credentials.save(.webDAV(WebDAVAccount(url: account.url, username: account.username, password: password)))
@@ -385,18 +370,7 @@ final class LibraryModel {
         guard iCloudDrive.isRoot(granted) else { throw ConnectError.WrongFolder }
         let grant = try ICloudGrant(granting: granted)
         let id = newConnection()
-        let folder = grant.folder.path
-        let (core, observer, intervals) = (core, relay(for: id), syncIntervals)
-        let downloads = DownloadRequests(iCloudDrive.requestDownload)
-        do {
-            try await Task.detached {
-                try core.connectIcloudDrive(
-                    folder: folder, downloads: downloads, observer: observer, intervals: intervals)
-            }.value
-        } catch {
-            if connectionID == id { connectionID = nil }
-            throw error
-        }
+        _ = try await connect(iCloud(grant), as: id)
         iCloudGrant = grant
         connection = Self.iCloudConnection
         credentials.save(.iCloudDrive(bookmark: grant.bookmark))
@@ -406,12 +380,40 @@ final class LibraryModel {
     /// False if it can't be resumed: access is lost.
     private func resumeICloudDrive(bookmark: Data, id: UUID) -> Bool {
         guard iCloudDrive.isAvailable(), let grant = ICloudGrant(bookmark: bookmark),
-            (try? core.connectIcloudDrive(
-                folder: grant.folder.path, downloads: DownloadRequests(iCloudDrive.requestDownload),
-                observer: relay(for: id), intervals: syncIntervals)) != nil
+            (try? resume(iCloud(grant), as: id)) != nil
         else { return false }
         iCloudGrant = grant
         return true
+    }
+
+    /// Connects Connection `id` to `cloud`. The core blocks while it talks to the
+    /// provider, so this runs off the main actor. Clears `id` if that fails.
+    private func connect(_ cloud: Cloud, as id: UUID) async throws -> String {
+        let (core, cloudCore, observer, intervals) = (core, cloudCore, relay(for: id), syncIntervals)
+        do {
+            return try await Task.detached {
+                try cloudCore.connect(core, cloud, observer, intervals)
+            }.value
+        } catch {
+            if connectionID == id { connectionID = nil }
+            throw error
+        }
+    }
+
+    /// Resumes Connection `id` to `cloud`, contacting nobody. Throws if the Cloud can't be opened.
+    private func resume(_ cloud: Cloud, as id: UUID) throws {
+        try cloudCore.resume(core, cloud, relay(for: id), syncIntervals)
+    }
+
+    /// Gives the running Connection `cloud`, see `CloudCore.reconnect`.
+    private func reconnect(_ cloud: Cloud) async throws -> String {
+        let (core, cloudCore) = (core, cloudCore)
+        return try await Task.detached { try cloudCore.reconnect(core, cloud) }.value
+    }
+
+    /// The core's Cloud of the iCloud Drive folder that `grant` gives access to.
+    private func iCloud(_ grant: ICloudGrant) -> Cloud {
+        .iCloudDrive(folder: grant.folder.path, downloads: DownloadRequests(iCloudDrive.requestDownload))
     }
 
     private static func oauthConnection(_ provider: CloudProvider, _ account: String) -> CloudConnection {
@@ -437,19 +439,10 @@ final class LibraryModel {
     /// the Keychain, until `disconnect`; tokens that the provider rotates
     /// replace it. Replaces any earlier Connection.
     func connectOAuth(_ provider: CloudProvider, refreshToken: String) async throws {
-        guard let drive = oauthDrives[provider] else { throw ConnectError.AccessDenied }
+        guard let drive = OAuthDrive(provider) else { throw ConnectError.AccessDenied }
         let id = newConnection()
         let tokens = refreshTokens(refreshToken, for: id)
-        let (core, observer, intervals) = (core, relay(for: id), syncIntervals)
-        let account: String
-        do {
-            account = try await Task.detached {
-                try drive.connect(core, refreshToken, tokens, observer, intervals)
-            }.value
-        } catch {
-            if connectionID == id { connectionID = nil }
-            throw error
-        }
+        let account = try await connect(drive.cloud(refreshToken: refreshToken, tokens: tokens), as: id)
         connection = Self.oauthConnection(provider, account)
         credentials.save(.oauth(provider, refreshToken: tokens.latest, account: account))
     }
@@ -460,14 +453,11 @@ final class LibraryModel {
     /// token then stay as they were. Does nothing unless a Google Drive or
     /// OneDrive Connection is saved.
     func reconnectOAuth(refreshToken: String) async throws {
-        guard case .oauth(let provider, _, _) = credentials.load(), let drive = oauthDrives[provider],
+        guard case .oauth(let provider, _, _) = credentials.load(), let drive = OAuthDrive(provider),
             let id = connectionID
         else { return }
         let tokens = refreshTokens(refreshToken, for: id)
-        let core = core
-        let account = try await Task.detached {
-            try drive.reconnect(core, refreshToken, tokens)
-        }.value
+        let account = try await reconnect(drive.cloud(refreshToken: refreshToken, tokens: tokens))
         // Disconnected meanwhile: nothing to keep.
         guard connectionID == id else { return }
         connection = Self.oauthConnection(provider, account)
@@ -486,13 +476,8 @@ final class LibraryModel {
     /// Connects to the directory `directory` as if it were a cloud, for tests.
     /// Not remembered.
     func connect(directory: URL) async throws {
-        let core = core
         let id = newConnection()
-        let observer = relay(for: id)
-        let intervals = syncIntervals
-        try await Task.detached {
-            try core.connectDirectory(path: directory.path, observer: observer, intervals: intervals)
-        }.value
+        _ = try await connect(.directory(path: directory.path), as: id)
         connection = CloudConnection(provider: .webDAV, detail: directory.path)
     }
 
