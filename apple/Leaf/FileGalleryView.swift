@@ -23,8 +23,12 @@ import UniformTypeIdentifiers
 /// highlights the Document read, if a highlight was in use.
 struct FileGalleryView: View {
     @Environment(LibraryModel.self) private var library
-    /// The Document in the Reader; nil while the Gallery shows.
+    @Environment(AppSettings.self) private var settings
+    @Environment(\.colorScheme) private var colorScheme
+    /// The Document to show in the Reader; nil while the Gallery shows.
     @SceneStorage("openDocument") private var openID: String?
+    /// The Document the Reader shows; the Reader is pushed once it is read.
+    @State private var loaded: LoadedDocument?
     @State private var isImporting = false
     @State private var isDropTargeted = false
     @State private var isShowingSettings = false
@@ -95,7 +99,9 @@ struct FileGalleryView: View {
             .navigationTitle("Leaf")
             .navigationDestination(isPresented: showsReader) {
                 // A new Reader per Document, so that nothing of the previous one carries over.
-                if let document = openDocument { ReaderView(document: document).id(document.id) }
+                if let loaded, let document = library.documents.first(where: { $0.id == loaded.id }) {
+                    ReaderView(document: document, loaded: loaded).id(loaded.id)
+                }
             }
             #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
@@ -120,6 +126,7 @@ struct FileGalleryView: View {
             isGridFocused = true
         }
         .onChange(of: library.documents) { if openDocument == nil { openID = nil } }
+        .task(id: openID) { await loadOpenDocument() }
         .disabled(library.runningImport != nil)
         .focusedSceneValue(\.isImporting, library.runningImport == nil ? $isImporting : nil)
         .overlay {
@@ -199,11 +206,33 @@ struct FileGalleryView: View {
         library.documents.first { $0.id == openID }
     }
 
-    private var isShowingReader: Bool { openDocument != nil }
+    private var isShowingReader: Bool { loaded != nil }
 
     /// Whether the Reader is pushed; the back chevron and edge swipe Go to Gallery.
     private var showsReader: Binding<Bool> {
-        Binding(get: { isShowingReader }, set: { if !$0 { openID = nil } })
+        Binding(
+            get: { isShowingReader },
+            set: {
+                if !$0 {
+                    openID = nil
+                    loaded = nil
+                }
+            })
+    }
+
+    /// Reads the Document to open, then shows it in the Reader; whatever shows
+    /// stays until then. A File that can't be read doesn't open.
+    private func loadOpenDocument() async {
+        guard let document = openDocument else {
+            loaded = nil
+            return
+        }
+        guard loaded?.id != document.id else { return }
+        let read = await LoadedDocument.load(
+            document, in: library, appearance: settings.pageAppearance(systemScheme: colorScheme))
+        guard !Task.isCancelled else { return }
+        if read == nil { openID = nil }
+        loaded = read
     }
 
     /// Moves the highlight; from the search field, ↓ highlights the first

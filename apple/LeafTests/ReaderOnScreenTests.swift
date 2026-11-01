@@ -23,7 +23,7 @@
             else { throw ImportFailure() }
             let anchor = Anchor.pdf([PageRects(pageIndex: 0, rects: [CGRect(x: 100, y: 300, width: 400, height: 300)])])
             _ = try #require(await library.addHighlight(anchor, quotedText: "a", to: document))
-            let window = host(document, library: library, settings: AppSettings(defaults: defaults))
+            let window = try await host(document, library: library, settings: AppSettings(defaults: defaults))
             for _ in 0..<200 {
                 if let reader = subview(ofType: ReaderPDFView.self, in: window) {
                     #expect(reader.highlights.count == 1)
@@ -46,7 +46,7 @@
                     try writeEPUB(named: "b.epub", body: "<p>Hello from the book</p>"))
             else { throw ImportFailure() }
 
-            let window = host(epub, library: library, settings: AppSettings(defaults: defaults))
+            let window = try await host(epub, library: library, settings: AppSettings(defaults: defaults))
             try await expectText("Hello from the book", in: try await webView(in: window))
         }
 
@@ -91,7 +91,7 @@
             let settings = AppSettings(defaults: defaults)
             settings.theme = .light
             settings.pageStyle = .dark
-            let window = host(first, library: library, settings: settings)
+            let window = try await host(first, library: library, settings: settings)
             // On the bottom edge, inside the bottom safe area inset, where
             // the white strip shows on iPad in a light system theme. There the
             // pages show their paper or, between pages, the darker gap.
@@ -107,15 +107,21 @@
             #expect(shown.isClose(to: paper) || shown.isClose(to: gap), "\(shown) at \(bottomEdge)")
         }
 
-        /// A light window showing the Reader of `document`.
+        /// A light window showing the Reader of `document`, read as the Gallery reads it.
         /// Full screen, so the Reader has the screen's safe areas, like on iPad.
-        private func host(_ document: LibraryDocument, library: LibraryModel, settings: AppSettings) -> UIWindow {
+        private func host(
+            _ document: LibraryDocument, library: LibraryModel, settings: AppSettings
+        ) async throws -> UIWindow {
+            let loaded = try #require(
+                await LoadedDocument.load(
+                    document, in: library, appearance: settings.pageAppearance(systemScheme: .light)))
             let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
             let window = scene.map(UIWindow.init(windowScene:)) ?? UIWindow()
             window.frame = scene?.screen.bounds ?? CGRect(x: 0, y: 0, width: 400, height: 800)
             window.overrideUserInterfaceStyle = .light
             window.rootViewController = UIHostingController(
-                rootView: NavigationStack { ReaderView(document: document) }.environment(library).environment(settings))
+                rootView: NavigationStack { ReaderView(document: document, loaded: loaded) }.environment(library)
+                    .environment(settings))
             window.makeKeyAndVisible()
             windows.append(window)
             return window

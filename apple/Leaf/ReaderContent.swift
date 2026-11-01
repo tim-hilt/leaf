@@ -5,14 +5,37 @@ import SwiftUI
 enum OpenedDocument {
     case pdf(StyledDocument)
     case epub(EpubBook)
+}
 
-    /// Opens `document`'s File, drawn per `appearance` from the start, and reads
-    /// its Table of Contents (empty if it has none). The EPUB is opened and the
-    /// Table of Contents built off the main thread. Nil if the File can't be read.
+/// Everything the Reader shows of a Document when it opens, read before it is
+/// pushed, so that it shows complete at once: bar, pages and Markup.
+struct LoadedDocument {
+    /// The `LibraryDocument` it was read from.
+    let id: String
+    let file: OpenedDocument
+    /// Empty if the Document has none.
+    let contents: TableOfContents
+    let highlights: [Highlight]
+    let pageNotes: [PageNote]
+
+    /// Reads `document`: its File, drawn per `appearance` from the start, Table
+    /// of Contents and Markup. The EPUB is opened and the Table of Contents built
+    /// off the main thread. Nil if the File can't be read.
     @MainActor
-    static func open(
+    static func load(
         _ document: LibraryDocument, in library: LibraryModel, appearance: PageAppearance
-    ) async -> (document: OpenedDocument, contents: TableOfContents)? {
+    ) async -> LoadedDocument? {
+        async let markup = library.markup(of: document)
+        guard let (file, contents) = await open(document, in: library, appearance: appearance) else { return nil }
+        let (highlights, pageNotes) = await markup
+        return LoadedDocument(
+            id: document.id, file: file, contents: contents, highlights: highlights, pageNotes: pageNotes)
+    }
+
+    @MainActor
+    private static func open(
+        _ document: LibraryDocument, in library: LibraryModel, appearance: PageAppearance
+    ) async -> (OpenedDocument, TableOfContents)? {
         switch document.format {
         case .pdf:
             // Styled before PDFKit sees it, so it never starts drawing in Light Pages.

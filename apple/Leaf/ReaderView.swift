@@ -26,6 +26,7 @@ import SwiftUI
 /// (macOS) or after a long press (iOS). Its popover opens in editing and also has
 /// "Remove Note"; emptying the Note removes it. Page Notes can't be moved.
 ///
+/// Shows `loaded`, which is read before the Reader is pushed (see `LoadedDocument`).
 /// Opens at the Document's Reading Progress at fit-to-width, or at page 1. It saves Reading Progress (see `ReadingProgressSaver`) when opened, after scrolling stops,
 /// when it disappears and when the scene goes to the background. Reading
 /// Progress from another Device never moves an open Reader; Markup from another Device
@@ -50,26 +51,32 @@ import SwiftUI
 /// find bar's options open.
 struct ReaderView: View {
     let document: LibraryDocument
+    let loaded: LoadedDocument
     @Environment(LibraryModel.self) private var library
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var sizeClass
-    @State private var opened: OpenedDocument?
     @State private var handle = ReaderHandle()
     @State private var saver: ReadingProgressSaver?
-    @State private var contents: TableOfContents?
     @State private var isShowingContents = false
     @State private var isShowingPageStyle = false
     @State private var results = SearchResults()
-    @State private var highlights: [Highlight] = []
+    @State private var highlights: [Highlight]
     @State private var isShowingResults = false
-    @State private var pageNotes: [PageNote] = []
+    @State private var pageNotes: [PageNote]
     @State private var openMarkup: OpenMarkup?
     /// The Back place; nil when there is none.
     @State private var backTarget: BackTarget?
     /// Immersive Mode; on macOS, whether the window is in full screen.
     @State private var isImmersive = false
+
+    init(document: LibraryDocument, loaded: LoadedDocument) {
+        self.document = document
+        self.loaded = loaded
+        _highlights = State(initialValue: loaded.highlights)
+        _pageNotes = State(initialValue: loaded.pageNotes)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -84,16 +91,7 @@ struct ReaderView: View {
         .animation(.default, value: showsResultsSidebar)
         .sheet(isPresented: $isShowingResults) { SearchResultsSheet(results: results) }
         .task {
-            guard opened == nil else { return }
-            saver = ReadingProgressSaver(library: library, document: document, handle: handle)
-            // Read alongside the File, so the pages first draw with their Markup
-            // rather than drawing it in afterwards. Paper shows until then.
-            async let markup = library.markup(of: document)
-            let file = await OpenedDocument.open(
-                document, in: library, appearance: settings.pageAppearance(systemScheme: colorScheme))
-            (highlights, pageNotes) = await markup
-            contents = file?.contents
-            opened = file?.document
+            if saver == nil { saver = ReadingProgressSaver(library: library, document: document, handle: handle) }
         }
         // Markup from another Device shows live. Reading Progress never moves the Reader.
         .onChange(of: library.markupRevision(of: document)) {
@@ -173,7 +171,7 @@ struct ReaderView: View {
             pageNotes: pageNotes, pageNoteColor: library.highlightColors[0].tint,
             handle: handle, results: results,
             place: document.place,
-            contents: contents ?? TableOfContents(), textSize: settings.epubTextSize,
+            contents: loaded.contents, textSize: settings.epubTextSize,
             callbacks: ReaderCallbacks(
                 onSingleTap: toggleImmersive, onOpen: { saver?.opened() }, onDragScroll: enterImmersive,
                 onScroll: { saver?.scrolled() },
@@ -186,41 +184,31 @@ struct ReaderView: View {
     }
 
     private var pages: some View {
-        Group {
-            if let opened {
-                ReaderContent(document: opened, inputs: inputs)
-                    // Inside `ignoresSafeArea`, so the anchor shares the reader's frame,
-                    // whose coordinates the tap points are in.
-                    .popover(
-                        item: $openMarkup,
-                        attachmentAnchor: .rect(
-                            .rect(CGRect(origin: openMarkup?.point ?? .zero, size: CGSize(width: 1, height: 1))))
-                    ) { open in
-                        popover(for: open)
-                    }
-                    #if os(iOS)
-                        // Under the bars and the home indicator, so Immersive Mode changes
-                        // only the safe area, not the frame, and the pages stay put. Without
-                        // the bottom, the window's background would strip over the bottom
-                        // safe area, whatever the Theme.
-                        .ignoresSafeArea(.container, edges: [.top, .bottom])
-                    #endif
-            } else {
-                // While loading, never the system background showing through.
-                Color(settings.pageAppearance(systemScheme: colorScheme).paper)
-                    #if os(iOS)
-                        .ignoresSafeArea(.container)
-                    #endif
+        ReaderContent(document: loaded.file, inputs: inputs)
+            // Inside `ignoresSafeArea`, so the anchor shares the reader's frame,
+            // whose coordinates the tap points are in.
+            .popover(
+                item: $openMarkup,
+                attachmentAnchor: .rect(
+                    .rect(CGRect(origin: openMarkup?.point ?? .zero, size: CGSize(width: 1, height: 1))))
+            ) { open in
+                popover(for: open)
             }
-        }
-        .overlay(alignment: .bottom) {
-            if let backTarget {
-                BackCapsule(target: backTarget) { handle.view?.goBack() }
-                    .padding(.bottom)
-                    .transition(.opacity)
+            #if os(iOS)
+                // Under the bars and the home indicator, so Immersive Mode changes
+                // only the safe area, not the frame, and the pages stay put. Without
+                // the bottom, the window's background would strip over the bottom
+                // safe area, whatever the Theme.
+                .ignoresSafeArea(.container, edges: [.top, .bottom])
+            #endif
+            .overlay(alignment: .bottom) {
+                if let backTarget {
+                    BackCapsule(target: backTarget) { handle.view?.goBack() }
+                        .padding(.bottom)
+                        .transition(.opacity)
+                }
             }
-        }
-        .animation(.default, value: backTarget)
+            .animation(.default, value: backTarget)
     }
 
     /// The popover of the Highlight or page Note `open`; nothing if it is gone.
@@ -252,8 +240,7 @@ struct ReaderView: View {
 
     /// The Table of Contents, unless it is empty.
     private var availableContents: TableOfContents? {
-        guard let contents, !contents.isEmpty else { return nil }
-        return contents
+        loaded.contents.isEmpty ? nil : loaded.contents
     }
 
     /// Where the top of the viewport is, as of now: the Table of Contents is
