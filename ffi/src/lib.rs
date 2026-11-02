@@ -1035,7 +1035,7 @@ impl Library {
     }
 
     /// `written`, for Reading Progress, which Syncs less eagerly.
-    fn progress_written(&self, outcome: std::io::Result<()>) -> Result<(), LibraryError> {
+    fn progress_written(&self, outcome: std::io::Result<bool>) -> Result<bool, LibraryError> {
         if let Some(sync) = &*self.sync() {
             sync.progress_change();
         }
@@ -1182,20 +1182,16 @@ impl Library {
         Ok(self.core.epub_cover(&id)?)
     }
 
-    pub fn save_progress(&self, id: String, progress: ReadingProgress) -> Result<(), LibraryError> {
-        self.progress_written(self.core.save_progress(&id, &progress))
-    }
-
-    /// Whether saving `progress` for Document `id` changes what the Gallery for
-    /// `sort` shows, see `leaf_core::library::Library::would_change_gallery`. Call
-    /// it before `save_progress`.
-    pub fn would_change_gallery(
+    /// Stores `progress` as the Reading Progress of Document `id`, and says
+    /// whether that changes what the Gallery for `sort` shows, see
+    /// `leaf_core::library::Library::save_progress`.
+    pub fn save_progress(
         &self,
         id: String,
         progress: ReadingProgress,
         sort: Sort,
     ) -> Result<bool, LibraryError> {
-        Ok(self.core.would_change_gallery(&id, &progress, sort)?)
+        self.progress_written(self.core.save_progress(&id, &progress, sort))
     }
 
     pub fn markup(&self, id: String) -> Result<Markup, LibraryError> {
@@ -1676,7 +1672,15 @@ mod tests {
                 },
                 last_read: 1,
             };
-            l.save_progress(id, progress).unwrap();
+            l.save_progress(
+                id,
+                progress,
+                Sort {
+                    key: SortKey::DateImported,
+                    reversed: false,
+                },
+            )
+            .unwrap();
         });
         write("add_page_note", &|l, id| {
             let place = Place::Pdf {

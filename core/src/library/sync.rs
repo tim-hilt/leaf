@@ -751,6 +751,15 @@ mod tests {
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 
+    /// The Gallery's by-date order, for saves that don't care what the Gallery
+    /// shows.
+    fn by_date() -> Sort {
+        Sort {
+            key: SortKey::DateImported,
+            reversed: false,
+        }
+    }
+
     /// Devices sharing one cloud: each has its own Library folder, and all
     /// sync with the one storage directory.
     struct Cloud {
@@ -1046,7 +1055,9 @@ mod tests {
         let newest = b.import("newest.pdf", b"newest");
         for (document, last_read) in [(&read_early, 100), (&read_late, 200)] {
             let progress = ReadingProgress::pdf(1, 0.0, 0.0, last_read);
-            b.library.save_progress(&document.id, &progress).unwrap();
+            b.library
+                .save_progress(&document.id, &progress, by_date())
+                .unwrap();
         }
         b.sync();
         // The Files get lost on this Device, the Library keeps listing them.
@@ -1223,7 +1234,9 @@ mod tests {
         let a = cloud.device();
         let document = a.import("a.pdf", b"x");
         let progress = ReadingProgress::pdf(3, 1.0, 2.0, 5);
-        a.library.save_progress(&document.id, &progress).unwrap();
+        a.library
+            .save_progress(&document.id, &progress, by_date())
+            .unwrap();
         a.sync();
         fs::remove_file(&document.path).unwrap();
 
@@ -1281,7 +1294,9 @@ mod tests {
         let mut cloud = Cloud::new();
         let (a, b, id) = two_devices_with_a_document(&mut cloud);
 
-        a.library.save_progress(&id, &progress(4, 100)).unwrap();
+        a.library
+            .save_progress(&id, &progress(4, 100), by_date())
+            .unwrap();
         settle(&a, &b);
 
         assert_eq!(b.document(&id).progress, Some(progress(4, 100)));
@@ -1297,7 +1312,7 @@ mod tests {
         b.sync();
 
         a.library
-            .save_progress(&id, &ReadingProgress::epub(1, 0, 100))
+            .save_progress(&id, &ReadingProgress::epub(1, 0, 100), by_date())
             .unwrap();
         settle(&a, &b);
         assert_eq!(
@@ -1307,10 +1322,10 @@ mod tests {
         assert_eq!(b.document(&id).percent_read(), Some(50));
 
         b.library
-            .save_progress(&id, &ReadingProgress::epub(0, 1, 50))
+            .save_progress(&id, &ReadingProgress::epub(0, 1, 50), by_date())
             .unwrap();
         a.library
-            .save_progress(&id, &ReadingProgress::epub(1, 1, 200))
+            .save_progress(&id, &ReadingProgress::epub(1, 1, 200), by_date())
             .unwrap();
         settle(&a, &b);
         b.sync();
@@ -1401,8 +1416,12 @@ mod tests {
         let mut cloud = Cloud::new();
         let (a, b, id) = two_devices_with_a_document(&mut cloud);
 
-        a.library.save_progress(&id, &progress(1, 100)).unwrap();
-        b.library.save_progress(&id, &progress(9, 200)).unwrap();
+        a.library
+            .save_progress(&id, &progress(1, 100), by_date())
+            .unwrap();
+        b.library
+            .save_progress(&id, &progress(9, 200), by_date())
+            .unwrap();
         settle(&a, &b);
         b.sync();
 
@@ -1584,7 +1603,9 @@ mod tests {
         assert!(b.library.take_markup_changes().is_empty());
 
         highlight(&a, &id, "new");
-        a.library.save_progress(&other, &progress(2, 5)).unwrap();
+        a.library
+            .save_progress(&other, &progress(2, 5), by_date())
+            .unwrap();
         settle(&a, &b);
         b.sync();
 
@@ -1711,7 +1732,9 @@ mod tests {
         let (a, b, id) = two_devices_with_a_document(&mut cloud);
         let before = b.library.sync_changes();
 
-        a.library.save_progress(&id, &progress(2, 5)).unwrap();
+        a.library
+            .save_progress(&id, &progress(2, 5), by_date())
+            .unwrap();
         settle(&a, &b);
 
         assert!(b.library.sync_changes() > before);
@@ -1725,13 +1748,13 @@ mod tests {
         let second = a.import("2.pdf", b"second");
         let third = a.import("3.pdf", b"third");
         a.library
-            .save_progress(&first.id, &progress(0, 300))
+            .save_progress(&first.id, &progress(0, 300), by_date())
             .unwrap();
         a.library
-            .save_progress(&second.id, &progress(0, 100))
+            .save_progress(&second.id, &progress(0, 100), by_date())
             .unwrap();
         a.library
-            .save_progress(&third.id, &progress(0, 200))
+            .save_progress(&third.id, &progress(0, 200), by_date())
             .unwrap();
         a.sync();
 
@@ -1767,7 +1790,7 @@ mod tests {
 
         for n in 1..=20 {
             a.library
-                .save_progress(&id, &progress(n, u64::from(n)))
+                .save_progress(&id, &progress(n, u64::from(n)), by_date())
                 .unwrap();
             a.sync();
         }
@@ -1785,7 +1808,9 @@ mod tests {
     fn a_step_after_reading_progress_has_synced_reads_nothing() {
         let mut cloud = Cloud::new();
         let (a, b, id) = two_devices_with_a_document(&mut cloud);
-        a.library.save_progress(&id, &progress(4, 100)).unwrap();
+        a.library
+            .save_progress(&id, &progress(4, 100), by_date())
+            .unwrap();
         settle(&a, &b);
 
         let recording = Recording::new(cloud.storage());
@@ -1799,8 +1824,12 @@ mod tests {
     fn the_reading_progress_of_a_removed_document_leaves_the_cloud() {
         let mut cloud = Cloud::new();
         let (a, b, id) = two_devices_with_a_document(&mut cloud);
-        a.library.save_progress(&id, &progress(4, 100)).unwrap();
-        b.library.save_progress(&id, &progress(5, 200)).unwrap();
+        a.library
+            .save_progress(&id, &progress(4, 100), by_date())
+            .unwrap();
+        b.library
+            .save_progress(&id, &progress(5, 200), by_date())
+            .unwrap();
         settle(&a, &b);
 
         a.library.remove(&id).unwrap();
@@ -2053,7 +2082,9 @@ mod tests {
         let mut cloud = Cloud::new();
         let (a, b, id) = two_devices_with_a_document(&mut cloud);
         highlight(&a, &id, "old");
-        a.library.save_progress(&id, &progress(3, 9)).unwrap();
+        a.library
+            .save_progress(&id, &progress(3, 9), by_date())
+            .unwrap();
         settle(&a, &b);
         b.sync();
 
@@ -2134,7 +2165,9 @@ mod tests {
 
             // Local changes in every kind of document, ready to be sent.
             a.import("new.pdf", b"imported after");
-            a.library.save_progress(&id, &progress(4, 100)).unwrap();
+            a.library
+                .save_progress(&id, &progress(4, 100), by_date())
+                .unwrap();
             a.library
                 .set_default_highlight_color(
                     &a.library
@@ -2199,7 +2232,7 @@ mod tests {
         let mut most = 0;
         for n in 0..60 {
             a.library
-                .save_progress(&id, &progress(n, 100 + u64::from(n)))
+                .save_progress(&id, &progress(n, 100 + u64::from(n)), by_date())
                 .unwrap();
             if n % 10 == 0 {
                 highlight(&a, &id, &format!("passage {n}"));
@@ -2234,7 +2267,9 @@ mod tests {
         for n in 0..count {
             let document = a.import(&format!("{n}.pdf"), format!("document {n}").as_bytes());
             let read = progress(n, 1 + u64::from(n));
-            a.library.save_progress(&document.id, &read).unwrap();
+            a.library
+                .save_progress(&document.id, &read, by_date())
+                .unwrap();
         }
         a.sync();
         b.sync();

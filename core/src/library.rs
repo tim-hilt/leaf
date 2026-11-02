@@ -826,24 +826,12 @@ impl Library {
     }
 
     /// Stores `progress` as the Reading Progress of Document `id`, replacing
-    /// the previous one, without a trace. Saving for a Document that isn't in
-    /// the Library (never imported, or Removed, even just now) does nothing.
-    /// An `id` that isn't a Document ID is `InvalidInput`.
-    pub fn save_progress(&self, id: &str, progress: &ReadingProgress) -> io::Result<()> {
-        self.folder(id)?;
-        let Some(entry) = self.entry(id) else {
-            return Ok(());
-        };
-        let _writing = self.writing();
-        // The folder may be gone: the Document was Removed.
-        ignore_not_found(self.write_progress(&entry, progress))
-    }
-
-    /// Whether saving `progress` for Document `id` with `save_progress` changes
-    /// what the Gallery for `sort` shows: see `listing::progress_changes_gallery`.
-    /// Saves nothing. False for a Document the Gallery doesn't list. An `id` that
+    /// the previous one, without a trace, and says whether that changes what
+    /// the Gallery for `sort` shows: see `listing::progress_changes_gallery`.
+    /// Saving for a Document that isn't in the Library (never imported, or
+    /// Removed, even just now) does nothing and says no change. An `id` that
     /// isn't a Document ID is `InvalidInput`.
-    pub fn would_change_gallery(
+    pub fn save_progress(
         &self,
         id: &str,
         progress: &ReadingProgress,
@@ -854,18 +842,24 @@ impl Library {
             return Ok(false);
         };
         let _writing = self.writing();
-        let Some(before) = self.document_of(&entry)? else {
-            return Ok(false);
+        let changes = match self.document_of(&entry)? {
+            Some(before) => {
+                let after = Document {
+                    progress: Some(*progress),
+                    ..before.clone()
+                };
+                let last_reads = match sort.key {
+                    SortKey::RecentlyRead => self.last_reads_except(id),
+                    _ => Vec::new(),
+                };
+                progress_changes_gallery(sort, &before, &after, last_reads)
+            }
+            // The Gallery doesn't list a Document whose File isn't stored.
+            None => false,
         };
-        let after = Document {
-            progress: Some(*progress),
-            ..before.clone()
-        };
-        let last_reads = match sort.key {
-            SortKey::RecentlyRead => self.last_reads_except(id),
-            _ => Vec::new(),
-        };
-        Ok(progress_changes_gallery(sort, &before, &after, last_reads))
+        // The folder may be gone: the Document was Removed.
+        ignore_not_found(self.write_progress(&entry, progress))?;
+        Ok(changes)
     }
 
     /// The Last Read of each Document but `id` that has one.
@@ -2108,7 +2102,7 @@ mod tests {
         let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         library
-            .save_progress(&document.id, &progress(7, 1_000))
+            .save_progress(&document.id, &progress(7, 1_000), by_date())
             .unwrap();
         assert_eq!(
             listed_progress(&library, &document.id),
@@ -2130,10 +2124,10 @@ mod tests {
         let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         library
-            .save_progress(&document.id, &progress(7, 1_000))
+            .save_progress(&document.id, &progress(7, 1_000), by_date())
             .unwrap();
         library
-            .save_progress(&document.id, &progress(2, 2_000))
+            .save_progress(&document.id, &progress(2, 2_000), by_date())
             .unwrap();
 
         assert_eq!(
@@ -2148,7 +2142,7 @@ mod tests {
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", PDF));
         library
-            .save_progress(&document.id, &progress(1, 1))
+            .save_progress(&document.id, &progress(1, 1), by_date())
             .unwrap();
         highlight(&library, &document.id, "the passage", 1);
 
@@ -2190,7 +2184,7 @@ mod tests {
         let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         library
-            .save_progress(&document.id, &progress(1, 1))
+            .save_progress(&document.id, &progress(1, 1), by_date())
             .unwrap();
 
         let staging = scratch.0.join("library/.staging");
@@ -2202,7 +2196,9 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
 
-        library.save_progress("0123", &progress(1, 1)).unwrap();
+        library
+            .save_progress("0123", &progress(1, 1), by_date())
+            .unwrap();
 
         assert!(!scratch.0.join("library/0123").exists());
         assert_eq!(library.documents().unwrap(), vec![]);
@@ -2646,10 +2642,10 @@ mod tests {
         assert_eq!(document.progress, None);
 
         library
-            .save_progress(&document.id, &ReadingProgress::epub(1, 3, 1_000))
+            .save_progress(&document.id, &ReadingProgress::epub(1, 3, 1_000), by_date())
             .unwrap();
         library
-            .save_progress(&document.id, &ReadingProgress::epub(1, 4, 2_000))
+            .save_progress(&document.id, &ReadingProgress::epub(1, 4, 2_000), by_date())
             .unwrap();
 
         for library in [&library, &scratch.library()] {
@@ -2706,7 +2702,7 @@ mod tests {
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", PDF));
         library
-            .save_progress(&document.id, &progress(1, 1))
+            .save_progress(&document.id, &progress(1, 1), by_date())
             .unwrap();
 
         let found = library.document(&document.id).unwrap();
@@ -2728,7 +2724,7 @@ mod tests {
         library.remove(&document.id).unwrap();
 
         library
-            .save_progress(&document.id, &progress(1, 1))
+            .save_progress(&document.id, &progress(1, 1), by_date())
             .unwrap();
 
         assert!(!scratch.0.join("library").join(&document.id).exists());
@@ -2740,7 +2736,9 @@ mod tests {
         let library = scratch.library();
 
         for id in ["../outside", "", ".staging", "a/b"] {
-            let err = library.save_progress(id, &progress(1, 1)).unwrap_err();
+            let err = library
+                .save_progress(id, &progress(1, 1), by_date())
+                .unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "id {id:?}");
         }
     }
@@ -2751,7 +2749,7 @@ mod tests {
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", PDF));
         library
-            .save_progress(&document.id, &progress(3, 5))
+            .save_progress(&document.id, &progress(3, 5), by_date())
             .unwrap();
 
         library.remove(&document.id).unwrap();
@@ -2768,14 +2766,14 @@ mod tests {
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", PDF));
         library
-            .save_progress(&document.id, &progress(3, 5))
+            .save_progress(&document.id, &progress(3, 5), by_date())
             .unwrap();
         fs::write(first_progress_path(&library, &document.id), b"garbage").unwrap();
 
         assert_eq!(listed_progress(&scratch.library(), &document.id), None);
 
         library
-            .save_progress(&document.id, &progress(4, 6))
+            .save_progress(&document.id, &progress(4, 6), by_date())
             .unwrap();
         assert_eq!(
             listed_progress(&library, &document.id),
@@ -2799,7 +2797,7 @@ mod tests {
         );
 
         library
-            .save_progress(&document.id, &progress(1, 1_500))
+            .save_progress(&document.id, &progress(1, 1_500), by_date())
             .unwrap();
 
         for library in [library, scratch.library()] {
@@ -2821,14 +2819,22 @@ mod tests {
         assert_eq!(listed_progress(&library, &document.id), None);
     }
 
+    /// The Gallery's by-date order, for saves that don't care what the Gallery
+    /// shows.
+    fn by_date() -> Sort {
+        Sort {
+            key: SortKey::DateImported,
+            reversed: false,
+        }
+    }
+
     /// Saves the Reading Progress of page `page` read at `last_read` for
     /// Document `id`, and says whether that changed what the Gallery for `sort`
-    /// shows, as `would_change_gallery` said before the save.
+    /// shows.
     fn save_at(library: &Library, id: &str, page: u32, last_read: u64, sort: Sort) -> bool {
-        let reading = progress(page, last_read);
-        let changes = library.would_change_gallery(id, &reading, sort).unwrap();
-        library.save_progress(id, &reading).unwrap();
-        changes
+        library
+            .save_progress(id, &progress(page, last_read), sort)
+            .unwrap()
     }
 
     /// What `sort` lists of the Library, in order, with each percent read.
@@ -2889,14 +2895,10 @@ mod tests {
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", PDF));
         library.remove(&document.id).unwrap();
-        let by_date = Sort {
-            key: SortKey::DateImported,
-            reversed: false,
-        };
 
         assert!(
             !library
-                .would_change_gallery(&document.id, &progress(1, 1), by_date)
+                .save_progress(&document.id, &progress(1, 1), by_date())
                 .unwrap()
         );
     }
@@ -3194,11 +3196,11 @@ mod tests {
         let document = import_new(&library, &scratch.file("a.pdf", PDF));
 
         library
-            .save_progress(&document.id, &progress(7, 1_000))
+            .save_progress(&document.id, &progress(7, 1_000), by_date())
             .unwrap();
         highlight(&library, &document.id, "the passage", 1_000);
         library
-            .save_progress(&document.id, &progress(8, 2_000))
+            .save_progress(&document.id, &progress(8, 2_000), by_date())
             .unwrap();
 
         assert_eq!(
@@ -3833,7 +3835,7 @@ mod tests {
         let gone = import_new(&library, &scratch.file("b.pdf", b"%PDF-def"));
         let work = |library: &Library| {
             library
-                .save_progress(&kept.id, &progress(7, 1_000))
+                .save_progress(&kept.id, &progress(7, 1_000), by_date())
                 .unwrap();
             let added = highlight(library, &kept.id, "the passage", 1);
             library
@@ -3981,7 +3983,9 @@ mod tests {
         let library = scratch.library();
         let source = scratch.file("a.pdf", PDF);
         let first = import_new(&library, &source);
-        library.save_progress(&first.id, &progress(3, 5)).unwrap();
+        library
+            .save_progress(&first.id, &progress(3, 5), by_date())
+            .unwrap();
         highlight(&library, &first.id, "the passage", 1);
         let old_state = state_path(&library, &first);
         let old_bytes = fs::read(&old_state).unwrap();
@@ -4051,7 +4055,7 @@ mod tests {
         let library = scratch.library();
         let document = import_new(&library, &scratch.file("a.pdf", PDF));
         library
-            .save_progress(&document.id, &progress(3, 1_000))
+            .save_progress(&document.id, &progress(3, 1_000), by_date())
             .unwrap();
         library
             .add_highlight(&document.id, anchor(), "first", YELLOW, 1)
@@ -4087,7 +4091,7 @@ mod tests {
             .collect();
         assert!(colors.contains(&GREEN) && colors.contains(&YELLOW));
         library
-            .save_progress(&document.id, &progress(1, 3_000))
+            .save_progress(&document.id, &progress(1, 3_000), by_date())
             .unwrap();
         assert_eq!(
             library.documents().unwrap()[0].progress,
@@ -4155,7 +4159,7 @@ mod tests {
             let source = scratch.file("source.pdf", format!("%PDF-document {n}").as_bytes());
             let document = import_new(&library, &source);
             library
-                .save_progress(&document.id, &progress(n, u64::from(n) + 1))
+                .save_progress(&document.id, &progress(n, u64::from(n) + 1), by_date())
                 .unwrap();
         }
         library
@@ -4169,7 +4173,11 @@ mod tests {
 
         for n in 0..1_000 {
             library
-                .save_progress(&document.id, &progress(n % 300, u64::from(n) + 1))
+                .save_progress(
+                    &document.id,
+                    &progress(n % 300, u64::from(n) + 1),
+                    by_date(),
+                )
                 .unwrap();
         }
 

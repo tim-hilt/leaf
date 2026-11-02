@@ -652,8 +652,15 @@ mod tests {
         b.add_highlight(&id, crate::markup::Anchor::Pdf(vec![]), "quoted", color, 1)
             .unwrap()
             .unwrap();
-        b.save_progress(&id, &crate::progress::ReadingProgress::pdf(2, 0.0, 0.0, 7))
-            .unwrap();
+        b.save_progress(
+            &id,
+            &crate::progress::ReadingProgress::pdf(2, 0.0, 0.0, 7),
+            crate::listing::Sort {
+                key: crate::listing::SortKey::DateImported,
+                reversed: false,
+            },
+        )
+        .unwrap();
         b_loop.local_change();
 
         // A may poll between B sending the Markup and the Reading Progress.

@@ -403,18 +403,16 @@ final class LibraryModel {
     }
 
     /// Saves `place` as Reading Progress of `document`, read `lastRead`. The
-    /// core writes off the main thread, in order; this returns when it has. The
-    /// Library is listed again only if the core says the Gallery shows something
-    /// new. Does nothing for a Document that was Removed. A failed write is
-    /// ignored: the next save replaces it.
+    /// core writes off the main thread, in order; this returns when it has, and
+    /// says whether the Gallery shows something new. The Library is listed
+    /// again only then. Does nothing for a Document that was Removed. A failed
+    /// write is ignored: the next save replaces it.
     func saveProgress(_ place: Place, of document: LibraryDocument, at lastRead: Date = .now) async {
         let progress = ReadingProgress(place: place, lastRead: lastRead.millisecondsSince1970)
         let id = document.id
         let sort = sort.core
         let changes = await inStateOrder { core in
-            let changes = try? core.wouldChangeGallery(id: id, progress: progress, sort: sort)
-            try? core.saveProgress(id: id, progress: progress)
-            return changes ?? true
+            (try? core.saveProgress(id: id, progress: progress, sort: sort)) ?? false
         }
         if changes { await relist { _ in } }
     }
