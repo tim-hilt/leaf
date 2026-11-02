@@ -1,3 +1,4 @@
+import LeafCore
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -387,15 +388,12 @@ private struct ImportAlert {
     init?(_ problems: [ImportProblem]) {
         guard let problem = problems.first else { return nil }
         guard problems.count > 1 else {
-            switch problem.failure {
-            case .rejected(let reason): self.init(rejected: problem.file, reason: reason)
-            case .failed(let message): self.init(failed: problem.file, message: message)
-            }
+            self.init(file: problem.file, error: problem.error)
             return
         }
         self.init(
             title: "Couldn't import \(problems.count) files",
-            message: problems.map { "“\($0.file.lastPathComponent)”: \($0.failure.reason)" }.joined(separator: "\n"))
+            message: problems.map { "“\($0.file.lastPathComponent)”: \($0.error.reason)" }.joined(separator: "\n"))
     }
 
     private init(title: String, message: String) {
@@ -403,47 +401,46 @@ private struct ImportAlert {
         self.message = message
     }
 
-    private init(rejected url: URL, reason: ImportRejection) {
+    /// The alert for the one File `url`, which wasn't Imported for `error`.
+    private init(file url: URL, error: LibraryError) {
         let name = url.lastPathComponent
-        switch reason {
-        case .notPDF:
+        switch error {
+        case .Failed(let message):
+            title = "Couldn't import “\(name)”"
+            self.message = message
+        case .UnsupportedFormat:
             title = "Not a PDF or EPUB"
             message = "“\(name)” isn't a PDF or an EPUB."
-        case .unreadable:
+        case .UnreadablePdf:
             title = "Couldn't read PDF"
             message = "“\(name)” can't be opened. The file may be damaged."
-        case .locked:
+        case .LockedPdf:
             title = "Password-protected"
             message = "Password-protected PDFs aren't supported yet."
-        case .invalidEPUB:
+        case .InvalidEpub:
             title = "Couldn't read EPUB"
             message = "“\(name)” isn't a valid EPUB."
-        case .drmProtectedEPUB:
+        case .DrmProtectedEpub:
             title = "DRM-protected"
             message = "This EPUB is DRM-protected."
-        case .fixedLayoutEPUB:
+        case .FixedLayoutEpub:
             title = "Fixed-layout EPUB"
             message = "“\(name)” has a fixed layout, which isn't supported."
         }
     }
-
-    private init(failed url: URL, message: String) {
-        title = "Couldn't import “\(url.lastPathComponent)”"
-        self.message = message
-    }
 }
 
-extension ImportProblem.Failure {
+extension LibraryError {
     /// Why the File wasn't Imported, for a list.
     fileprivate var reason: String {
         switch self {
-        case .rejected(.notPDF): "Not a PDF or EPUB."
-        case .rejected(.unreadable): "Can't be opened. The file may be damaged."
-        case .rejected(.locked): "Password-protected PDFs aren't supported yet."
-        case .rejected(.invalidEPUB): "Isn't a valid EPUB."
-        case .rejected(.drmProtectedEPUB): "This EPUB is DRM-protected."
-        case .rejected(.fixedLayoutEPUB): "Fixed-layout EPUBs aren't supported."
-        case .failed(let message): message
+        case .Failed(let message): message
+        case .UnsupportedFormat: "Not a PDF or EPUB."
+        case .UnreadablePdf: "Can't be opened. The file may be damaged."
+        case .LockedPdf: "Password-protected PDFs aren't supported yet."
+        case .InvalidEpub: "Isn't a valid EPUB."
+        case .DrmProtectedEpub: "This EPUB is DRM-protected."
+        case .FixedLayoutEpub: "Fixed-layout EPUBs aren't supported."
         }
     }
 }

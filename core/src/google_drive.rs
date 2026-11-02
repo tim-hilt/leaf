@@ -409,6 +409,7 @@ impl Storage for GoogleDriveStorage {
 mod tests {
     use super::*;
     use crate::cloud_http::fake::{Api, Auth, Recorder, Reply, Request, Server, nothing, reply};
+    use crate::library::fixtures::one_page;
     use crate::library::{ImportResult, Library};
     use crate::storage::contract::{Scratch, put_bytes, storage_contract_tests};
     use crate::storage::{get_bytes, is_full};
@@ -1107,7 +1108,8 @@ mod tests {
         let (a, b) = (open("a"), open("b"));
         let source = home.0.join("Paper.pdf");
         fs::write(&source, b"%PDF-paper bytes").unwrap();
-        let ImportResult::Imported(imported) = a.import(&source, |_, _| {}).unwrap() else {
+        let ImportResult::Imported(imported) = a.import(&source, &one_page, |_, _| {}).unwrap()
+        else {
             panic!("not imported");
         };
 

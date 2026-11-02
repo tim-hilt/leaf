@@ -6,12 +6,12 @@
 //! domain logic in `leaf-core` so it stays testable without bindings.
 
 use leaf_core::contents::{self, ContentsEntry, Entry, Position};
-use leaf_core::details::{Format, Size};
+use leaf_core::details::{Details, Format, Size};
 use leaf_core::epub;
 use leaf_core::google_drive::GoogleDriveStorage;
 use leaf_core::jump;
 use leaf_core::library::Document as CoreDocument;
-use leaf_core::library::{ImportError, ImportResult};
+use leaf_core::library::{ImportError, ImportResult, PdfProblem};
 use leaf_core::listing::{self, Sort, SortKey};
 use leaf_core::markup::{Anchor, EpubPosition, Highlight, Markup, PageNote, PageRects, Rect, Rgb};
 use leaf_core::onedrive::OneDriveStorage;
@@ -21,6 +21,7 @@ use leaf_core::search::{self, Query, WordMatch};
 use leaf_core::storage::{ConnectError, DirStorage, RefreshTokenCallback, Storage};
 use leaf_core::sync_loop::{self, Status, SyncLoop};
 use leaf_core::webdav::WebDavStorage;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -35,7 +36,7 @@ pub fn core_version() -> String {
 }
 
 /// The error crossing the FFI: the system's message for what failed, or, for
-/// an Import, why the EPUB isn't one Leaf reads.
+/// an Import, why the File isn't one Leaf reads.
 #[derive(Debug, uniffi::Error)]
 #[uniffi(flat_error)]
 pub enum LibraryError {
@@ -44,6 +45,8 @@ pub enum LibraryError {
     DrmProtectedEpub,
     FixedLayoutEpub,
     UnsupportedFormat,
+    UnreadablePdf,
+    LockedPdf,
 }
 
 impl std::fmt::Display for LibraryError {
@@ -54,6 +57,8 @@ impl std::fmt::Display for LibraryError {
             Self::DrmProtectedEpub => epub::Error::DrmProtected.fmt(f),
             Self::FixedLayoutEpub => epub::Error::FixedLayout.fmt(f),
             Self::UnsupportedFormat => ImportError::UnsupportedFormat.fmt(f),
+            Self::UnreadablePdf => ImportError::UnreadablePdf.fmt(f),
+            Self::LockedPdf => ImportError::LockedPdf.fmt(f),
         }
     }
 }
@@ -72,15 +77,10 @@ impl From<ImportError> for LibraryError {
             ImportError::Epub(epub::Error::DrmProtected) => Self::DrmProtectedEpub,
             ImportError::Epub(epub::Error::FixedLayout) => Self::FixedLayoutEpub,
             ImportError::UnsupportedFormat => Self::UnsupportedFormat,
+            ImportError::UnreadablePdf => Self::UnreadablePdf,
+            ImportError::LockedPdf => Self::LockedPdf,
         }
     }
-}
-
-/// The Format the File at `path` would be Imported as; none if it is neither a
-/// PDF nor an EPUB, which Import refuses.
-#[uniffi::export]
-pub fn format_of_file(path: String) -> Result<Option<Format>, LibraryError> {
-    Ok(leaf_core::library::format_of(path.as_ref())?)
 }
 
 // The core's types cross the FFI as remote types: declared here, defined (and
@@ -237,8 +237,8 @@ pub enum ConnectError {
 }
 
 /// A Document in the Library, see `leaf_core::library::Document`. Author
-/// and page count are none until `Library::set_details` gives them; an
-/// EPUB's come with it, and its page count is always none.
+/// and page count are none until they are read from its PDF; an EPUB's come
+/// with its Import, and its page count is always none.
 #[derive(uniffi::Record)]
 pub struct Document {
     pub id: String,
@@ -537,6 +537,44 @@ pub enum ImportResult {
 pub trait ImportProgress: Send + Sync {
     /// `copied` bytes of the File's `total` are processed.
     fn report(&self, copied: u64, total: u64);
+}
+
+/// Why a `PdfReader` refuses a PDF, see `leaf_core::library::PdfProblem`.
+#[uniffi::remote(Error)]
+pub enum PdfProblem {
+    Unreadable,
+    Locked,
+}
+
+/// What a PDF says about itself, as a `PdfReader` reads it.
+#[derive(uniffi::Record)]
+pub struct PdfDetails {
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub page_count: u32,
+}
+
+/// Reads what a PDF says about itself, with the client's PDF engine (ADR-0003).
+/// Implemented by the client and called by the core from the thread of the
+/// Import or of `read_details`, not the main thread.
+#[uniffi::export(with_foreign)]
+pub trait PdfReader: Send + Sync {
+    /// The details of the PDF at `path`, or why it is refused.
+    fn read(&self, path: String) -> Result<PdfDetails, PdfProblem>;
+}
+
+/// Adapts the client's reader to the core's.
+struct Reader(Arc<dyn PdfReader>);
+
+impl leaf_core::library::PdfReader for Reader {
+    fn read(&self, path: &Path) -> Result<Details, PdfProblem> {
+        let pdf = self.0.read(path.to_string_lossy().into_owned())?;
+        Ok(Details {
+            title: pdf.title,
+            author: pdf.author,
+            size: Size::Pages(pdf.page_count),
+        })
+    }
 }
 
 /// Receives what the Sync loop does. Implemented by the client and called from
@@ -890,15 +928,37 @@ impl Library {
         }
     }
 
+    /// Imports the File at `source`, reading a PDF with `reader`, see
+    /// `leaf_core::library::Library::import`.
     pub fn import(
         &self,
         source: String,
+        reader: Arc<dyn PdfReader>,
         progress: Arc<dyn ImportProgress>,
     ) -> Result<ImportResult, LibraryError> {
-        let result = self.core.import(source.as_ref(), |copied, total| {
-            progress.report(copied, total)
-        });
+        let result = self
+            .core
+            .import(source.as_ref(), &Reader(reader), |copied, total| {
+                progress.report(copied, total)
+            });
         self.written(result)
+    }
+
+    /// The IDs of the PDFs in the Library that have no details yet, newest
+    /// Import first: those `read_details` reads.
+    pub fn pdfs_without_details(&self) -> Vec<String> {
+        self.core.pdfs_without_details()
+    }
+
+    /// Reads the details of Document `id` with `reader`, if it is a PDF without
+    /// them, and keeps them. Returns whether they were kept. Details are kept
+    /// on this Device only, not synced.
+    pub fn read_details(
+        &self,
+        id: String,
+        reader: Arc<dyn PdfReader>,
+    ) -> Result<bool, LibraryError> {
+        Ok(self.core.read_details(&id, &Reader(reader))?)
     }
 
     pub fn remove(&self, id: String) -> Result<(), LibraryError> {
@@ -1008,23 +1068,6 @@ impl Library {
 
     pub fn document(&self, id: String) -> Result<Option<Document>, LibraryError> {
         Ok(self.core.document(&id)?.map(Into::into))
-    }
-
-    /// Keeps what the client read from the File of Document `id` on this
-    /// Device, see `leaf_core::library::Library::set_details`. Not synced.
-    pub fn set_details(
-        &self,
-        id: String,
-        title: Option<String>,
-        author: Option<String>,
-        page_count: u32,
-    ) -> Result<(), LibraryError> {
-        let details = leaf_core::details::Details {
-            title,
-            author,
-            size: Size::Pages(page_count),
-        };
-        Ok(self.core.set_details(&id, &details)?)
     }
 }
 
@@ -1215,14 +1258,15 @@ mod tests {
             let source = dir.join(format!("{n}.pdf"));
             std::fs::write(&source, format!("%PDF-{n}")).unwrap();
             let path = source.display().to_string();
-            let Ok(ImportResult::Imported(document)) = library.import(path, Arc::new(NoProgress))
+            let reader = Reads {
+                title: Some(title.to_owned()),
+                author: author.map(str::to_owned),
+            };
+            let Ok(ImportResult::Imported(document)) =
+                library.import(path, Arc::new(reader), Arc::new(NoProgress))
             else {
                 panic!("import")
             };
-            let (title, author) = (Some(title.to_owned()), author.map(str::to_owned));
-            library
-                .set_details(document.id.clone(), title, author, 1)
-                .unwrap();
             ids.push(document.id);
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -1259,6 +1303,32 @@ mod tests {
         fn report(&self, _: u64, _: u64) {}
     }
 
+    /// Reads every PDF as one page, with `title` and `author`.
+    #[derive(Default)]
+    struct Reads {
+        title: Option<String>,
+        author: Option<String>,
+    }
+
+    impl PdfReader for Reads {
+        fn read(&self, _: String) -> Result<PdfDetails, PdfProblem> {
+            Ok(PdfDetails {
+                title: self.title.clone(),
+                author: self.author.clone(),
+                page_count: 1,
+            })
+        }
+    }
+
+    /// Refuses every PDF.
+    struct Refuses(PdfProblem);
+
+    impl PdfReader for Refuses {
+        fn read(&self, _: String) -> Result<PdfDetails, PdfProblem> {
+            Err(self.0)
+        }
+    }
+
     #[test]
     fn import_refuses_a_file_that_is_neither_a_pdf_nor_an_epub() {
         let dir = std::env::temp_dir().join(format!("leaf-ffi-format-{}", std::process::id()));
@@ -1268,9 +1338,27 @@ mod tests {
         let path = source.display().to_string();
         let library = Library::open(dir.join("library").display().to_string()).unwrap();
 
-        assert_eq!(format_of_file(path.clone()).unwrap(), None);
-        let refused = library.import(path, Arc::new(NoProgress));
+        let refused = library.import(path, Arc::new(Reads::default()), Arc::new(NoProgress));
         assert!(matches!(refused, Err(LibraryError::UnsupportedFormat)));
+        assert_eq!(listed_documents(&library).len(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_pdf_the_reader_refuses_is_refused_with_its_reason() {
+        let dir = std::env::temp_dir().join(format!("leaf-ffi-refused-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("locked.pdf");
+        std::fs::write(&source, b"%PDF-1.7 locked").unwrap();
+        let path = source.display().to_string();
+        let library = Library::open(dir.join("library").display().to_string()).unwrap();
+
+        let refused = library.import(
+            path,
+            Arc::new(Refuses(PdfProblem::Locked)),
+            Arc::new(NoProgress),
+        );
+        assert!(matches!(refused, Err(LibraryError::LockedPdf)));
         assert_eq!(listed_documents(&library).len(), 0);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -1322,8 +1410,12 @@ mod tests {
             another_step(&steps, before, name);
         };
         write("import", &|l, _| {
-            l.import(source.display().to_string(), Arc::new(NoProgress))
-                .unwrap();
+            l.import(
+                source.display().to_string(),
+                Arc::new(Reads::default()),
+                Arc::new(NoProgress),
+            )
+            .unwrap();
         });
         write("save_progress", &|l, id| {
             let progress = ReadingProgress {

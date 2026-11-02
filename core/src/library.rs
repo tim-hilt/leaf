@@ -80,9 +80,8 @@ pub struct Document {
     /// Where the user left off; none if the Document was never opened, or its
     /// state is missing or unreadable.
     pub progress: Option<ReadingProgress>,
-    /// What was read from the File: by the core at Import for an EPUB, by the
-    /// client for a PDF (`set_details`). None until then, or if they are
-    /// unreadable.
+    /// What was read from the File: at Import, or by `read_details` for a PDF
+    /// read later. None until then, or if they are unreadable.
     pub details: Option<Details>,
 }
 
@@ -142,6 +141,10 @@ pub enum ImportError {
     Epub(epub::Error),
     /// The File is neither a PDF nor an EPUB. Nothing was imported.
     UnsupportedFormat,
+    /// The PDF can't be opened. Nothing was imported.
+    UnreadablePdf,
+    /// The PDF needs a password to open. Nothing was imported.
+    LockedPdf,
 }
 
 impl From<io::Error> for ImportError {
@@ -162,11 +165,48 @@ impl std::fmt::Display for ImportError {
             Self::Io(e) => e.fmt(f),
             Self::Epub(e) => e.fmt(f),
             Self::UnsupportedFormat => f.write_str("not a PDF or EPUB"),
+            Self::UnreadablePdf => PdfProblem::Unreadable.fmt(f),
+            Self::LockedPdf => PdfProblem::Locked.fmt(f),
         }
     }
 }
 
 impl std::error::Error for ImportError {}
+
+/// Why a `PdfReader` refuses a PDF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PdfProblem {
+    /// It can't be opened, e.g. because it is damaged.
+    Unreadable,
+    /// It needs a password to open. PDFs that only restrict permissions aren't locked.
+    Locked,
+}
+
+impl std::fmt::Display for PdfProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unreadable => "the PDF can't be opened",
+            Self::Locked => "the PDF is password-protected",
+        })
+    }
+}
+
+impl From<PdfProblem> for ImportError {
+    fn from(problem: PdfProblem) -> Self {
+        match problem {
+            PdfProblem::Unreadable => Self::UnreadablePdf,
+            PdfProblem::Locked => Self::LockedPdf,
+        }
+    }
+}
+
+/// Reads what a PDF says about itself: the client's PDF engine does, as the
+/// core never parses PDFs (ADR-0003). The core calls it with the path of the
+/// File, before the File is copied and when a Document lacks its details.
+pub trait PdfReader {
+    /// The details of the PDF at `path`, with `Size::Pages`; or why it is refused.
+    fn read(&self, path: &Path) -> Result<Details, PdfProblem>;
+}
 
 /// What an Import did.
 #[derive(Debug, Clone, PartialEq)]
@@ -358,15 +398,16 @@ impl Library {
     /// `AlreadyImported`.
     ///
     /// A File that is neither a PDF nor an EPUB (see [`format_of`]) is
-    /// rejected before anything is copied. An EPUB that isn't a valid
-    /// reflowable one without DRM is rejected too. The core reads the details
-    /// of an EPUB itself; a PDF is checked by the client.
+    /// rejected before anything is copied. So is an EPUB that isn't a valid
+    /// reflowable one without DRM, and a PDF that `reader` refuses. The details
+    /// of a PDF are read by `reader`, those of an EPUB by the core, and kept.
     ///
     /// `progress(copied, total)` is called with the bytes processed so far out
     /// of the File's size: first with 0, last with the total.
     pub fn import(
         &self,
         source: &Path,
+        reader: &dyn PdfReader,
         progress: impl FnMut(u64, u64),
     ) -> Result<ImportResult, ImportError> {
         let name = source
@@ -375,11 +416,16 @@ impl Library {
             .to_string_lossy()
             .into_owned();
         let format = format_of(source)?.ok_or(ImportError::UnsupportedFormat)?;
+        // Read before anything is copied, so a File that is refused leaves nothing behind.
+        let details = match format {
+            Format::Pdf => reader.read(source)?,
+            Format::Epub => read_epub_details(source)?,
+        };
 
         let staged = self.staging().join(unique_name());
         fs::create_dir(&staged)?;
 
-        let result = self.import_staged(source, &staged, &name, format, progress);
+        let result = self.import_staged(source, &staged, &name, &details, progress);
         // Nothing left to remove after a successful rename.
         let _ = fs::remove_dir_all(&staged);
 
@@ -395,26 +441,20 @@ impl Library {
         })
     }
 
-    /// Copies `source` into the `staged` folder as `name`, checks it and moves
-    /// it into the Library. Returns the Document's ID, and whether it is new.
+    /// Copies `source` into the `staged` folder as `name` and moves it into the
+    /// Library, keeping its `details`. Returns the Document's ID, and whether it is new.
     fn import_staged(
         &self,
         source: &Path,
         staged: &Path,
         name: &str,
-        format: Format,
+        details: &Details,
         progress: impl FnMut(u64, u64),
     ) -> Result<(String, bool), ImportError> {
         let id = copy_hashed(source, &staged.join(name), progress)?;
-        let epub_details = match format {
-            Format::Epub => Some(read_epub_details(&staged.join(name))?),
-            Format::Pdf => None,
-        };
         let is_new = self.admit(staged, &id, name)?;
         // Also for a File the Library had without details, e.g. from a Sync.
-        if let Some(details) = epub_details {
-            self.set_details(&id, &details)?;
-        }
+        self.set_details(&id, details)?;
         Ok((id, is_new))
     }
 
@@ -455,7 +495,7 @@ impl Library {
     /// All Documents, newest Import first.
     pub fn documents(&self) -> io::Result<Vec<Document>> {
         let mut entries = self.entries();
-        entries.sort_by(|a, b| b.imported.cmp(&a.imported).then_with(|| a.id.cmp(&b.id)));
+        sort_newest_first(&mut entries);
         // Reading each Document's state dominates, so a large Library is
         // spread over the cores: 1,000 Documents list in half the time. A
         // small one lists on this thread.
@@ -551,11 +591,51 @@ impl Library {
         Ok(self.open_epub(id)?.and_then(|epub| epub.cover()))
     }
 
+    /// The IDs of the Documents whose File is a PDF without details, newest
+    /// Import first: those `read_details` reads.
+    pub fn pdfs_without_details(&self) -> Vec<String> {
+        let mut entries = self.entries();
+        sort_newest_first(&mut entries);
+        entries
+            .iter()
+            .filter_map(|entry| self.pdf_lacking_details(entry).map(|_| entry.id.clone()))
+            .collect()
+    }
+
+    /// Reads the details of Document `id`, if it is a PDF without details, with
+    /// `reader`, and keeps them; a PDF `reader` refuses keeps none. Returns
+    /// whether they were kept. An `id` that isn't a Document ID is `InvalidInput`.
+    pub fn read_details(&self, id: &str, reader: &dyn PdfReader) -> io::Result<bool> {
+        self.folder(id)?;
+        let Some(entry) = self.entry(id) else {
+            return Ok(false);
+        };
+        let Some(path) = self.pdf_lacking_details(&entry) else {
+            return Ok(false);
+        };
+        let Ok(details) = reader.read(&path) else {
+            return Ok(false);
+        };
+        self.set_details(id, &details)?;
+        Ok(true)
+    }
+
+    /// The File of `entry`, if it is a PDF the Library has no details of.
+    fn pdf_lacking_details(&self, entry: &Entry) -> Option<PathBuf> {
+        if self.details_of(entry).is_some() {
+            return None;
+        }
+        let Ok(Some(path)) = self.file_path(entry) else {
+            return None;
+        };
+        (format_of(&path).ok()? == Some(Format::Pdf)).then_some(path)
+    }
+
     /// Keeps `details`, read from the File of Document `id`, on this Device,
     /// replacing any before; `Document::details` returns them as `details`
     /// stores them. Does nothing for a Document that isn't in the Library. An
     /// `id` that isn't a Document ID is `InvalidInput`.
-    pub fn set_details(&self, id: &str, details: &Details) -> io::Result<()> {
+    fn set_details(&self, id: &str, details: &Details) -> io::Result<()> {
         let path = self.folder(id)?.join(DETAILS);
         let Some(entry) = self.entry(id) else {
             return Ok(());
@@ -962,6 +1042,11 @@ impl Entry {
     }
 }
 
+/// Sorts `entries` newest Import first, then by ID.
+fn sort_newest_first(entries: &mut [Entry]) {
+    entries.sort_by(|a, b| b.imported.cmp(&a.imported).then_with(|| a.id.cmp(&b.id)));
+}
+
 /// The name of the file holding the state of Import `import`. Hidden, so the
 /// File stays the folder's only non-hidden entry.
 fn state_name(import: &str) -> String {
@@ -1123,11 +1208,35 @@ fn stored_file(dir: &Path) -> io::Result<Option<(String, u64)>> {
     Ok(None)
 }
 
+/// Test doubles for `PdfReader`.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use super::*;
+
+    /// Reads every PDF as one page, with neither title nor author.
+    pub(crate) fn one_page(_: &Path) -> Result<Details, PdfProblem> {
+        Ok(Details {
+            title: None,
+            author: None,
+            size: Size::Pages(1),
+        })
+    }
+
+    /// A closure is a reader: it reads each PDF as the closure says.
+    impl<F: Fn(&Path) -> Result<Details, PdfProblem>> PdfReader for F {
+        fn read(&self, path: &Path) -> Result<Details, PdfProblem> {
+            self(path)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::fixtures::one_page;
     use super::*;
     use crate::markup::{EpubPosition, PageRects, Rect};
     use automerge::{ActorId, AutoCommit};
+    use std::cell::Cell;
     use std::fs;
     use std::thread::sleep;
     use std::time::Duration;
@@ -1166,15 +1275,55 @@ mod tests {
     }
 
     fn import(library: &Library, source: &Path) -> Result<ImportResult, ImportError> {
-        library.import(source, |_, _| {})
+        library.import(source, &one_page, |_, _| {})
+    }
+
+    /// Imports a File that is expected to be new, reading its PDF with `reader`.
+    fn import_with(library: &Library, source: &Path, reader: &dyn PdfReader) -> Document {
+        match library.import(source, reader, |_, _| {}).unwrap() {
+            ImportResult::Imported(document) => document,
+            other => panic!("expected Imported, got {other:?}"),
+        }
     }
 
     /// Imports a File that is expected to be new.
     fn import_new(library: &Library, source: &Path) -> Document {
-        match import(library, source).unwrap() {
-            ImportResult::Imported(document) => document,
-            other => panic!("expected Imported, got {other:?}"),
+        import_with(library, source, &one_page)
+    }
+
+    /// A reader that reads every PDF as `details`.
+    fn reading(details: Details) -> impl PdfReader {
+        move |_: &Path| -> Result<Details, PdfProblem> { Ok(details.clone()) }
+    }
+
+    /// A reader that refuses every PDF for `problem`.
+    fn refusing(problem: PdfProblem) -> impl PdfReader {
+        move |_: &Path| -> Result<Details, PdfProblem> { Err(problem) }
+    }
+
+    /// How many entries of `folder` aren't hidden: of a Library, its Documents;
+    /// of a Document's folder, its File.
+    fn visible_entries(folder: &Path) -> usize {
+        fs::read_dir(folder)
+            .unwrap()
+            .filter(|e| {
+                !e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with('.')
+            })
+            .count()
+    }
+
+    /// `library` reopened without the details of the Documents `ids`, as a Sync
+    /// leaves them: details are never synced, so a PDF from another Device has none.
+    fn forget_details(scratch: &Scratch, library: Library, ids: &[&String]) -> Library {
+        drop(library);
+        for id in ids {
+            let _ = fs::remove_file(scratch.0.join("library").join(id).join(DETAILS));
         }
+        scratch.library()
     }
 
     /// The bytes of a File that is a PDF.
@@ -1210,7 +1359,9 @@ mod tests {
 
         let mut reports = Vec::new();
         library
-            .import(&source, |copied, total| reports.push((copied, total)))
+            .import(&source, &one_page, |copied, total| {
+                reports.push((copied, total))
+            })
             .unwrap();
 
         let total = size as u64;
@@ -1519,7 +1670,7 @@ mod tests {
 
         assert!(
             library
-                .import(&scratch.0.join("missing.pdf"), |_, _| {})
+                .import(&scratch.0.join("missing.pdf"), &one_page, |_, _| {})
                 .is_err()
         );
 
@@ -1573,8 +1724,9 @@ mod tests {
         import(&library, &scratch.file("renamed.pdf", PDF)).unwrap();
 
         assert_eq!(library.documents().unwrap(), vec![first.clone()]);
+        // The File is the folder's only visible entry: no copy of the duplicate.
         let folder = first.path.parent().unwrap();
-        assert_eq!(fs::read_dir(folder).unwrap().count(), 1);
+        assert_eq!(visible_entries(folder), 1);
         assert_eq!(
             fs::read_dir(scratch.0.join("library/.staging"))
                 .unwrap()
@@ -1767,20 +1919,18 @@ mod tests {
         highlight(&library, &document.id, "the passage", 1);
 
         let folder = document.path.parent().unwrap();
-        let hidden: Vec<_> = fs::read_dir(folder)
+        let states: Vec<_> = fs::read_dir(folder)
             .unwrap()
             .map(|e| e.unwrap().path())
-            .filter(|p| p != &document.path)
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".state-")
+            })
             .collect();
-        assert_eq!(hidden.len(), 1);
-        assert!(
-            hidden[0]
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with('.')
-        );
-        let state = automerge::AutoCommit::load(&fs::read(&hidden[0]).unwrap()).unwrap();
+        assert_eq!(states.len(), 1);
+        let state = automerge::AutoCommit::load(&fs::read(&states[0]).unwrap()).unwrap();
         let (version, _) = state.get(ROOT, "version").unwrap().unwrap();
         assert_eq!(version.as_u64(), Some(2));
     }
@@ -1819,18 +1969,165 @@ mod tests {
     }
 
     #[test]
-    fn a_document_has_no_details_until_set_and_keeps_them_after_reopening() {
+    fn import_keeps_the_details_the_reader_gives_and_they_survive_reopening() {
         let scratch = Scratch::new();
         let library = scratch.library();
-        let document = import_new(&library, &scratch.file("a.pdf", PDF));
-        assert_eq!(document.details, None);
-
         let moby = details(Some("Moby-Dick"), Some("Melville"), 635);
-        library.set_details(&document.id, &moby).unwrap();
 
+        let document = import_with(
+            &library,
+            &scratch.file("a.pdf", PDF),
+            &reading(moby.clone()),
+        );
+
+        assert_eq!(document.details, Some(moby.clone()));
         assert_eq!(library.documents().unwrap()[0].details, Some(moby.clone()));
         let reopened = scratch.library();
         assert_eq!(reopened.documents().unwrap()[0].details, Some(moby));
+    }
+
+    #[test]
+    fn a_pdf_is_read_before_anything_is_copied() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let source = scratch.file("a.pdf", PDF);
+        let stored = scratch.0.join("library");
+        let read = Cell::new(false);
+        let reader = |path: &Path| -> Result<Details, PdfProblem> {
+            assert_eq!(path, source.as_path());
+            assert_eq!(visible_entries(&stored), 0);
+            read.set(true);
+            Ok(details(None, None, 1))
+        };
+
+        import_with(&library, &source, &reader);
+        assert!(read.get());
+    }
+
+    #[test]
+    fn a_pdf_the_reader_refuses_is_refused_for_its_reason_and_nothing_is_copied() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let source = scratch.file("damaged.pdf", b"%PDF-1.7 damaged");
+
+        let unreadable = library.import(&source, &refusing(PdfProblem::Unreadable), |_, _| {});
+        assert!(
+            matches!(unreadable, Err(ImportError::UnreadablePdf)),
+            "{unreadable:?}"
+        );
+        let locked = library.import(&source, &refusing(PdfProblem::Locked), |_, _| {});
+        assert!(matches!(locked, Err(ImportError::LockedPdf)), "{locked:?}");
+
+        assert_eq!(library.documents().unwrap(), []);
+        assert_eq!(visible_entries(&scratch.0.join("library")), 0);
+        let staged = fs::read_dir(scratch.0.join("library").join(STAGING)).unwrap();
+        assert_eq!(staged.count(), 0);
+    }
+
+    #[test]
+    fn an_epub_is_read_by_the_core_and_never_by_the_reader() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let source = scratch.file("book.epub", &emma().bytes());
+        let never = |_: &Path| -> Result<Details, PdfProblem> {
+            panic!("an EPUB is not read by the reader")
+        };
+
+        let document = import_with(&library, &source, &never);
+
+        assert_eq!(document.format(), Format::Epub);
+        assert_eq!(document.title(), "Emma");
+    }
+
+    #[test]
+    fn pdfs_without_details_are_listed_newest_first_and_only_those() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let old = import_new(&library, &scratch.file("old.pdf", b"%PDF-old"));
+        sleep(Duration::from_millis(20));
+        let new = import_new(&library, &scratch.file("new.pdf", b"%PDF-new"));
+        let epub = import_new(&library, &scratch.file("book.epub", &emma().bytes()));
+        let kept = import_new(&library, &scratch.file("kept.pdf", b"%PDF-kept"));
+        let library = forget_details(&scratch, library, &[&old.id, &new.id, &epub.id]);
+
+        assert_eq!(
+            library.pdfs_without_details(),
+            vec![new.id.clone(), old.id.clone()]
+        );
+        assert!(!library.pdfs_without_details().contains(&kept.id));
+    }
+
+    #[test]
+    fn read_details_reads_a_pdf_without_details_and_keeps_them() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
+        let library = forget_details(&scratch, library, &[&document.id]);
+        let moby = details(Some("Moby-Dick"), Some("Melville"), 635);
+
+        assert!(
+            library
+                .read_details(&document.id, &reading(moby.clone()))
+                .unwrap()
+        );
+
+        let read = library.document(&document.id).unwrap().unwrap();
+        assert_eq!(read.details, Some(moby.clone()));
+        let reopened = scratch.library().document(&document.id).unwrap().unwrap();
+        assert_eq!(reopened.details, Some(moby));
+        assert!(library.pdfs_without_details().is_empty());
+    }
+
+    #[test]
+    fn a_pdf_the_reader_refuses_keeps_no_details_and_is_listed_again() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
+        let library = forget_details(&scratch, library, &[&document.id]);
+
+        let kept = library
+            .read_details(&document.id, &refusing(PdfProblem::Locked))
+            .unwrap();
+
+        assert!(!kept);
+        assert_eq!(
+            library.document(&document.id).unwrap().unwrap().details,
+            None
+        );
+        assert_eq!(library.pdfs_without_details(), vec![document.id.clone()]);
+    }
+
+    #[test]
+    fn read_details_leaves_the_details_a_document_has() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let moby = details(Some("Moby-Dick"), None, 1);
+        let document = import_with(
+            &library,
+            &scratch.file("a.pdf", PDF),
+            &reading(moby.clone()),
+        );
+        let other = reading(details(Some("Other"), None, 9));
+
+        assert!(!library.read_details(&document.id, &other).unwrap());
+
+        let kept = library.document(&document.id).unwrap().unwrap();
+        assert_eq!(kept.details, Some(moby));
+    }
+
+    #[test]
+    fn read_details_reads_nothing_but_a_pdf_of_the_library() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let epub = import_new(&library, &scratch.file("book.epub", &emma().bytes()));
+        let library = forget_details(&scratch, library, &[&epub.id]);
+        let never = |_: &Path| -> Result<Details, PdfProblem> { panic!("an EPUB is not a PDF") };
+        let read = reading(details(None, None, 1));
+
+        assert!(!library.read_details(&epub.id, &never).unwrap());
+        assert!(!library.read_details(PDF_SHA256, &read).unwrap());
+        assert!(library.read_details("../x", &read).is_err());
+        assert_eq!(library.document(&epub.id).unwrap().unwrap().details, None);
     }
 
     #[test]
@@ -1912,32 +2209,28 @@ mod tests {
         library.set_details(&document.id, &moby).unwrap();
 
         assert!(!scratch.0.join("library").join(&document.id).exists());
-        assert_eq!(import_new(&library, &source).details, None);
+        assert_eq!(
+            import_new(&library, &source).details,
+            Some(details(None, None, 1))
+        );
     }
 
     #[test]
-    fn details_read_back_as_stored_and_a_reimport_has_no_stale_ones() {
+    fn a_reimport_has_the_details_the_file_has_now_not_stale_ones() {
         let scratch = Scratch::new();
         let library = scratch.library();
         let source = scratch.file("a.pdf", PDF);
-        let document = import_new(&library, &source);
         let first = details(Some("Moby-Dick"), None, 1);
         let second = details(Some("Dracula"), Some("Stoker"), 2);
-        library.set_details(&document.id, &first).unwrap();
+        let document = import_with(&library, &source, &reading(first.clone()));
         assert_eq!(library.documents().unwrap()[0].details, Some(first));
-        library.set_details(&document.id, &second).unwrap();
-        for _ in 0..2 {
-            assert_eq!(
-                library.documents().unwrap()[0].details,
-                Some(second.clone())
-            );
-        }
 
         library.remove(&document.id).unwrap();
         assert!(library.documents().unwrap().is_empty());
-        let again = import_new(&library, &source);
-        assert_eq!(again.details, None);
-        assert_eq!(library.documents().unwrap()[0].details, None);
+        let again = import_with(&library, &source, &reading(second.clone()));
+
+        assert_eq!(again.details, Some(second.clone()));
+        assert_eq!(library.documents().unwrap()[0].details, Some(second));
     }
 
     #[test]

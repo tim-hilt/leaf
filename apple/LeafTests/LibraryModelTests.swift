@@ -28,11 +28,17 @@ import UniformTypeIdentifiers
         try await Task.sleep(for: .milliseconds(20))
     }
 
-    /// Imports `source` into the Library at `root` the way an older Leaf
-    /// left it: without details, so a Library opened next lists it by file
-    /// name until its background pass reads them. Call it before `openLibrary`.
+    /// Imports `source` into the Library at `root` without details, the way Sync
+    /// leaves a PDF: details are never synced. A Library opened next lists it by
+    /// file name until its background pass reads them. Call it before `openLibrary`.
     func importWithoutDetails(_ source: URL) throws {
-        _ = try LeafCore.Library.open(root: root.path).import(source: source.path, progress: NoProgress())
+        let core = try LeafCore.Library.open(root: root.path)
+        _ = try core.import(source: source.path, reader: PDFKitReader(), progress: NoProgress())
+        for document in try core.listing(sort: Sort(key: .dateImported, reversed: false)).documents() {
+            // Import kept the details here; a Device that got the File by Sync has none.
+            let folder = URL(fileURLWithPath: document.path).deletingLastPathComponent()
+            try? FileManager.default.removeItem(at: folder.appending(path: ".details"))
+        }
     }
 
     private final class NoProgress: ImportProgress {
@@ -153,8 +159,8 @@ import UniformTypeIdentifiers
             return
         }
         #expect(problems[0].file == garbage)
-        guard case .rejected(.notPDF) = problems[0].failure else {
-            Issue.record("expected .rejected(.notPDF), got \(problems[0].failure)")
+        guard case .UnsupportedFormat = problems[0].error else {
+            Issue.record("expected .UnsupportedFormat, got \(problems[0].error)")
             return
         }
         #expect(library.documents.isEmpty)
@@ -167,7 +173,7 @@ import UniformTypeIdentifiers
         let result = await library.importFiles([missing], from: .drop)
 
         guard case .problems(let problems) = result, problems.count == 1,
-            case .failed(let message) = problems[0].failure
+            case .Failed(let message) = problems[0].error
         else {
             Issue.record("expected one failed problem, got \(result)")
             return
@@ -322,7 +328,7 @@ import UniformTypeIdentifiers
 
         let outcome = await library.import(missing)
 
-        guard case .failed(let message) = outcome else {
+        guard case .failed(.Failed(let message)) = outcome else {
             Issue.record("expected .failed, got \(outcome)")
             return
         }
@@ -336,8 +342,8 @@ import UniformTypeIdentifiers
 
         let outcome = await library.import(garbage)
 
-        guard case .rejected(.notPDF) = outcome else {
-            Issue.record("expected .rejected(.notPDF), got \(outcome)")
+        guard case .failed(.UnsupportedFormat) = outcome else {
+            Issue.record("expected .failed(.UnsupportedFormat), got \(outcome)")
             return
         }
         #expect(library.documents.isEmpty)
@@ -349,8 +355,8 @@ import UniformTypeIdentifiers
 
         let outcome = await library.import(damaged)
 
-        guard case .rejected(.unreadable) = outcome else {
-            Issue.record("expected .rejected(.unreadable), got \(outcome)")
+        guard case .failed(.UnreadablePdf) = outcome else {
+            Issue.record("expected .failed(.UnreadablePdf), got \(outcome)")
             return
         }
         #expect(library.documents.isEmpty)
@@ -362,8 +368,8 @@ import UniformTypeIdentifiers
 
         let outcome = await library.import(locked)
 
-        guard case .rejected(.locked) = outcome else {
-            Issue.record("expected .rejected(.locked), got \(outcome)")
+        guard case .failed(.LockedPdf) = outcome else {
+            Issue.record("expected .failed(.LockedPdf), got \(outcome)")
             return
         }
         #expect(library.documents.isEmpty)
@@ -731,10 +737,12 @@ import UniformTypeIdentifiers
             [await library.import(drm), await library.import(fixed)]
             + [await library.import(invalid), await library.import(otherZip)]
 
-        let reasons = outcomes.map { outcome -> ImportRejection? in
-            if case .rejected(let reason) = outcome { reason } else { nil }
+        guard case .failed(.DrmProtectedEpub) = outcomes[0], case .failed(.FixedLayoutEpub) = outcomes[1],
+            case .failed(.InvalidEpub) = outcomes[2], case .failed(.InvalidEpub) = outcomes[3]
+        else {
+            Issue.record("expected DRM, fixed layout, invalid and invalid, got \(outcomes)")
+            return
         }
-        #expect(reasons == [.drmProtectedEPUB, .fixedLayoutEPUB, .invalidEPUB, .invalidEPUB])
         #expect(library.documents.isEmpty)
         #expect(savedCovers().isEmpty)
     }
@@ -1389,11 +1397,13 @@ import UniformTypeIdentifiers
 
     // MARK: Changes from Sync
 
-    @Test func aLibraryChangeFromSyncListsTheDocumentsAgainAndReadsTheirDetails() async throws {
+    @Test func aLibraryChangeFromSyncListsTheDocumentsAgain() async throws {
         // The model shares this core handle: another handle's Import wouldn't show, its catalog is in memory.
         let core = try LeafCore.Library.open(root: root.path)
         let library = LibraryModel(core: core, coversFolder: coversFolder, defaults: defaults)
-        _ = try core.import(source: try writePDF(named: "synced.pdf", pageCount: 2).path, progress: NoProgress())
+        _ = try core.import(
+            source: try writePDF(named: "synced.pdf", pageCount: 2).path, reader: PDFKitReader(),
+            progress: NoProgress())
         #expect(library.documents.isEmpty)
 
         library.libraryChanged()

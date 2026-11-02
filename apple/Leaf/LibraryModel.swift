@@ -1,6 +1,7 @@
+import CoreGraphics
+import Foundation
 import LeafCore
 import Observation
-import PDFKit
 import Synchronization
 
 /// A Document in the Library, as the core last listed it. Holds no open PDF:
@@ -60,31 +61,14 @@ struct LibraryDocument: Identifiable, Hashable {
     }
 }
 
-/// Why a File isn't Imported at all; nothing was copied.
-enum ImportRejection: Error {
-    /// Neither a PDF nor an EPUB.
-    case notPDF
-    /// Looks like a PDF, but PDFKit can't open it.
-    case unreadable
-    /// Needs a password to open. PDFs that only restrict permissions aren't locked.
-    case locked
-    /// Looks like an EPUB, but the core can't read it.
-    case invalidEPUB
-    /// An EPUB with encrypted content.
-    case drmProtectedEPUB
-    /// An EPUB with a fixed layout.
-    case fixedLayoutEPUB
-}
-
 /// How an Import ended.
 enum ImportOutcome {
     /// The File is now a new Document in the Library.
     case opened(LibraryDocument)
     /// The Library already holds this File's content: the existing Document.
     case duplicate(LibraryDocument)
-    case rejected(ImportRejection)
-    /// Copying failed; the system's reason. Nothing was left behind.
-    case failed(String)
+    /// The File isn't Imported, and nothing was left behind: why, as the core says.
+    case failed(LibraryError)
 }
 
 /// Where Files to Import came from.
@@ -99,14 +83,8 @@ enum ImportOrigin {
 
 /// A File that wasn't Imported, and why.
 struct ImportProblem {
-    enum Failure {
-        case rejected(ImportRejection)
-        /// The system's reason.
-        case failed(String)
-    }
-
     let file: URL
-    let failure: Failure
+    let error: LibraryError
 }
 
 /// What the window shows after Importing Files.
@@ -212,8 +190,8 @@ final class LibraryModel {
     /// Where the system hands over temporary copies of Files; they are deleted
     /// after their Import. Nil where the system hands over the Files themselves.
     @ObservationIgnored private let inbox: URL?
-    /// Document IDs whose details are being read from their PDFs.
-    @ObservationIgnored private var readingDetails: Set<String> = []
+    /// The latest background pass reading details; the next one waits for it.
+    @ObservationIgnored private var lastDetailsPass: Task<Void, Never>?
     /// The latest `importFiles` call; the next one waits for it.
     @ObservationIgnored private var lastImportFiles: Task<Void, Never>?
     /// The latest access to a Document's state in the core; the next one waits for it.
@@ -313,68 +291,48 @@ final class LibraryModel {
     }
 
     /// Copies the File at `url` into the Library without blocking the main
-    /// thread, publishing `runningImport` meanwhile. Files that aren't
-    /// readable, unlocked PDFs or valid EPUBs without DRM are rejected, and
-    /// nothing stays in the Library. The Document's details and Cover are
-    /// saved before this returns.
+    /// thread, publishing `runningImport` meanwhile. The core refuses a File it
+    /// can't Import, e.g. a PDF that can't be opened, and nothing stays in the
+    /// Library. The Document's details and Cover are saved before this returns.
     func `import`(_ url: URL) async -> ImportOutcome {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
 
-        // Disable the UI before PDFKit reads the File: that alone can take a while.
+        // Disable the UI before the core reads the File: that alone can take a while.
         runningImport = RunningImport(title: url.deletingPathExtension().lastPathComponent)
         defer { runningImport = nil }
 
-        let read: ReadPDF?
-        let covers = covers
-        switch await Task.detached(operation: { Self.check(url, covers: covers) }).value {
-        case .failure(let rejection): return .rejected(rejection)
-        case .success(let pdf): read = pdf
-        }
-
         let core = core
+        let covers = covers
         let path = url.path
         // Reports arriving after the Import finished find no runningImport and do nothing.
         let relay = ProgressRelay { [weak self] fraction in
             guard let running = self?.runningImport else { return }
             self?.runningImport?.fraction = max(running.fraction, fraction)
         }
-        let details = read?.details
         do {
             let (stored, isNew) = try await Task.detached {
                 let (stored, isNew) =
-                    switch try core.import(source: path, progress: relay) {
+                    switch try core.import(source: path, reader: PDFKitReader(), progress: relay) {
                     case .imported(let stored): (stored, true)
                     case .alreadyImported(let stored): (stored, false)
                     }
-                if let details { try? core.setDetails(stored.id, details) }
-                // An EPUB's Cover is made from the File in the Library.
-                if stored.format == .epub {
-                    _ = covers.cover(id: stored.id, source: LibraryDocument(stored).coverSource(core: core))
-                }
+                // The Cover is made from the File in the Library, PDF or EPUB.
+                _ = covers.cover(id: stored.id, source: LibraryDocument(stored).coverSource(core: core))
                 return (stored, isNew)
             }.value
-            if let cover = read?.cover { covers.save(cover, id: stored.id) }
             let id = stored.id
             // Listed with the Document, so the Gallery shows it too.
             guard let listed = await relist(after: { try? $0.document(id: id) }) else {
-                return .failed("The imported file couldn't be opened.")
+                return .failed(.Failed(message: "The imported file couldn't be opened."))
             }
             let document = LibraryDocument(listed)
             runningImport?.title = document.title
             return isNew ? .opened(document) : .duplicate(document)
-        } catch LibraryError.Failed(let message) {
-            return .failed(message)
-        } catch LibraryError.InvalidEpub {
-            return .rejected(.invalidEPUB)
-        } catch LibraryError.DrmProtectedEpub {
-            return .rejected(.drmProtectedEPUB)
-        } catch LibraryError.FixedLayoutEpub {
-            return .rejected(.fixedLayoutEPUB)
-        } catch LibraryError.UnsupportedFormat {
-            return .rejected(.notPDF)
+        } catch let error as LibraryError {
+            return .failed(error)
         } catch {
-            return .failed(error.localizedDescription)
+            return .failed(.Failed(message: error.localizedDescription))
         }
     }
 
@@ -405,8 +363,7 @@ final class LibraryModel {
             case .duplicate(let document):
                 opening = document
                 duplicate = document
-            case .rejected(let reason): problems.append(ImportProblem(file: url, failure: .rejected(reason)))
-            case .failed(let message): problems.append(ImportProblem(file: url, failure: .failed(message)))
+            case .failed(let error): problems.append(ImportProblem(file: url, error: error))
             }
             deleteIfTemporary(url)
         }
@@ -573,31 +530,6 @@ final class LibraryModel {
         return await running.value
     }
 
-    /// What Import reads from a PDF it opened to check the File.
-    /// An EPUB is checked by the core, which reads its details and Cover itself.
-    private struct ReadPDF: Sendable {
-        let details: PDFDetails
-        let cover: CGImage?
-    }
-
-    /// What the File at `url` yields if it can be Imported, or why not. The
-    /// core decides its Format; PDFKit checks a PDF. A File that can't be read
-    /// at all isn't rejected (nil): copying it fails with the system's own
-    /// reason. Nor is an EPUB: the core checks it. Reads the File and renders
-    /// its Cover, so keep it off the main thread.
-    private nonisolated static func check(_ url: URL, covers: CoverStore) -> Result<ReadPDF?, ImportRejection> {
-        let format: Format?
-        do { format = try formatOfFile(path: url.path) } catch { return .success(nil) }
-        switch format {
-        case nil: return .failure(.notPDF)
-        case .epub: return .success(nil)
-        case .pdf:
-            guard let pdf = PDFDocument(url: url) else { return .failure(.unreadable) }
-            guard !pdf.isLocked else { return .failure(.locked) }
-            return .success(ReadPDF(details: pdf.details, cover: covers.render(pdf)))
-        }
-    }
-
     /// Changes the Library in the core, off the main thread and in order with
     /// its other changes, then shows the Library as the core lists it after
     /// `change`. Each listing includes every change before it and is shown as
@@ -613,39 +545,33 @@ final class LibraryModel {
         return result
     }
 
-    /// Reads the details of Documents the core has none of from their PDFs,
-    /// one at a time at background priority, publishing them in small batches.
-    /// A PDF that can't be read is skipped and tried again at the next launch.
+    /// Reads the details the core lacks for PDFs, one at a time at background
+    /// priority, listing the Library again after each batch. Passes run one
+    /// after another, so no PDF is read twice. A PDF that can't be read is
+    /// skipped, and the next pass lists it again.
     private func readMissingDetails() {
-        let missing = documents.filter { $0.format == .pdf && $0.pageCount == nil && !readingDetails.contains($0.id) }
-            .map { ($0.id, $0.file) }
-        guard !missing.isEmpty else { return }
-        readingDetails.formUnion(missing.map(\.0))
-        Task(priority: .utility) { [weak self] in
+        let previous = lastDetailsPass
+        let core = core
+        lastDetailsPass = Task(priority: .utility) { [weak self] in
+            await previous?.value
+            let reader = PDFKitReader()
+            let ids = await Task.detached(priority: .utility) { core.pdfsWithoutDetails() }.value
             // Each publish lists every Document again, so not one by one.
-            var read: [(id: String, details: PDFDetails)] = []
+            var read = 0
             var published = ContinuousClock.now
-            for (id, file) in missing {
-                let details = await Task.detached(priority: .utility) { PDFDocument(url: file)?.details }.value
+            for id in ids {
+                let kept = await Task.detached(priority: .utility) {
+                    (try? core.readDetails(id: id, reader: reader)) ?? false
+                }.value
                 guard let self else { return }
-                readingDetails.remove(id)
-                guard let details else { continue }
-                read.append((id, details))
-                if read.count >= 16 || published.duration(to: .now) > .milliseconds(500) {
-                    await keepDetails(read)
-                    read = []
+                if kept { read += 1 }
+                if read > 0, read >= 16 || published.duration(to: .now) > .milliseconds(500) {
+                    await relist { _ in }
+                    read = 0
                     published = .now
                 }
             }
-            await self?.keepDetails(read)
-        }
-    }
-
-    /// Keeps the details read for Documents, by ID, then lists the Library again.
-    private func keepDetails(_ read: [(id: String, details: PDFDetails)]) async {
-        guard !read.isEmpty else { return }
-        await relist { core in
-            for (id, details) in read { try? core.setDetails(id, details) }
+            if read > 0 { await self?.relist { _ in } }
         }
     }
 }
@@ -663,12 +589,4 @@ extension LibraryModel: SyncedLibrary {
     }
 
     func markupChanged(of id: String) { markupRevisions[id, default: 0] += 1 }
-}
-
-extension LeafCore.Library {
-    /// Keeps `details`, read from the File of Document `id`, on this Device.
-    fileprivate func setDetails(_ id: String, _ details: PDFDetails) throws {
-        try setDetails(
-            id: id, title: details.title, author: details.author, pageCount: UInt32(clamping: details.pageCount))
-    }
 }

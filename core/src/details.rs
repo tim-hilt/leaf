@@ -1,6 +1,6 @@
-//! A Document's details: what is read from its File. The client reads a PDF's
-//! and hands them over (the core never opens PDFs, ADR-0003); the core reads an
-//! EPUB's itself (ADR-0021). Kept on this Device only, never synced: every
+//! A Document's details: what is read from its File. The client reads a PDF's,
+//! through the `PdfReader` the core is given (ADR-0003, ADR-0026); the core reads
+//! an EPUB's itself (ADR-0021). Kept on this Device only, never synced: every
 //! Device reads them from the same File.
 //!
 //! Stored as three lines: the size (the page count of a PDF; `c` and the

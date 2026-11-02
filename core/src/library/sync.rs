@@ -733,6 +733,7 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::fixtures::one_page;
     use crate::markup::{Anchor, EpubPosition, Highlight, PageRects, Rgb};
     use crate::storage::DirStorage;
     use automerge::transaction::Transactable;
@@ -823,7 +824,7 @@ mod tests {
                 bytes.to_vec()
             };
             fs::write(&source, bytes).unwrap();
-            match self.library.import(&source, |_, _| {}).unwrap() {
+            match self.library.import(&source, &one_page, |_, _| {}).unwrap() {
                 ImportResult::Imported(document) | ImportResult::AlreadyImported(document) => {
                     document
                 }

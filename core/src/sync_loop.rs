@@ -462,6 +462,7 @@ impl Storage for Cancellable {
 mod tests {
     use super::*;
     use crate::library::ImportResult;
+    use crate::library::fixtures::one_page;
     use crate::storage::DirStorage;
     use std::fs;
     use std::path::PathBuf;
@@ -521,7 +522,7 @@ mod tests {
         fn import(&self, library: &Library, bytes: &[u8]) -> String {
             let source = self.dir.join(format!("{}.pdf", bytes.len()));
             fs::write(&source, [b"%PDF-", bytes].concat()).unwrap();
-            match library.import(&source, |_, _| {}).unwrap() {
+            match library.import(&source, &one_page, |_, _| {}).unwrap() {
                 ImportResult::Imported(d) | ImportResult::AlreadyImported(d) => d.id,
             }
         }
