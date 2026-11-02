@@ -1,6 +1,7 @@
 //! A per-Document value read from disk once and then kept in memory.
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// The value of each Document read so far, by ID, with the Imports it was read
@@ -27,25 +28,42 @@ impl<T: Clone> DocCache<T> {
         imports: &[String],
         read: impl FnOnce() -> Option<T>,
     ) -> Option<T> {
+        let Ok(value) = self.get_or_try_read(id, imports, || Ok::<_, Infallible>(read()));
+        value
+    }
+
+    /// `get_or_read` for a `read` that can fail: a failure is returned, and
+    /// nothing is kept.
+    pub fn get_or_try_read<E>(
+        &self,
+        id: &str,
+        imports: &[String],
+        read: impl FnOnce() -> Result<Option<T>, E>,
+    ) -> Result<Option<T>, E> {
         if let Some((kept, value)) = self.lock().get(id)
             && kept == imports
         {
-            return value.clone();
+            return Ok(value.clone());
         }
-        let read = read();
+        let read = read()?;
         let mut known = self.lock();
-        match known.get(id) {
+        Ok(match known.get(id) {
             Some((kept, set)) if kept == imports => set.clone(),
             _ => {
                 known.insert(id.to_owned(), (imports.to_vec(), read.clone()));
                 read
             }
-        }
+        })
     }
 
     /// Keeps `value` as that of Document `id` with `imports`.
     pub fn set(&self, id: &str, imports: &[String], value: Option<T>) {
         self.lock().insert(id.to_owned(), (imports.to_vec(), value));
+    }
+
+    /// Forgets every value, so each is read again when next needed.
+    pub fn clear(&self) {
+        self.lock().clear();
     }
 
     fn lock(&self) -> MutexGuard<'_, Known<T>> {
@@ -96,6 +114,15 @@ mod tests {
             cache.get_or_read("a", &imports(&["2"]), || Some(7)),
             Some(7)
         );
+    }
+
+    #[test]
+    fn a_failed_read_keeps_nothing_and_the_next_read_is_tried_again() {
+        let cache = DocCache::new();
+        let failed = cache.get_or_try_read("a", &imports(&["1"]), || Err::<Option<i32>, _>("gone"));
+        assert_eq!(failed, Err("gone"));
+        let read = cache.get_or_try_read("a", &imports(&["1"]), || Ok::<_, &str>(Some(2)));
+        assert_eq!(read, Ok(Some(2)));
     }
 
     #[test]

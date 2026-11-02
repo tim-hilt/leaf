@@ -899,10 +899,9 @@ import UniformTypeIdentifiers
 
         await library.saveProgress(place, of: document, at: lastRead)
 
-        let updated = try #require(library.documents.first)
+        let updated = try #require(library.document(id: document.id))
         #expect(updated.place == place)
         #expect(updated.lastRead == lastRead)
-        #expect(library.visibleDocuments(matching: "").first?.place == place)
     }
 
     @Test func readingProgressSurvivesReopeningTheLibrary() async throws {
@@ -924,7 +923,7 @@ import UniformTypeIdentifiers
         await library.saveProgress(place, of: document, at: lastRead)
         await library.saveProgress(earlier, of: document, at: lastRead.addingTimeInterval(5))
 
-        #expect(library.documents.first?.place == earlier)
+        #expect(library.document(id: document.id)?.place == earlier)
         #expect(try openLibrary().documents.first?.place == earlier)
     }
 

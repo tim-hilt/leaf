@@ -172,6 +172,9 @@ impl Library {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let everything = std::mem::take(&mut self.dirty().everything);
+        // A File may have been lost since the last step. Sync checks each one it
+        // needs, see `files`, so a lost File is downloaded again.
+        self.files.clear();
         let mut pending = Pending::default();
         let result = storage.list(REMOTE_DIR).and_then(|listing| {
             self.merge_documents(storage, &listing, &mut exchanges, everything, &mut pending)?;
@@ -726,6 +729,11 @@ impl Library {
         } else {
             return Ok(false);
         }
+        self.set_file(
+            &doc,
+            &entry.id,
+            Some(self.root.join(&entry.id).join(&entry.name)),
+        );
         Ok(true)
     }
 }
@@ -1216,7 +1224,6 @@ mod tests {
         a.library.save_progress(&document.id, &progress).unwrap();
         a.sync();
         fs::remove_file(&document.path).unwrap();
-        assert!(a.ids().is_empty());
 
         a.sync();
 
@@ -1809,6 +1816,37 @@ mod tests {
         assert!(a.ids().is_empty() && b.ids().is_empty());
         assert!(!b.home.join("library").join(&id).exists());
         assert!(cloud.blobs_with(&pdf(b"shared document")).is_empty());
+    }
+
+    #[test]
+    fn a_file_that_arrives_by_sync_is_listed_once_stored_though_listed_without_it_before() {
+        let mut cloud = Cloud::new();
+        let (a, b) = (cloud.device(), cloud.device());
+        let imported = a.import("Paper.pdf", b"paper bytes");
+        a.sync();
+        let blobs = cloud.blobs_with(&pdf(b"paper bytes"));
+        fs::remove_file(&blobs[0]).unwrap();
+        b.sync();
+        assert!(b.ids().is_empty(), "listed without its File");
+
+        a.sync();
+        b.sync();
+
+        assert_eq!(b.ids(), std::slice::from_ref(&imported.id));
+        let document = b.document(&imported.id);
+        assert_eq!(fs::read(document.path).unwrap(), pdf(b"paper bytes"));
+    }
+
+    #[test]
+    fn a_remove_on_another_device_takes_the_document_off_the_gallery_here() {
+        let mut cloud = Cloud::new();
+        let (a, b, id) = two_devices_with_a_document(&mut cloud);
+        assert_eq!(b.ids(), std::slice::from_ref(&id));
+
+        a.library.remove(&id).unwrap();
+        settle(&a, &b);
+
+        assert!(b.ids().is_empty());
     }
 
     fn state_chunks(cloud: &Cloud) -> Vec<Blob> {

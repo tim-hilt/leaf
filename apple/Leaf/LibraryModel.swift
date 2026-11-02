@@ -246,8 +246,13 @@ final class LibraryModel {
         return listing.sorted.matching(search: searchText).map { listing.documents[Int($0)] }
     }
 
-    /// The Document with `id`, if it is in the Library.
-    func document(id: String) -> LibraryDocument? { listing?.byID[id] }
+    /// The Document with `id` as the core stores it now, if it is in the Library.
+    /// Read here, as a save doesn't list the Library again unless the Gallery shows
+    /// something new; the listed copy may lack the latest place.
+    func document(id: String) -> LibraryDocument? {
+        guard let stored = try? core.document(id: id) else { return nil }
+        return LibraryDocument(stored)
+    }
 
     /// The saved Cover of `document`, loaded and decoded off the main thread,
     /// or nil if there is none. Cheap, so safe to call while scrolling; never renders.
@@ -394,13 +399,20 @@ final class LibraryModel {
     }
 
     /// Saves `place` as Reading Progress of `document`, read `lastRead`. The
-    /// core writes off the main thread, in order; this returns when it has,
-    /// with the Document updated in every window. Does nothing for a Document
-    /// that was Removed. A failed write is ignored: the next save replaces it.
+    /// core writes off the main thread, in order; this returns when it has. The
+    /// Library is listed again only if the core says the Gallery shows something
+    /// new. Does nothing for a Document that was Removed. A failed write is
+    /// ignored: the next save replaces it.
     func saveProgress(_ place: Place, of document: LibraryDocument, at lastRead: Date = .now) async {
         let progress = ReadingProgress(place: place, lastRead: lastRead.millisecondsSince1970)
         let id = document.id
-        await relist { try? $0.saveProgress(id: id, progress: progress) }
+        let sort = sort.core
+        let changes = await inStateOrder { core in
+            let changes = try? core.wouldChangeGallery(id: id, progress: progress, sort: sort)
+            try? core.saveProgress(id: id, progress: progress)
+            return changes ?? true
+        }
+        if changes { await relist { _ in } }
     }
 
     /// The Highlights and page Notes of `document`, each oldest first, read at

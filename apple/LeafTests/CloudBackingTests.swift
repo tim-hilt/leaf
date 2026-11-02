@@ -973,7 +973,7 @@ private let oauthProviders: [CloudProvider] = [.googleDrive, .oneDrive]
         // What the Reader of B holds: the Document as it was opened.
         let open = try #require(b.library.documents.first)
         await b.library.saveProgress(place, of: open, at: lastRead)
-        let opened = try #require(b.library.documents.first)
+        let opened = try #require(b.library.document(id: open.id))
 
         await a.library.saveProgress(
             Place.pdf(pageIndex: 3, point: .zero), of: try #require(a.library.documents.first),

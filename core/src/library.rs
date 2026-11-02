@@ -32,7 +32,7 @@ use crate::details::{self, Details, Format, Size};
 use crate::doc_cache::DocCache;
 use crate::epub::{self, Epub};
 use crate::library_doc::{Import, LibraryDoc};
-use crate::listing::{Listing, Sort};
+use crate::listing::{Listing, Sort, SortKey, progress_changes_gallery};
 use crate::markup::{self, Anchor, Highlight, Markup, PageNote, Rgb};
 use crate::preferences::{self, HighlightColor, HighlightColors};
 use crate::progress::{self, Place, ReadingProgress};
@@ -245,6 +245,10 @@ pub struct Library {
     /// The details of each Document read so far, by ID, see `details_of`.
     /// Changed under `writing` by `set_details`, the only writer of the file.
     details: DocCache<Details>,
+    /// Where each Document's File is stored, if it is, by ID, with the Imports it
+    /// was read for. Kept so a listing doesn't ask the file system: the writers of
+    /// Files set it, and each Sync step forgets it.
+    files: DocCache<PathBuf>,
 }
 
 /// The cursors of the documents `sync` exchanges.
@@ -306,6 +310,7 @@ impl Library {
             markup_changes: Mutex::new(Vec::new()),
             progress: DocCache::new(),
             details: DocCache::new(),
+            files: DocCache::new(),
         };
         library.reconcile()?;
         Ok(library)
@@ -356,7 +361,8 @@ impl Library {
         let mut first_imports = Vec::new();
         for (hash, folder) in folders {
             if let Some(import) = doc.live(&hash).next() {
-                adopt_name(&folder, &import.name)?;
+                let file = adopt_name(&folder, &import.name)?;
+                self.set_file(&doc, &hash, file);
                 first_imports.push((folder, import.id.clone()));
             } else if removed_hashes.contains(&hash) {
                 // A Remove that was recorded but never finished.
@@ -484,11 +490,13 @@ impl Library {
                 name.to_owned()
             }
         };
+        let file = self.root.join(id).join(&name);
         if folder.exists() {
             fs::rename(staged.join(&name), folder.join(&name))?;
         } else {
             fs::rename(staged, folder)?;
         }
+        self.set_file(&doc, id, Some(file));
         Ok(true)
     }
 
@@ -677,18 +685,28 @@ impl Library {
         }))
     }
 
-    /// Where the File of `entry` is stored, if it is.
+    /// Where the File of `entry` is stored, if it is. Read once, then kept, see
+    /// `files`.
     fn file_path(&self, entry: &Entry) -> io::Result<Option<PathBuf>> {
         // A name from the Library document must not point outside the folder.
         if !is_file_name(&entry.name) {
             return Ok(None);
         }
-        let path = self.root.join(&entry.id).join(&entry.name);
-        match fs::metadata(&path) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e),
-            Ok(meta) => Ok(meta.is_file().then_some(path)),
-        }
+        self.files.get_or_try_read(&entry.id, &entry.imports, || {
+            let path = self.root.join(&entry.id).join(&entry.name);
+            match fs::metadata(&path) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e),
+                Ok(meta) => Ok(meta.is_file().then_some(path)),
+            }
+        })
+    }
+
+    /// Keeps `file`, where the File of Document `id` is now, for the Imports
+    /// `doc` lists. Called by each writer of Files, under the Library document,
+    /// after it moved the File.
+    fn set_file(&self, doc: &LibraryDoc, id: &str, file: Option<PathBuf>) {
+        self.files.set(id, &import_ids_in(doc, id), file);
     }
 
     /// Stores `progress` as the Reading Progress of Document `id`, replacing
@@ -703,6 +721,44 @@ impl Library {
         let _writing = self.writing();
         // The folder may be gone: the Document was Removed.
         ignore_not_found(self.write_progress(&entry, progress))
+    }
+
+    /// Whether saving `progress` for Document `id` with `save_progress` changes
+    /// what the Gallery for `sort` shows: see `listing::progress_changes_gallery`.
+    /// Saves nothing. False for a Document the Gallery doesn't list. An `id` that
+    /// isn't a Document ID is `InvalidInput`.
+    pub fn would_change_gallery(
+        &self,
+        id: &str,
+        progress: &ReadingProgress,
+        sort: Sort,
+    ) -> io::Result<bool> {
+        self.folder(id)?;
+        let Some(entry) = self.entry(id) else {
+            return Ok(false);
+        };
+        let _writing = self.writing();
+        let Some(before) = self.document_of(&entry)? else {
+            return Ok(false);
+        };
+        let after = Document {
+            progress: Some(*progress),
+            ..before.clone()
+        };
+        let last_reads = match sort.key {
+            SortKey::RecentlyRead => self.last_reads_except(id),
+            _ => Vec::new(),
+        };
+        Ok(progress_changes_gallery(sort, &before, &after, last_reads))
+    }
+
+    /// The Last Read of each Document but `id` that has one.
+    fn last_reads_except(&self, id: &str) -> Vec<u64> {
+        let others = self.entries().into_iter().filter(|e| e.id != id);
+        others
+            .filter_map(|e| self.progress_of(&e))
+            .map(|p| p.last_read)
+            .collect()
     }
 
     /// Stores `progress` for the Document of `entry`, under its first Import.
@@ -930,7 +986,7 @@ impl Library {
 
     /// The IDs of the Imports of Document `id`, first Import first.
     fn import_ids(&self, id: &str) -> Vec<String> {
-        self.catalog().live(id).map(|i| i.id.clone()).collect()
+        import_ids_in(&self.catalog(), id)
     }
 
     /// The stored states of the Imports `imports` of Document `id`.
@@ -1045,6 +1101,11 @@ impl Entry {
 /// Sorts `entries` newest Import first, then by ID.
 fn sort_newest_first(entries: &mut [Entry]) {
     entries.sort_by(|a, b| b.imported.cmp(&a.imported).then_with(|| a.id.cmp(&b.id)));
+}
+
+/// The IDs of the Imports of Document `id` that `doc` lists, first Import first.
+fn import_ids_in(doc: &LibraryDoc, id: &str) -> Vec<String> {
+    doc.live(id).map(|i| i.id.clone()).collect()
 }
 
 /// The name of the file holding the state of Import `import`. Hidden, so the
@@ -1182,16 +1243,17 @@ fn stream_hashed(
 }
 
 /// Renames the File in the Document folder `folder` to `name`, if it has
-/// another one and `name` is a plain file name. Does nothing if there is no
-/// File, or the folder already has one under `name`.
-fn adopt_name(folder: &Path, name: &str) -> io::Result<()> {
-    if !is_file_name(name) || folder.join(name).is_file() {
-        return Ok(());
-    }
-    if let Some((stored, _)) = stored_file(folder)? {
+/// another one and `name` is a plain file name. Returns where the File is
+/// now, if it is under `name`.
+fn adopt_name(folder: &Path, name: &str) -> io::Result<Option<PathBuf>> {
+    if is_file_name(name)
+        && !folder.join(name).is_file()
+        && let Some((stored, _)) = stored_file(folder)?
+    {
         fs::rename(folder.join(stored), folder.join(name))?;
     }
-    Ok(())
+    let path = folder.join(name);
+    Ok((is_file_name(name) && path.is_file()).then_some(path))
 }
 
 /// The name of the File in the Document folder `dir`, and when the folder was
@@ -2487,6 +2549,133 @@ mod tests {
         assert_eq!(listed_progress(&library, &document.id), None);
     }
 
+    /// Saves the Reading Progress of page `page` read at `last_read` for
+    /// Document `id`, and says whether that changed what the Gallery for `sort`
+    /// shows, as `would_change_gallery` said before the save.
+    fn save_at(library: &Library, id: &str, page: u32, last_read: u64, sort: Sort) -> bool {
+        let reading = progress(page, last_read);
+        let changes = library.would_change_gallery(id, &reading, sort).unwrap();
+        library.save_progress(id, &reading).unwrap();
+        changes
+    }
+
+    /// What `sort` lists of the Library, in order, with each percent read.
+    fn gallery(library: &Library, sort: Sort) -> Vec<(String, Option<u8>)> {
+        let listing = library.listing(sort).unwrap();
+        listing
+            .matching("")
+            .into_iter()
+            .map(|i| {
+                let document = &listing.documents()[i];
+                (document.id.clone(), document.percent_read())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn saving_progress_says_whether_the_gallery_shows_something_new_by_percent_read() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let ten_pages = reading(details(None, None, 10));
+        let a = import_with(&library, &scratch.file("a.pdf", b"%PDF-a"), &ten_pages);
+        let by_date = Sort {
+            key: SortKey::DateImported,
+            reversed: false,
+        };
+
+        assert!(save_at(&library, &a.id, 0, 100, by_date));
+        // The same percent read: the Gallery shows what it did.
+        assert!(!save_at(&library, &a.id, 0, 200, by_date));
+        assert!(save_at(&library, &a.id, 4, 300, by_date));
+    }
+
+    #[test]
+    fn saving_progress_says_whether_the_recently_read_order_changed() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        // No pages, so no percent read: only the order can change.
+        let no_pages = reading(details(None, None, 0));
+        let a = import_with(&library, &scratch.file("a.pdf", b"%PDF-a"), &no_pages);
+        let b = import_with(&library, &scratch.file("b.pdf", b"%PDF-b"), &no_pages);
+        let recent = Sort {
+            key: SortKey::RecentlyRead,
+            reversed: false,
+        };
+
+        assert!(save_at(&library, &a.id, 0, 100, recent));
+        assert!(save_at(&library, &b.id, 0, 200, recent));
+        // Already on top, and nothing else was read in between.
+        assert!(!save_at(&library, &b.id, 0, 250, recent));
+        // Past `b`.
+        assert!(save_at(&library, &a.id, 0, 300, recent));
+        assert_eq!(gallery(&library, recent)[0].0, a.id);
+    }
+
+    #[test]
+    fn saving_progress_for_a_document_that_is_not_listed_says_nothing_changed() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
+        library.remove(&document.id).unwrap();
+        let by_date = Sort {
+            key: SortKey::DateImported,
+            reversed: false,
+        };
+
+        assert!(
+            !library
+                .would_change_gallery(&document.id, &progress(1, 1), by_date)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn a_save_that_says_the_gallery_is_unchanged_leaves_it_as_it_was_in_every_sort() {
+        let sorts = [SortKey::DateImported, SortKey::Title, SortKey::RecentlyRead]
+            .into_iter()
+            .flat_map(|key| [false, true].map(|reversed| Sort { key, reversed }));
+        // (Document, page, Last Read), the Documents as named below.
+        let saves = [
+            (0, 0, 100),
+            (0, 0, 150),
+            (1, 3, 200),
+            (1, 3, 250),
+            (0, 7, 300),
+            (2, 1, 350),
+            (2, 1, 360),
+            (1, 0, 400),
+            (0, 7, 410),
+            (2, 9, 420),
+            (1, 9, 430),
+            (0, 2, 440),
+            (2, 4, 450),
+        ];
+        for sort in sorts {
+            let scratch = Scratch::new();
+            let library = scratch.library();
+            let ten_pages = reading(details(None, None, 10));
+            let ids: Vec<String> = ["a", "b", "c"]
+                .into_iter()
+                .map(|name| {
+                    let source =
+                        scratch.file(&format!("{name}.pdf"), format!("%PDF-{name}").as_bytes());
+                    import_with(&library, &source, &ten_pages).id
+                })
+                .collect();
+
+            let mut unchanged = 0;
+            for (document, page, last_read) in saves {
+                let before = gallery(&library, sort);
+                let changed = save_at(&library, &ids[document], page, last_read, sort);
+                if !changed {
+                    unchanged += 1;
+                    assert_eq!(gallery(&library, sort), before, "{sort:?}");
+                }
+            }
+            assert!(unchanged > 0, "{sort:?}: nothing was called unchanged");
+        }
+    }
+
     fn anchor() -> Anchor {
         Anchor::Pdf(vec![
             PageRects {
@@ -3554,6 +3743,25 @@ mod tests {
         assert_eq!(library.documents().unwrap(), vec![]);
         let again = import_new(&library, &scratch.file("a.pdf", PDF));
         assert_eq!(again.progress, None);
+    }
+
+    #[test]
+    fn a_file_is_listed_under_the_name_of_the_first_import_once_reconciled() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("b.pdf", PDF));
+        // An earlier Import of the same File under another name, from Sync.
+        add_import(&library, &document.id, 1);
+
+        // Listed before `reconcile` renames the File, as a concurrent listing can be.
+        assert_eq!(library.documents().unwrap(), vec![]);
+        library.reconcile().unwrap();
+
+        let listed = library.documents().unwrap();
+        assert_eq!(
+            listed[0].path,
+            scratch.0.join("library").join(PDF_SHA256).join("a.pdf")
+        );
     }
 
     /// Records another Import of Document `id`, as Sync would, and returns its

@@ -1016,6 +1016,18 @@ impl Library {
         self.progress_written(self.core.save_progress(&id, &progress))
     }
 
+    /// Whether saving `progress` for Document `id` changes what the Gallery for
+    /// `sort` shows, see `leaf_core::library::Library::would_change_gallery`. Call
+    /// it before `save_progress`.
+    pub fn would_change_gallery(
+        &self,
+        id: String,
+        progress: ReadingProgress,
+        sort: Sort,
+    ) -> Result<bool, LibraryError> {
+        Ok(self.core.would_change_gallery(&id, &progress, sort)?)
+    }
+
     pub fn markup(&self, id: String) -> Result<Markup, LibraryError> {
         Ok(self.core.markup(&id)?)
     }

@@ -127,6 +127,41 @@ impl Listing {
     }
 }
 
+/// Whether the Gallery for `sort` shows something new once the Reading
+/// Progress of a Document goes from `before` to `after`. `last_reads` are the
+/// Last Read of the other Documents that have one. The Gallery shows each
+/// Document's percent read, and in Recently Read order its Last Read. Never says
+/// no where something changed; may say yes where nothing did.
+pub(crate) fn progress_changes_gallery(
+    sort: Sort,
+    before: &Document,
+    after: &Document,
+    last_reads: impl IntoIterator<Item = u64>,
+) -> bool {
+    if before.percent_read() != after.percent_read() {
+        return true;
+    }
+    if sort.key != SortKey::RecentlyRead {
+        return false;
+    }
+    match (before.progress, after.progress) {
+        // Reading on without passing another Document's Last Read keeps the order.
+        (Some(from), Some(to)) => {
+            let (low, high) = (
+                from.last_read.min(to.last_read),
+                from.last_read.max(to.last_read),
+            );
+            from.last_read != to.last_read
+                && last_reads
+                    .into_iter()
+                    .any(|read| (low..=high).contains(&read))
+        }
+        (None, None) => false,
+        // Opened for the first time, or unopened: it moves.
+        _ => true,
+    }
+}
+
 /// `text` as searching and sorting compare it: lowercase, without accents.
 fn fold(text: &str) -> String {
     text.nfd()
@@ -346,6 +381,95 @@ mod tests {
         let items = shelf();
         let listing = Listing::new(items.clone(), sort(SortKey::Title));
         assert_eq!(listing.documents(), items);
+    }
+
+    /// A Document of `pages` pages, read last at `last_read` on page `page`, if
+    /// it was read at all.
+    fn read(page: u32, last_read: Option<u64>, pages: u32) -> Document {
+        Document {
+            id: String::new(),
+            path: "/library/a/a.pdf".into(),
+            imported: 1,
+            progress: last_read.map(|at| ReadingProgress::pdf(page, 0.0, 0.0, at)),
+            details: Some(Details {
+                title: None,
+                author: None,
+                size: Size::Pages(pages),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_new_percent_read_changes_the_gallery_in_every_sort() {
+        let (before, after) = (read(0, Some(100), 10), read(1, Some(200), 10));
+        for key in [SortKey::DateImported, SortKey::Title, SortKey::RecentlyRead] {
+            assert!(progress_changes_gallery(sort(key), &before, &after, []));
+        }
+    }
+
+    #[test]
+    fn the_same_percent_read_changes_nothing_in_date_imported_or_title_order() {
+        let (before, after) = (read(0, Some(100), 10), read(0, Some(900), 10));
+        for key in [SortKey::DateImported, SortKey::Title] {
+            assert!(!progress_changes_gallery(
+                sort(key),
+                &before,
+                &after,
+                [50, 2_000]
+            ));
+        }
+    }
+
+    #[test]
+    fn opening_a_document_changes_the_recently_read_order() {
+        // No pages known, so the percent read stays none.
+        let (never, opened) = (read(0, None, 0), read(0, Some(500), 0));
+        assert!(progress_changes_gallery(
+            sort(SortKey::RecentlyRead),
+            &never,
+            &opened,
+            []
+        ));
+        assert!(!progress_changes_gallery(
+            sort(SortKey::DateImported),
+            &never,
+            &opened,
+            []
+        ));
+    }
+
+    #[test]
+    fn reading_on_past_the_last_read_document_keeps_the_recently_read_order() {
+        let (before, after) = (read(0, Some(300), 0), read(0, Some(400), 0));
+        assert!(!progress_changes_gallery(
+            sort(SortKey::RecentlyRead),
+            &before,
+            &after,
+            [100, 200]
+        ));
+    }
+
+    #[test]
+    fn moving_past_another_document_changes_the_recently_read_order_both_ways() {
+        let (before, after) = (read(0, Some(150), 0), read(0, Some(250), 0));
+        for reversed in [false, true] {
+            let sort = Sort {
+                key: SortKey::RecentlyRead,
+                reversed,
+            };
+            assert!(progress_changes_gallery(sort, &before, &after, [200]));
+        }
+    }
+
+    #[test]
+    fn reading_at_the_same_last_read_keeps_the_recently_read_order() {
+        let (before, after) = (read(0, Some(300), 0), read(2, Some(300), 0));
+        assert!(!progress_changes_gallery(
+            sort(SortKey::RecentlyRead),
+            &before,
+            &after,
+            [300]
+        ));
     }
 
     fn sort(key: SortKey) -> Sort {
