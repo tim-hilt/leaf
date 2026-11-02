@@ -1,4 +1,5 @@
 import Foundation
+import LeafCore
 
 /// The matches of the Document Search going on in a Reader's document view,
 /// whatever the Format: one search session, which the find bar (`DocumentFind`)
@@ -19,7 +20,7 @@ protocol DocumentMatches: AnyObject {
 
     /// Replaces the matches with those of `query`, as they are found. `onMatch`
     /// is called with the number of each new match.
-    func search(_ query: DocumentSearch.Query, onMatch: @escaping @MainActor (Int) -> Void)
+    func search(_ query: Query, onMatch: @escaping @MainActor (Int) -> Void)
     /// Forgets every match, and unmarks them.
     func clear()
     /// Makes match `number` the current one and shows it.
@@ -42,7 +43,7 @@ protocol DocumentMatches: AnyObject {
 }
 
 extension DocumentMatches {
-    func search(_ query: DocumentSearch.Query) { search(query) { _ in } }
+    func search(_ query: Query) { search(query) { _ in } }
 
     /// Makes the next match current, or the previous one, wrapping around; the
     /// first, or the last, when there is no current one.

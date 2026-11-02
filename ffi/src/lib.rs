@@ -15,6 +15,7 @@ use leaf_core::markup::{Anchor, EpubPosition, Highlight, Markup, PageNote, PageR
 use leaf_core::onedrive::OneDriveStorage;
 use leaf_core::preferences::{HighlightColor, HighlightColors};
 use leaf_core::progress::{Place, ReadingProgress};
+use leaf_core::search::{self, Query, WordMatch};
 use leaf_core::storage::{ConnectError, DirStorage, RefreshTokenCallback, Storage};
 use leaf_core::sync_loop::{self, Status, SyncLoop};
 use leaf_core::webdav::WebDavStorage;
@@ -253,6 +254,62 @@ impl From<CoreDocument> for Document {
     }
 }
 
+#[uniffi::remote(Enum)]
+pub enum WordMatch {
+    Contains,
+    StartsWith,
+    EndsWith,
+    FullWord,
+}
+
+/// What Document Search looks for, see `leaf_core::search::Query`.
+#[uniffi::remote(Record)]
+pub struct Query {
+    pub text: String,
+    pub case_sensitive: bool,
+    pub word_match: WordMatch,
+}
+
+/// A match of Document Search, see `leaf_core::search::Match`: its range in the
+/// searched text, in UTF-16 units, and its excerpt.
+#[derive(uniffi::Record)]
+pub struct SearchMatch {
+    pub start: u64,
+    pub end: u64,
+    pub excerpt: SearchExcerpt,
+}
+
+/// The text around a match, see `leaf_core::search::Excerpt`.
+#[derive(uniffi::Record)]
+pub struct SearchExcerpt {
+    pub text: String,
+    /// The match in `text`, in UTF-16 units.
+    pub matched_start: u64,
+    pub matched_end: u64,
+}
+
+impl From<search::Match> for SearchMatch {
+    fn from(m: search::Match) -> Self {
+        Self {
+            start: m.range.start as u64,
+            end: m.range.end as u64,
+            excerpt: SearchExcerpt {
+                text: m.excerpt.text,
+                matched_start: m.excerpt.matched.start as u64,
+                matched_end: m.excerpt.matched.end as u64,
+            },
+        }
+    }
+}
+
+/// The matches of `query` in `text`, the text of a PDF page: the same matching
+/// as `EpubBook.search`, with positions in UTF-16 units as PDFKit counts them.
+#[uniffi::export]
+pub fn search_text(query: Query, text: String) -> Vec<SearchMatch> {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    query.find(&units).into_iter().map(Into::into).collect()
+}
+
 /// A file of an EPUB, see `leaf_core::epub::Resource`.
 #[derive(uniffi::Record)]
 pub struct EpubResource {
@@ -307,6 +364,16 @@ impl EpubBook {
     ) -> Option<Anchor> {
         let (start, end) = self.0.relocate(start, end, &quoted_text)?;
         Some(Anchor::Epub { start, end })
+    }
+
+    /// The matches of `query` in the text of the spine item at `index` (ADR-0022),
+    /// with their excerpts; none beyond the spine. Items not read before are not kept.
+    pub fn search(&self, index: u32, query: Query) -> Vec<SearchMatch> {
+        self.0
+            .search(index as usize, &query)
+            .into_iter()
+            .map(Into::into)
+            .collect()
     }
 
     /// The file at `path` (a spine item or what it uses), if the EPUB has it.
@@ -857,6 +924,17 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed};
     use std::time::Instant;
+
+    #[test]
+    fn search_text_counts_ranges_in_utf16_units() {
+        let query = Query {
+            text: "apple".to_owned(),
+            case_sensitive: false,
+            word_match: WordMatch::Contains,
+        };
+        let found = search_text(query, "😀 Apple".to_owned());
+        assert_eq!((found[0].start, found[0].end), (3, 8));
+    }
 
     /// Counts the Sync steps that ended.
     #[derive(Default)]

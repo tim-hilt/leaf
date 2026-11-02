@@ -27,6 +27,7 @@ pub mod onedrive;
 pub(crate) mod percent;
 pub mod preferences;
 pub mod progress;
+pub mod search;
 pub(crate) mod state;
 pub mod storage;
 pub mod sync_loop;

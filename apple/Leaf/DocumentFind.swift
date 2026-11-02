@@ -1,3 +1,5 @@
+import LeafCore
+
 #if os(iOS)
     import UIKit
 
@@ -66,7 +68,7 @@
         override var highlightedResultIndex: Int { matches.results.current ?? NSNotFound }
 
         override func performSearch(query: String, options: UITextSearchOptions?) {
-            matches.search(DocumentSearch.Query(query, options: options)) { [matches] number in
+            matches.search(Query(query, options: options)) { [matches] number in
                 if number == 0 { matches.makeCurrent(0) }
             }
         }
@@ -93,10 +95,10 @@
         }
     }
 
-    extension DocumentSearch.Query {
+    extension Query {
         /// The reader's choices in the system find bar.
         @MainActor init(_ text: String, options: UITextSearchOptions?) {
-            let wordMatch: DocumentSearch.WordMatch =
+            let wordMatch: WordMatch =
                 switch options?.wordMatchMethod {
                 case .startsWith: .startsWith
                 case .fullWord: .fullWord
@@ -136,7 +138,7 @@
         /// The current match, in the Document's text; empty before the first.
         private var selected = NSRange()
         /// The search the list shows; nil while the bar is hidden.
-        private var listed: DocumentSearch.Query?
+        private var listed: Query?
         private var barObservation: NSKeyValueObservation?
         private var watch: Timer?
         /// The find pasteboard's change count when the list was made, so an
@@ -203,7 +205,7 @@
             let pasteboard = NSPasteboard(name: .find)
             guard pasteboard.changeCount != listedChange else { return }
             listedChange = pasteboard.changeCount
-            let query = DocumentSearch.Query(findPasteboard: pasteboard)
+            let query = Query(findPasteboard: pasteboard)
             guard query != listed else { return }
             listed = query
             matches.search(query) { [self] number in
@@ -277,7 +279,7 @@
         var visibleCharacterRanges: [NSValue] { matches.visibleRanges.map { NSValue(range: $0) } }
     }
 
-    extension DocumentSearch.Query {
+    extension Query {
         /// The search in the system's find pasteboard: the search string and
         /// options the find bar shows and every app's find bar shares.
         @MainActor init(findPasteboard pasteboard: NSPasteboard) {
@@ -287,7 +289,7 @@
             let caseInsensitive = options[
                 NSPasteboard.PasteboardType.TextFinderOptionKey.textFinderCaseInsensitiveKey.rawValue]
             let matching = options[NSPasteboard.PasteboardType.TextFinderOptionKey.textFinderMatchingTypeKey.rawValue]
-            let wordMatch: DocumentSearch.WordMatch =
+            let wordMatch: WordMatch =
                 switch (matching as? Int).flatMap(NSTextFinder.MatchingType.init(rawValue:)) {
                 case .startsWith: .startsWith
                 case .endsWith: .endsWith

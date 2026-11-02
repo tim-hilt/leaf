@@ -1,3 +1,4 @@
+import LeafCore
 import SwiftUI
 
 /// The matches of Document Search as a lazy native `List`: each row shows the
@@ -82,11 +83,13 @@ struct SearchResultsSheet: View {
     }
 }
 
-extension DocumentSearch.Excerpt {
+extension SearchExcerpt {
     /// The excerpt with the match in bold.
     var highlighted: AttributedString {
         var string = AttributedString(text)
-        if let range = Range(matchRange, in: string) { string[range].inlinePresentationIntent = .stronglyEmphasized }
+        let lower = String.Index(utf16Offset: Int(matchedStart), in: text)
+        let upper = String.Index(utf16Offset: Int(matchedEnd), in: text)
+        if let range = Range(lower..<upper, in: string) { string[range].inlinePresentationIntent = .stronglyEmphasized }
         return string
     }
 }

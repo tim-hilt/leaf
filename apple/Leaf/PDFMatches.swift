@@ -1,3 +1,4 @@
+import LeafCore
 import PDFKit
 
 #if os(iOS)
@@ -35,7 +36,7 @@ final class PDFMatches: DocumentMatches {
         results.onChoose = { [weak self] in self?.makeCurrent($0) }
     }
 
-    func search(_ query: DocumentSearch.Query, onMatch: @escaping @MainActor (Int) -> Void) {
+    func search(_ query: Query, onMatch: @escaping @MainActor (Int) -> Void) {
         clear()
         documentSearch.search(
             query,

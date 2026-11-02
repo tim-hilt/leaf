@@ -1,4 +1,5 @@
 import Foundation
+import LeafCore
 
 /// `DocumentMatches` in a `ReaderEPUBView`: runs `EPUBSearch`, marks the matches
 /// in the text, the current one apart, and shows the current one.
@@ -22,11 +23,11 @@ final class EPUBMatches: DocumentMatches {
         self.view = view
         self.results = results
         text = ChunkedText(view.book)
-        search = EPUBSearch(text, contents: view.contents)
+        search = EPUBSearch(view.book, contents: view.contents)
         results.onChoose = { [weak self] in self?.makeCurrent($0) }
     }
 
-    func search(_ query: DocumentSearch.Query, onMatch: @escaping @MainActor (Int) -> Void) {
+    func search(_ query: Query, onMatch: @escaping @MainActor (Int) -> Void) {
         clear()
         search.search(
             query,

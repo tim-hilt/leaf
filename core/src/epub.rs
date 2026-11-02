@@ -19,6 +19,7 @@
 use crate::markup::EpubPosition;
 use crate::percent::decode as percent_decode;
 use crate::progress::Place;
+use crate::search::{Match, Query};
 use miniz_oxide::inflate::decompress_to_vec_with_limit;
 use quick_xml::XmlVersion;
 use quick_xml::events::{BytesRef, BytesStart, Event};
@@ -185,16 +186,21 @@ impl Epub {
         if let Some(item) = self.cached().get(&index) {
             return item.clone();
         }
-        let item = self.package.spine.get(index)?;
-        let item = self.zip.read(item).map(|xhtml| {
-            let (text, anchors) = scan(&xhtml);
-            Arc::new(Scanned {
-                text: text.encode_utf16().collect(),
-                anchors,
-            })
-        });
+        let item = self.read_item(index);
         // Another thread may have scanned it meanwhile; keep the first result.
         self.cached().entry(index).or_insert(item).clone()
+    }
+
+    /// The spine item at `index`, read and scanned but not kept. None for an
+    /// index beyond the spine, and for an item the zip can't read.
+    fn read_item(&self, index: usize) -> Option<Arc<Scanned>> {
+        let path = self.package.spine.get(index)?;
+        let xhtml = self.zip.read(path)?;
+        let (text, anchors) = scan(&xhtml);
+        Some(Arc::new(Scanned {
+            text: text.encode_utf16().collect(),
+            anchors,
+        }))
     }
 
     fn cached(&self) -> MutexGuard<'_, HashMap<usize, Option<Arc<Scanned>>>> {
@@ -211,6 +217,19 @@ impl Epub {
     /// and for an item the zip can't read.
     pub fn text(&self, index: usize) -> Option<String> {
         Some(String::from_utf16_lossy(&self.item(index)?.text))
+    }
+
+    /// The matches of `query` in the text of the spine item at `index`, see
+    /// `search`. An item not read before is scanned for this search only, so a
+    /// search of the whole book keeps none of its text.
+    pub fn search(&self, index: usize, query: &Query) -> Vec<Match> {
+        // The lock is taken alone to look up; the item is scanned without it.
+        let cached = self.cached().get(&index).cloned();
+        let item = match cached {
+            Some(item) => item,
+            None => self.read_item(index),
+        };
+        item.map(|item| query.find(&item.text)).unwrap_or_default()
     }
 
     /// Where the passage `quoted` of a Highlight is, now: from `start` to `end`
@@ -1050,7 +1069,89 @@ pub(crate) mod fixtures {
 mod tests {
     use super::fixtures::{Book, CONTAINER, zip};
     use super::*;
+    use crate::search::{Query, WordMatch};
     use std::fs;
+
+    fn apple() -> Query {
+        Query {
+            text: "apple".to_owned(),
+            case_sensitive: false,
+            word_match: WordMatch::Contains,
+        }
+    }
+
+    #[test]
+    fn a_spine_item_is_searched_for_matches_at_offsets_in_its_text() {
+        let book = Book::new("").chapters(&[
+            "<p>apple pie, apple</p>",
+            "<p>nothing</p>",
+            "<p>an apple</p>",
+        ]);
+        let epub = open(&book.bytes()).unwrap();
+        let ranges = |index| {
+            epub.search(index, &apple())
+                .into_iter()
+                .map(|m| m.range)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(ranges(0), vec![0..5, 11..16]);
+        assert!(ranges(1).is_empty());
+        assert_eq!(ranges(2), vec![3..8]);
+        // Beyond the spine there is no item to search.
+        assert!(ranges(3).is_empty());
+    }
+
+    #[test]
+    fn a_match_range_is_in_the_text_the_epub_gives() {
+        let book = Book::new("").chapters(&["<p>One <b>two</b> three</p><p>two</p>"]);
+        let epub = open(&book.bytes()).unwrap();
+        let two = Query {
+            text: "two".to_owned(),
+            ..apple()
+        };
+        let text: Vec<u16> = epub.text(0).unwrap().encode_utf16().collect();
+
+        let found: Vec<String> = epub
+            .search(0, &two)
+            .iter()
+            .map(|m| String::from_utf16_lossy(&text[m.range.clone()]))
+            .collect();
+
+        assert_eq!(found, ["two", "two"]);
+    }
+
+    #[test]
+    fn a_match_has_an_excerpt_of_its_spine_item_on_one_line() {
+        let book =
+            Book::new("").chapters(&["<p>The quick brown fox</p>\n<p>jumps over the lazy dog</p>"]);
+        let epub = open(&book.bytes()).unwrap();
+        let fox = Query {
+            text: "fox".to_owned(),
+            ..apple()
+        };
+
+        let found = epub.search(0, &fox);
+
+        assert_eq!(
+            found[0].excerpt.text,
+            "The quick brown fox jumps over the lazy dog"
+        );
+    }
+
+    #[test]
+    fn searching_an_item_not_read_before_keeps_none_of_its_text() {
+        let book = Book::new("").chapters(&["<p>apple</p>", "<p>apple</p>"]);
+        let epub = open(&book.bytes()).unwrap();
+
+        assert_eq!(epub.search(1, &apple()).len(), 1);
+        assert_eq!(epub.scanned_items(), 0);
+
+        // An item read for the text is kept, and searched from there.
+        assert!(epub.text(0).is_some());
+        assert_eq!(epub.search(0, &apple()).len(), 1);
+        assert_eq!(epub.scanned_items(), 1);
+    }
 
     /// Opens `bytes` as an EPUB file in a scratch folder.
     fn open(bytes: &[u8]) -> Result<Epub, Error> {

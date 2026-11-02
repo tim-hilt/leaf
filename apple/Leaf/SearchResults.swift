@@ -1,3 +1,4 @@
+import LeafCore
 import Observation
 
 /// The matches of the Document Search that is going on, as the results list
@@ -11,7 +12,7 @@ import Observation
 final class SearchResults {
     /// What the list shows of a match.
     struct Match {
-        let excerpt: DocumentSearch.Excerpt
+        let excerpt: SearchExcerpt
         /// The printed number of its page; nil in a Format without pages.
         let pageNumber: String?
         /// The Chapter or Section it is in; nil if the Document has no Table of

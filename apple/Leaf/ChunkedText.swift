@@ -3,7 +3,7 @@ import PDFKit
 
 /// A Document's text as one string: its chunks of text (a PDF's pages, an EPUB's
 /// spine items) end to end. It is what a client that searches the text itself
-/// (the macOS find bar, Document Search) sees. A match never spans chunks, so each chunk is its
+/// (the macOS find bar) sees. A match never spans chunks, so each chunk is its
 /// own search chunk. Only the lengths are kept: a chunk's string is fetched
 /// when asked for, so an EPUB's text lives in the core alone. Immutable, so a
 /// search may read it from any thread.

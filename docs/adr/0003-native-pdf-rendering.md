@@ -1,6 +1,6 @@
 # Clients render PDFs natively; the core never parses PDFs
 
-Rendering, text extraction, search and table of contents use the platform engine (PDFKit on Apple). This is native, fast and adds no binary size. Bundling PDFium in the core would give identical text handling everywhere, but costs several MB per platform and gives a non-native reading experience.
+Rendering, text extraction and table of contents use the platform engine (PDFKit on Apple). Document Search matches the core's (ADR-0024). This is native, fast and adds no binary size. Bundling PDFium in the core would give identical text handling everywhere, but costs several MB per platform and gives a non-native reading experience.
 
 ## Consequences
 
