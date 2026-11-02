@@ -77,11 +77,11 @@ enum Source {
         lengths: Vec<u64>,
     },
     /// A PDF's pages, which the client reads and the core keeps: `read` holds
-    /// the text of every page read so far, and a page is read but once, from
-    /// whatever thread asks.
+    /// the text of each page once read, and a page is read but once, from
+    /// whatever thread asks first; reading one page holds up no other.
     Pdf {
         reader: Arc<dyn PdfPages>,
-        read: Mutex<Vec<Option<Arc<[u16]>>>>,
+        read: Vec<OnceLock<Arc<[u16]>>>,
     },
 }
 
@@ -100,7 +100,7 @@ impl DocumentText {
         Self {
             source: Source::Pdf {
                 reader,
-                read: Mutex::new(vec![None; pages as usize]),
+                read: (0..pages).map(|_| OnceLock::new()).collect(),
             },
             starts: OnceLock::new(),
         }
@@ -113,6 +113,7 @@ impl DocumentText {
             text: self.clone(),
             contents,
             query,
+            turn: Mutex::new(()),
             progress: Mutex::new(Progress::default()),
         }
     }
@@ -180,7 +181,7 @@ impl DocumentText {
     fn chunks(&self) -> usize {
         match &self.source {
             Source::Epub { lengths, .. } => lengths.len(),
-            Source::Pdf { read, .. } => read.lock().unwrap_or_else(PoisonError::into_inner).len(),
+            Source::Pdf { read, .. } => read.len(),
         }
     }
 
@@ -189,23 +190,14 @@ impl DocumentText {
     fn units(&self, index: usize) -> Option<Arc<[u16]>> {
         match &self.source {
             Source::Epub { epub, .. } => epub.searched_text(index),
-            Source::Pdf { reader, read } => {
-                let mut read = read.lock().unwrap_or_else(PoisonError::into_inner);
-                match &read[index] {
-                    Some(units) => Some(units.clone()),
-                    // Read with the lock held, so a page is never read twice.
-                    None => {
-                        let units: Arc<[u16]> = reader
-                            .page_text(index as u32)
-                            .unwrap_or_default()
-                            .encode_utf16()
-                            .collect::<Vec<_>>()
-                            .into();
-                        read[index] = Some(units.clone());
-                        Some(units)
-                    }
-                }
-            }
+            Source::Pdf { reader, read } => Some(
+                read.get(index)?
+                    .get_or_init(|| {
+                        let text = reader.page_text(index as u32).unwrap_or_default();
+                        text.encode_utf16().collect::<Vec<_>>().into()
+                    })
+                    .clone(),
+            ),
         }
     }
 
@@ -242,6 +234,9 @@ pub struct Search {
     text: Arc<DocumentText>,
     contents: Arc<TableOfContents>,
     query: Query,
+    /// Held by `next` while it searches a chunk, so chunks are searched one
+    /// at a time, in reading order.
+    turn: Mutex<()>,
     /// Where the search is, and what it has found. The lock is never held
     /// while a chunk is searched, so the numbers can be asked meanwhile.
     progress: Mutex<Progress>,
@@ -261,15 +256,12 @@ struct Progress {
 impl Search {
     /// The matches in the next chunk of the text, in reading order; none once
     /// the whole text has been searched. The chunk is searched on the calling
-    /// thread, one `next` at a time.
+    /// thread; a `next` meanwhile waits its turn.
     pub fn next(&self) -> Option<Vec<Found>> {
+        let _turn = self.turn.lock().unwrap_or_else(PoisonError::into_inner);
         let (index, offset) = {
-            let mut progress = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
-            let (index, offset) = (progress.next, progress.offset);
-            if index < self.text.chunks() {
-                progress.next += 1;
-            }
-            (index, offset)
+            let progress = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
+            (progress.next, progress.offset)
         };
         if index >= self.text.chunks() {
             return None;
@@ -301,6 +293,7 @@ impl Search {
         progress
             .starts
             .extend(found.iter().map(|found| found.text.start));
+        progress.next += 1;
         // The chunk's text was read for the search, so its length costs nothing.
         progress.offset += self.text.chunk_length(index);
         Some(found)
@@ -440,6 +433,58 @@ mod tests {
         assert_eq!(text.text(1).as_deref(), Some("pie"));
         assert_eq!(text.text(0).as_deref(), Some("apple"));
         assert_eq!(pages.reads(), [1, 1]);
+    }
+
+    #[test]
+    fn reading_a_page_holds_up_no_other_page() {
+        use std::sync::mpsc::{Receiver, Sender, channel};
+        use std::time::Duration;
+
+        /// Page 0 is read only once the test lets it, page 1 at once.
+        struct Slow {
+            reading: Mutex<Sender<()>>,
+            go_on: Mutex<Receiver<()>>,
+        }
+        impl PdfPages for Slow {
+            fn page_text(&self, index: u32) -> Option<String> {
+                if index == 0 {
+                    self.reading.lock().unwrap().send(()).unwrap();
+                    self.go_on.lock().unwrap().recv().unwrap();
+                }
+                Some(format!("page {index}"))
+            }
+            fn page_number(&self, index: u32) -> String {
+                index.to_string()
+            }
+            fn place_of_match(&self, index: u32, range: Range<usize>) -> Option<Place> {
+                top(index, range)
+            }
+        }
+        let (reading, read_started) = channel();
+        let (go_on, waiting) = channel();
+        let text = Arc::new(DocumentText::pdf(
+            2,
+            Arc::new(Slow {
+                reading: Mutex::new(reading),
+                go_on: Mutex::new(waiting),
+            }),
+        ));
+        let slow = std::thread::spawn({
+            let text = text.clone();
+            move || text.text(0)
+        });
+        read_started.recv().unwrap();
+
+        let (done, other_read) = channel();
+        std::thread::spawn({
+            let text = text.clone();
+            move || done.send(text.text(1)).unwrap()
+        });
+        let other = other_read.recv_timeout(Duration::from_secs(5));
+        go_on.send(()).unwrap();
+
+        assert_eq!(other.unwrap().as_deref(), Some("page 1"));
+        assert_eq!(slow.join().unwrap().as_deref(), Some("page 0"));
     }
 
     #[test]

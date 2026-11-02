@@ -655,10 +655,7 @@ mod tests {
         b.save_progress(
             &id,
             &crate::progress::ReadingProgress::pdf(2, 0.0, 0.0, 7),
-            crate::listing::Sort {
-                key: crate::listing::SortKey::DateImported,
-                reversed: false,
-            },
+            crate::library::fixtures::by_date(),
         )
         .unwrap();
         b_loop.local_change();

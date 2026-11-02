@@ -134,9 +134,9 @@ private struct LibraryListing: Sendable {
 
     /// Nil if the core can't list the Library.
     init?(_ core: LeafCore.Library, sort: LeafCore.Sort) {
-        guard let list = try? core.listing(sort: sort) else { return nil }
-        self.sorted = list.sorted
-        self.documents = list.documents.map(LibraryDocument.init)
+        guard let listed = try? core.listing(sort: sort) else { return nil }
+        sorted = listed.listing
+        documents = listed.documents.map(LibraryDocument.init)
     }
 
     /// Gives Document `id` the saved `progress`, for a save that the core says

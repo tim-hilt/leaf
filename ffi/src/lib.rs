@@ -447,9 +447,7 @@ impl DocumentText {
     /// Begins a Document Search for `query` over the whole text, which places
     /// each match in `contents`, the Document's Table of Contents.
     pub fn search(&self, query: Query, contents: Arc<TableOfContents>) -> Arc<SearchSession> {
-        Arc::new(SearchSession(Mutex::new(
-            self.0.search(query, contents.0.clone()),
-        )))
+        Arc::new(SearchSession(self.0.search(query, contents.0.clone())))
     }
 }
 
@@ -457,31 +455,20 @@ impl DocumentText {
 /// `leaf_core::document_text::Search`. The client asks it for the next chunk's
 /// matches until there are none; stopping earlier cancels the search.
 #[derive(uniffi::Object)]
-pub struct SearchSession(Mutex<document_text::Search>);
+pub struct SearchSession(document_text::Search);
 
 #[uniffi::export]
 impl SearchSession {
     /// The matches in the next chunk of the text, in reading order; none once
-    /// the whole text has been searched. One `next` at a time.
+    /// the whole text has been searched. A `next` meanwhile waits its turn.
     pub fn next(&self) -> Option<Vec<FoundMatch>> {
-        Some(
-            self.0
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .next()?
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        )
+        Some(self.0.next()?.into_iter().map(Into::into).collect())
     }
 
     /// The number of the match that starts at `offset` in the whole text, if
-    /// one has been found so far.
+    /// one has been found so far. Answers while `next` searches.
     pub fn number_at(&self, offset: u64) -> Option<u64> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .number_at(offset)
+        self.0.number_at(offset)
     }
 }
 
@@ -673,14 +660,15 @@ impl JumpHistory {
     }
 }
 
-/// The Documents, newest Import first, and what Library Search finds in them
-/// in the order of a `Sort`, as one call makes both, so they can't disagree.
+/// The Library as `Library::listing` lists it: the Documents, newest Import
+/// first, and their `Listing` in the order of a `Sort`. One call makes both,
+/// so they can't disagree.
 #[derive(uniffi::Record)]
-pub struct List {
+pub struct ListedLibrary {
     /// The Documents, newest Import first.
     pub documents: Vec<Document>,
     /// Library Search over `documents`: positions in them, in Sort order.
-    pub sorted: Arc<Listing>,
+    pub listing: Arc<Listing>,
 }
 
 /// What Library Search finds in the Documents a `Library::listing` returned:
@@ -1313,11 +1301,11 @@ impl Library {
 
     /// The Documents, newest Import first, and what Library Search finds in
     /// them in the order of `sort`. One call makes both, so they can't disagree.
-    pub fn listing(&self, sort: Sort) -> Result<List, LibraryError> {
+    pub fn listing(&self, sort: Sort) -> Result<ListedLibrary, LibraryError> {
         let (documents, listing) = self.core.listing(sort)?;
-        Ok(List {
+        Ok(ListedLibrary {
             documents: documents.into_iter().map(Into::into).collect(),
-            sorted: Arc::new(Listing(listing)),
+            listing: Arc::new(Listing(listing)),
         })
     }
 
@@ -1627,9 +1615,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         let listed = |key, reversed, search: &str| {
-            let listing = library.listing(Sort { key, reversed }).unwrap();
-            let documents = listing.documents;
-            let matched = listing.sorted.matching(search);
+            let listed = library.listing(Sort { key, reversed }).unwrap();
+            let documents = listed.documents;
+            let matched = listed.listing.matching(search);
             matched
                 .into_iter()
                 .map(|i| documents[i as usize].id.clone())

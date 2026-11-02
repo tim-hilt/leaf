@@ -140,9 +140,9 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
     /// in Chapters and Sections. The owner sets it before searching; empty until then.
     var contents = TableOfContents(entries: [])
 
-    /// Back and Document Search session places, kept in the core, which tells
-    /// `backChange` when the Back place changes.
-    private let history: JumpHistory
+    /// Back and Document Search session places, kept in the core, which calls
+    /// `backDidChange(to:)` when the Back place changes.
+    private lazy var history = JumpHistory(observer: BackChange(view: self))
 
     /// Where Back returns to: the top of the viewport before the latest Jump.
     /// Nil before any Jump and after Back.
@@ -173,10 +173,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
     #endif
 
     override init(frame: CGRect) {
-        let backChange = BackChange()
-        history = JumpHistory(observer: backChange)
         super.init(frame: frame)
-        backChange.view = self
         setUpPlatform()
         NotificationCenter.default.addObserver(
             self, selector: #selector(scaleDidChange), name: .PDFViewScaleChanged, object: self)

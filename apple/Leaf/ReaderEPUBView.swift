@@ -38,8 +38,8 @@ import WebKit
 /// behind the page has the paper's color from the start, so nothing flashes.
 ///
 /// Document Search runs in the core's text of the spine items (`DocumentSearch`
-/// over the book's `DocumentText`), so a match is a position (ADR-0022): a spine item and a
-/// a position, also in a Chapter that isn't loaded. The native find bar (`find`) searches as
+/// over the book's `DocumentText`), so a match is a position (ADR-0022): a spine item and
+/// an offset in it, also in a Chapter that isn't loaded. The native find bar (`find`) searches as
 /// the reader types; the matches are listed in `results` and marked in the text, each Chapter
 /// as it loads. Going to a match scrolls it into view, loading its Chapter, and
 /// during one search session that is one Jump: Back returns to where the search started.
@@ -128,9 +128,9 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// The Table of Contents, which names the Back place.
     var contents: TableOfContents
 
-    /// Back and Document Search session places, kept in the core, which tells
-    /// `backChange` when the Back place changes.
-    private let history: JumpHistory
+    /// Back and Document Search session places, kept in the core, which calls
+    /// `backDidChange(to:)` when the Back place changes.
+    private lazy var history = JumpHistory(observer: BackChange(view: self))
 
     /// Where Back returns to: the top of the viewport before the latest Jump.
     /// Nil before any Jump and after Back.
@@ -214,8 +214,6 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         pageTextSize = textSize
         pageAppearance = appearance
         toldAppearance = appearance
-        let backChange = BackChange()
-        self.history = JumpHistory(observer: backChange)
         let spine = book.spine()
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(
@@ -232,7 +230,6 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
                     lengths: book.textLengths(), start: start, textSize: textSize, appearance: pageAppearance),
                 injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .defaultClient))
         super.init(frame: .zero, configuration: configuration)
-        backChange.view = self
         messages.view = self
         navigationDelegate = self
         uiDelegate = self

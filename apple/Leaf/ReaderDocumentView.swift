@@ -73,11 +73,13 @@ struct ReaderCallbacks {
 }
 
 /// Tells the document view when the core's JumpHistory changes the Back place,
-/// see `backDidChange(to:)`. The view makes one at its construction and gives it
-/// to the JumpHistory, which calls it on the thread that changed the Back place:
-/// the main thread, as only the views call the JumpHistory.
+/// see `backDidChange(to:)`. The view gives one to its JumpHistory, which calls
+/// it on the thread that changed the Back place: the main thread, as only the
+/// views call the JumpHistory.
 final class BackChange: BackObserver, @unchecked Sendable {
-    weak var view: (any ReaderDocumentView)?
+    private weak var view: (any ReaderDocumentView)?
+
+    init(view: any ReaderDocumentView) { self.view = view }
 
     func backPlaceChanged(place: Place?) {
         MainActor.assumeIsolated { view?.backDidChange(to: place) }

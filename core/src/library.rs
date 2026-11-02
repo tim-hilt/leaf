@@ -254,7 +254,17 @@ impl DetailsPass {
             .name("details".into())
             .spawn({
                 let (library, cancelled) = (library.clone(), cancelled.clone());
-                move || run_passes(&library, reader.as_ref(), observer.as_ref(), &cancelled)
+                move || {
+                    // Below the UI's priority, as work the user didn't ask for.
+                    #[cfg(target_vendor = "apple")]
+                    unsafe {
+                        libc::pthread_set_qos_class_self_np(
+                            libc::qos_class_t::QOS_CLASS_UTILITY,
+                            0,
+                        );
+                    }
+                    run_passes(&library, reader.as_ref(), observer.as_ref(), &cancelled)
+                }
             })
             .expect("spawn the details pass");
         Self {
@@ -1428,10 +1438,104 @@ fn stored_file(dir: &Path) -> io::Result<Option<(String, u64)>> {
     Ok(None)
 }
 
-/// Test doubles for `PdfReader`.
+/// Test doubles for `PdfReader` and `GalleryObserver`, and what tests of the
+/// details pass wait on.
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;
+    use std::sync::Condvar;
+
+    /// The Gallery's by-date order, for saves that don't care what the Gallery
+    /// shows.
+    pub(crate) fn by_date() -> Sort {
+        Sort {
+            key: SortKey::DateImported,
+            reversed: false,
+        }
+    }
+
+    /// Counts what a background thread does, and wakes tests waiting on it, so
+    /// they wait on the event, not on a timer (CODING_STANDARDS.md).
+    #[derive(Clone, Default)]
+    pub(crate) struct Signal(Arc<(Mutex<usize>, Condvar)>);
+
+    impl Signal {
+        /// Counts one event, and wakes the waiting tests.
+        fn raise(&self) -> usize {
+            let (count, raised) = &*self.0;
+            let mut count = count.lock().unwrap();
+            *count += 1;
+            raised.notify_all();
+            *count
+        }
+
+        /// How many events there were.
+        pub(crate) fn count(&self) -> usize {
+            *self.0.0.lock().unwrap()
+        }
+
+        /// Returns once `condition` holds, checking it again after each event;
+        /// fails if it doesn't within 5 s.
+        pub(crate) fn wait_until(&self, condition: impl Fn() -> bool) {
+            let (count, raised) = &*self.0;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                // Read before `condition`, so an event while it runs isn't missed.
+                let seen = *count.lock().unwrap();
+                if condition() {
+                    return;
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                assert!(!left.is_zero(), "condition never became true");
+                let _ = raised
+                    .wait_timeout_while(count.lock().unwrap(), left, |count| *count == seen)
+                    .unwrap();
+            }
+        }
+    }
+
+    /// Counts the calls to `gallery_changed`.
+    #[derive(Clone, Default)]
+    pub(crate) struct Gallery(pub(crate) Signal);
+
+    impl GalleryObserver for Gallery {
+        fn gallery_changed(&self) {
+            self.0.raise();
+        }
+    }
+
+    /// A reader that refuses the first read and then reads every PDF as
+    /// `details`, the way a pass finds a locked PDF that a later one opens.
+    /// Its `Signal` counts the reads.
+    #[derive(Clone)]
+    pub(crate) struct RefusesOnce(pub(crate) Signal, Details);
+
+    impl RefusesOnce {
+        pub(crate) fn new(details: Details) -> Self {
+            Self(Signal::default(), details)
+        }
+    }
+
+    impl PdfReader for RefusesOnce {
+        fn read(&self, _: &Path) -> Result<Details, PdfProblem> {
+            if self.0.raise() == 1 {
+                return Err(PdfProblem::Locked);
+            }
+            Ok(self.1.clone())
+        }
+    }
+
+    /// A reader that reads every PDF as one page without a title. Its `Signal`
+    /// counts the reads.
+    #[derive(Clone, Default)]
+    pub(crate) struct Reads(pub(crate) Signal);
+
+    impl PdfReader for Reads {
+        fn read(&self, path: &Path) -> Result<Details, PdfProblem> {
+            self.0.raise();
+            one_page(path)
+        }
+    }
 
     /// Reads every PDF as one page, with neither title nor author.
     pub(crate) fn one_page(_: &Path) -> Result<Details, PdfProblem> {
@@ -1452,15 +1556,14 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::one_page;
+    use super::fixtures::{Gallery, Reads, RefusesOnce, by_date, one_page};
     use super::*;
     use crate::markup::{EpubPosition, PageRects, Rect};
     use automerge::{ActorId, AutoCommit};
     use std::fs;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
     use std::thread::sleep;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     /// A fresh folder under the system temp dir, removed on drop.
     struct Scratch(PathBuf);
@@ -1529,75 +1632,6 @@ mod tests {
     /// A reader that refuses every PDF for `problem`.
     fn refusing(problem: PdfProblem) -> impl PdfReader {
         move |_: &Path| -> Result<Details, PdfProblem> { Err(problem) }
-    }
-
-    /// A reader that refuses the first read and then reads every PDF as
-    /// `details`, the way a pass finds a locked PDF that a later one opens.
-    #[derive(Clone)]
-    struct RefusesOnce(Arc<(Details, AtomicUsize)>);
-
-    impl RefusesOnce {
-        fn new(details: Details) -> Self {
-            Self(Arc::new((details, AtomicUsize::new(0))))
-        }
-
-        /// How many PDFs the reader was called for.
-        fn count(&self) -> usize {
-            self.0.1.load(Relaxed)
-        }
-    }
-
-    impl PdfReader for RefusesOnce {
-        fn read(&self, _: &Path) -> Result<Details, PdfProblem> {
-            if self.0.1.fetch_add(1, Relaxed) == 0 {
-                return Err(PdfProblem::Locked);
-            }
-            Ok(self.0.0.clone())
-        }
-    }
-
-    /// A reader that reads every PDF as one page without a title.
-    #[derive(Clone, Default)]
-    struct Reads(Arc<AtomicUsize>);
-
-    impl Reads {
-        /// How many PDFs the reader was called for.
-        fn count(&self) -> usize {
-            self.0.load(Relaxed)
-        }
-    }
-
-    impl PdfReader for Reads {
-        fn read(&self, _: &Path) -> Result<Details, PdfProblem> {
-            self.0.fetch_add(1, Relaxed);
-            Ok(details(None, None, 1))
-        }
-    }
-
-    /// Counts the calls to `gallery_changed`.
-    #[derive(Clone, Default)]
-    struct Gallery(Arc<AtomicUsize>);
-
-    impl Gallery {
-        /// How often the Gallery was told.
-        fn count(&self) -> usize {
-            self.0.load(Relaxed)
-        }
-    }
-
-    impl GalleryObserver for Gallery {
-        fn gallery_changed(&self) {
-            self.0.fetch_add(1, Relaxed);
-        }
-    }
-
-    /// Waits up to 5 s for `condition`, which a background thread makes true.
-    fn wait_until(condition: impl Fn() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !condition() {
-            assert!(Instant::now() < deadline, "condition never became true");
-            sleep(Duration::from_millis(10));
-        }
     }
 
     /// How many entries of `folder` aren't hidden: of a Library, its Documents;
@@ -2446,10 +2480,11 @@ mod tests {
             Arc::new(told.clone()),
         );
 
-        wait_until(|| {
-            library.document(&document.id).unwrap().unwrap().details == Some(moby.clone())
-        });
-        assert!(told.count() >= 1);
+        told.0.wait_until(|| told.0.count() >= 1);
+        assert_eq!(
+            library.document(&document.id).unwrap().unwrap().details,
+            Some(moby)
+        );
         drop(pass);
     }
 
@@ -2474,12 +2509,12 @@ mod tests {
             Arc::new(told.clone()),
         );
 
-        wait_until(|| reads.count() >= 17);
+        reads.0.wait_until(|| reads.0.count() >= 17);
         // No Sync changed the Documents, so no pass runs again.
         drop(pass);
-        assert_eq!(reads.count(), 17);
+        assert_eq!(reads.0.count(), 17);
         // 16 reads are one telling, the leftover read another.
-        assert!(told.count() >= 2);
+        assert!(told.0.count() >= 2);
     }
 
     #[test]
@@ -2497,22 +2532,23 @@ mod tests {
             Arc::new(reader.clone()),
             Arc::new(told.clone()),
         );
-        wait_until(|| reader.count() >= 1);
+        reader.0.wait_until(|| reader.0.count() >= 1);
 
         // Nothing was kept, so the Gallery is not told.
         assert_eq!(
             library.document(&document.id).unwrap().unwrap().details,
             None
         );
-        assert_eq!(told.count(), 0);
+        assert_eq!(told.0.count(), 0);
 
         // A later pass, the way a Sync step that changed the Documents causes
         // one, tries the PDF again.
         library.count_sync_change();
-        wait_until(|| {
-            library.document(&document.id).unwrap().unwrap().details == Some(moby.clone())
-        });
-        assert!(told.count() >= 1);
+        told.0.wait_until(|| told.0.count() >= 1);
+        assert_eq!(
+            library.document(&document.id).unwrap().unwrap().details,
+            Some(moby)
+        );
         drop(pass);
     }
 
@@ -2873,15 +2909,6 @@ mod tests {
         fs::write(state_path(&library, &document), empty).unwrap();
 
         assert_eq!(listed_progress(&library, &document.id), None);
-    }
-
-    /// The Gallery's by-date order, for saves that don't care what the Gallery
-    /// shows.
-    fn by_date() -> Sort {
-        Sort {
-            key: SortKey::DateImported,
-            reversed: false,
-        }
     }
 
     /// Saves the Reading Progress of page `page` read at `last_read` for
