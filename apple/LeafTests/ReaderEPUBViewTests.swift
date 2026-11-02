@@ -414,7 +414,7 @@ import WebKit
         let start = try #require(reader.topOfViewport)
 
         _ = try await reader.evaluate("frame(0).getElementById('go').click()")
-        try await eventually { reader.topOfViewport?.isSameSpot(as: start) == false }
+        try await eventually { reader.topOfViewport.map { $0 != start } == true }
 
         #expect(reader.topOfViewport == .epub(spineIndex: 1, offset: try offset(of: "Deep target", in: 1, of: book)))
         #expect(reader.backPlace == start)
@@ -427,7 +427,7 @@ import WebKit
         let book = try await navigableBook()
         var reported: [BackTarget?] = []
         let reader = try await openReader(
-            book: book, onScreen: true, contents: TableOfContents(book), onBackChange: { reported.append($0) })
+            book: book, onScreen: true, contents: book.tableOfContents(), onBackChange: { reported.append($0) })
 
         reader.jump(to: .epub(spineIndex: 1, offset: 0))
         try await eventually { reader.topOfViewport == .epub(spineIndex: 1, offset: 0) }
@@ -502,7 +502,7 @@ import WebKit
 
         try await eventually { reader.backPlace != nil }
         #expect(reader.backPlace == start)
-        try await eventually { reader.topOfViewport?.isSameSpot(as: start) == false }
+        try await eventually { reader.topOfViewport.map { $0 != start } == true }
         // The match is on screen.
         let top = try await reader.evaluate(
             "document.querySelectorAll('iframe')[1].getBoundingClientRect().top + frame(1).querySelectorAll('p')[30].getBoundingClientRect().top"
@@ -1280,7 +1280,7 @@ extension ReaderEPUBViewTests {
 
         reader.results.onChoose(0)
 
-        try await eventually { reader.topOfViewport?.isSameSpot(as: start) == false }
+        try await eventually { reader.topOfViewport.map { $0 != start } == true }
         try await eventually { try await reader.marks("leaf-find-current")[8] == 1 }
         #expect(try await reader.marks("leaf-find-current")[8] == 1)
         guard case .epub(8, _)? = reader.topOfViewport else { throw ImportFailed() }
@@ -1365,7 +1365,7 @@ extension ReaderEPUBViewTests {
 
         @Test func theBackgroundIsPaperFromTheFirstFrame() async throws {
             let reader = ReaderEPUBView(
-                book: try await book(), place: nil, contents: TableOfContents(), textSize: TextSize.normal,
+                book: try await book(), place: nil, contents: TableOfContents(entries: []), textSize: TextSize.normal,
                 appearance: .dark(night),
                 handle: ReaderHandle(), callbacks: ReaderCallbacks())
             reader.frame = CGRect(x: 0, y: 0, width: 400, height: 800)
@@ -1428,7 +1428,7 @@ private func openReader(
 private func openReader(
     book: EpubBook, place: Place? = nil, size: CGSize = CGSize(width: 400, height: 800),
     textSize: CGFloat = TextSize.normal, appearance: PageAppearance = .light, onScreen: Bool = onScreenByDefault,
-    contents: TableOfContents = TableOfContents(), highlights: [Highlight] = [],
+    contents: TableOfContents = TableOfContents(entries: []), highlights: [Highlight] = [],
     onSingleTap: @escaping () -> Void = {}, onScroll: @escaping () -> Void = {},
     onHighlight: @escaping (Anchor, String) -> Void = { _, _ in },
     onHighlightTap: @escaping (Highlight, CGPoint) -> Void = { _, _ in },

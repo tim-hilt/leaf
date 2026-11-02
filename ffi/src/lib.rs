@@ -5,9 +5,11 @@
 //! its Sync loop, so every write is sent without the client asking. Keep
 //! domain logic in `leaf-core` so it stays testable without bindings.
 
+use leaf_core::contents::{self, ContentsEntry, Entry, Position};
 use leaf_core::details::{Format, Size};
-use leaf_core::epub::{self, ContentsEntry};
+use leaf_core::epub;
 use leaf_core::google_drive::GoogleDriveStorage;
+use leaf_core::jump;
 use leaf_core::library::Document as CoreDocument;
 use leaf_core::library::{ImportError, ImportResult};
 use leaf_core::listing::{self, Sort, SortKey};
@@ -93,8 +95,24 @@ pub enum Place {
 #[uniffi::remote(Record)]
 pub struct ContentsEntry {
     pub title: String,
+    pub page_label: Option<String>,
     pub place: Option<Place>,
     pub sections: Vec<ContentsEntry>,
+}
+
+#[uniffi::remote(Record)]
+pub struct Entry {
+    pub id: u32,
+    pub title: String,
+    pub page_label: Option<String>,
+    pub place: Option<Place>,
+    pub sections: Vec<Entry>,
+}
+
+#[uniffi::remote(Record)]
+pub struct Position {
+    pub current: Entry,
+    pub containing: Vec<Entry>,
 }
 
 #[uniffi::remote(Record)]
@@ -343,8 +361,10 @@ impl EpubBook {
     }
 
     /// The Table of Contents: Chapters with their nested Sections.
-    pub fn contents(&self) -> Vec<ContentsEntry> {
-        self.0.contents()
+    pub fn table_of_contents(&self) -> Arc<TableOfContents> {
+        Arc::new(TableOfContents(contents::TableOfContents::new(
+            self.0.contents(),
+        )))
     }
 
     /// Where a link to `fragment` in the file at `path` points; none if `path`
@@ -383,6 +403,95 @@ impl EpubBook {
             bytes: resource.bytes,
             media_type: resource.media_type,
         })
+    }
+}
+
+/// A Table of Contents, see `leaf_core::contents::TableOfContents`. Its entries
+/// come from an EPUB (`EpubBook.table_of_contents`) or, for a PDF, from its outline.
+#[derive(uniffi::Object)]
+pub struct TableOfContents(contents::TableOfContents);
+
+#[uniffi::export]
+impl TableOfContents {
+    /// The Table of Contents of `entries`, the Chapters with their Sections.
+    #[uniffi::constructor]
+    pub fn new(entries: Vec<ContentsEntry>) -> Arc<Self> {
+        Arc::new(Self(contents::TableOfContents::new(entries)))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The Chapters, with their Sections nested, in reading order.
+    pub fn chapters(&self) -> Vec<Entry> {
+        self.0.chapters()
+    }
+
+    /// Where `place` is; none before the first entry with a place.
+    pub fn position(&self, place: Place) -> Option<Position> {
+        self.0.position(place)
+    }
+
+    /// The title of the Chapter `place` is in, as Back names it; none before the
+    /// first entry with a place.
+    pub fn chapter_title(&self, place: Place) -> Option<String> {
+        self.0.chapter_title(place).map(str::to_owned)
+    }
+}
+
+/// Where Back returns to and where a Document Search session started, for one
+/// document view, see `leaf_core::jump::JumpHistory`. Behind a lock, so each
+/// call is cheap enough for every scroll.
+#[derive(uniffi::Object)]
+pub struct JumpHistory(Mutex<jump::JumpHistory>);
+
+#[uniffi::export]
+impl JumpHistory {
+    #[uniffi::constructor]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self(Mutex::default()))
+    }
+
+    /// The top of the viewport before the latest Jump; none before any and after Back.
+    pub fn back_place(&self) -> Option<Place> {
+        self.history().back_place()
+    }
+
+    /// Jump: remembers `from`, the top of the viewport, for Back. Returns false,
+    /// changing nothing, if there is no top or `place` is already at it.
+    pub fn jump(&self, place: Place, from: Option<Place>) -> bool {
+        self.history().jump(place, from)
+    }
+
+    /// Back: the Back place, which is forgotten; none without one.
+    pub fn go_back(&self) -> Option<Place> {
+        self.history().go_back()
+    }
+
+    /// Starts a Document Search session at `at`, the top of the viewport.
+    pub fn begin_search_session(&self, at: Option<Place>) {
+        self.history().begin_search_session(at);
+    }
+
+    pub fn end_search_session(&self) {
+        self.history().end_search_session();
+    }
+
+    /// A Document Search match was revealed by moving the viewport.
+    pub fn did_reveal(&self) {
+        self.history().did_reveal();
+    }
+
+    /// The viewport moved to `to`, the top of it.
+    pub fn did_scroll(&self, to: Place) {
+        self.history().did_scroll(to);
+    }
+}
+
+impl JumpHistory {
+    fn history(&self) -> std::sync::MutexGuard<'_, jump::JumpHistory> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 

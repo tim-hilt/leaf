@@ -17,7 +17,7 @@ final class SearchResults {
         let pageNumber: String?
         /// The Chapter or Section it is in; nil if the Document has no Table of
         /// Contents or the match is before its first entry.
-        let section: TableOfContents.Entry?
+        let section: Entry?
 
         init(_ match: DocumentSearch.Match) {
             excerpt = match.excerpt
@@ -40,7 +40,7 @@ final class SearchResults {
         let title: String?
         /// Numbers of its matches.
         fileprivate(set) var matches: Range<Int>
-        fileprivate let sectionID: Int?
+        fileprivate let sectionID: UInt32?
     }
 
     private(set) var matches: [Match] = []

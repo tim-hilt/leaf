@@ -47,7 +47,7 @@ struct LoadedDocument {
             return (.pdf(pdf), contents)
         case .epub:
             guard let book = await library.epub(of: document) else { return nil }
-            let contents = await Task.detached { TableOfContents(book) }.value
+            let contents = await Task.detached { book.tableOfContents() }.value
             return (.epub(book), contents)
         }
     }

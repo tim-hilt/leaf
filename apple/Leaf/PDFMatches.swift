@@ -15,7 +15,7 @@ final class PDFMatches: DocumentMatches {
     let results: SearchResults
     /// Made with the first search, once the view has its Document and Table of Contents.
     private lazy var documentSearch = DocumentSearch(
-        view?.document ?? PDFDocument(), contents: view?.contents ?? TableOfContents())
+        view?.document ?? PDFDocument(), contents: view?.contents ?? TableOfContents(entries: []))
     /// Read with the first need for it: only the macOS find bar searches the text itself.
     private(set) lazy var text = ChunkedText(view?.document)
     private var matches: [DocumentSearch.Match] = []

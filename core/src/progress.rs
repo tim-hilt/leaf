@@ -9,6 +9,7 @@
 
 use crate::state;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use std::cmp::Ordering;
 
 /// A spot in a Document, in the terms of its Format.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -29,6 +30,114 @@ pub enum Place {
         /// Offset into that item's text, in UTF-16 code units (ADR-0022).
         offset: u64,
     },
+}
+
+impl Place {
+    /// Whether this Place comes no later than `other` in reading order: an
+    /// earlier page or spine item, or the same one and no later. PDF points less
+    /// than a point apart count as the same, so rounding in scrolling can't push
+    /// a heading that was just jumped to out of reach. Pages read in one column,
+    /// so horizontal position is ignored. Places of different kinds have no order.
+    pub fn is_at_or_before(self, other: Place) -> bool {
+        match (self, other) {
+            (
+                Place::Pdf { page_index, y, .. },
+                Place::Pdf {
+                    page_index: other_page,
+                    y: other_y,
+                    ..
+                },
+            ) => {
+                if page_index != other_page {
+                    page_index < other_page
+                } else {
+                    y >= other_y - 1.0
+                }
+            }
+            (
+                Place::Epub {
+                    spine_index,
+                    offset,
+                },
+                Place::Epub {
+                    spine_index: other_spine,
+                    offset: other_offset,
+                },
+            ) => {
+                if spine_index != other_spine {
+                    spine_index < other_spine
+                } else {
+                    offset <= other_offset
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether this Place is the same spot as `other`: neither comes before the
+    /// other.
+    pub fn is_same_spot(self, other: Place) -> bool {
+        self.is_at_or_before(other) && self.is_at_or_after(other)
+    }
+
+    /// Whether this Place comes no earlier than `other`; see `is_at_or_before`.
+    pub fn is_at_or_after(self, other: Place) -> bool {
+        other.is_at_or_before(self)
+    }
+
+    /// The order of this Place and `other` in reading order, for sorting: by page
+    /// or spine item, then top to bottom. Consistent with `is_at_or_before`.
+    pub(crate) fn cmp_reading(self, other: Place) -> Ordering {
+        match (self, other) {
+            (
+                Place::Pdf { page_index, y, .. },
+                Place::Pdf {
+                    page_index: other_page,
+                    y: other_y,
+                    ..
+                },
+            ) => page_index.cmp(&other_page).then(other_y.total_cmp(&y)),
+            (
+                Place::Epub {
+                    spine_index,
+                    offset,
+                },
+                Place::Epub {
+                    spine_index: other_spine,
+                    offset: other_offset,
+                },
+            ) => spine_index
+                .cmp(&other_spine)
+                .then(offset.cmp(&other_offset)),
+            (Place::Pdf { .. }, Place::Epub { .. }) => Ordering::Less,
+            (Place::Epub { .. }, Place::Pdf { .. }) => Ordering::Greater,
+        }
+    }
+
+    /// Whether this Place is about a page or more from `other`: two PDF pages
+    /// apart, or an EPUB Chapter or some 2000 characters apart. Places of
+    /// different kinds are not.
+    pub fn is_far(self, other: Place) -> bool {
+        match (self, other) {
+            (
+                Place::Pdf { page_index, .. },
+                Place::Pdf {
+                    page_index: other, ..
+                },
+            ) => page_index.abs_diff(other) >= 2,
+            (
+                Place::Epub {
+                    spine_index,
+                    offset,
+                },
+                Place::Epub {
+                    spine_index: other_spine,
+                    offset: other_offset,
+                },
+            ) => spine_index != other_spine || offset.abs_diff(other_offset) > 2000,
+            _ => false,
+        }
+    }
 }
 
 /// Where in a Document the user last left off, and when.
@@ -261,5 +370,78 @@ mod tests {
         a.merge(&mut b).unwrap();
         let after = write(Some(&a.save()), &place(5, 1_000));
         assert_eq!(read(&after), Some(place(5, 1_000)));
+    }
+
+    fn pdf(page_index: u32, y: f64) -> Place {
+        Place::Pdf {
+            page_index,
+            x: 0.0,
+            y,
+        }
+    }
+
+    fn epub(spine_index: u32, offset: u64) -> Place {
+        Place::Epub {
+            spine_index,
+            offset,
+        }
+    }
+
+    #[test]
+    fn epub_places_read_in_spine_order_then_by_offset() {
+        let early = epub(1, 500);
+        let late = epub(2, 0);
+        assert!(early.is_at_or_before(late));
+        assert!(!late.is_at_or_before(early));
+        assert!(late.is_at_or_after(early));
+        assert!(epub(2, 10).is_at_or_after(late));
+        assert!(!epub(2, 10).is_at_or_before(late));
+    }
+
+    #[test]
+    fn epub_places_are_the_same_spot_only_at_the_same_offset() {
+        let place = epub(3, 42);
+        assert!(place.is_same_spot(epub(3, 42)));
+        assert!(!place.is_same_spot(epub(3, 43)));
+        assert!(!place.is_same_spot(epub(4, 42)));
+    }
+
+    #[test]
+    fn pdf_places_read_by_page_then_down_the_page() {
+        let top = pdf(1, 700.0);
+        let lower = pdf(1, 300.0);
+        assert!(top.is_at_or_before(lower));
+        assert!(!lower.is_at_or_before(top));
+        assert!(lower.is_at_or_before(pdf(2, 800.0)));
+    }
+
+    #[test]
+    fn pdf_places_less_than_a_point_apart_are_the_same_spot() {
+        let place = pdf(0, 500.0);
+        let hair_below = Place::Pdf {
+            page_index: 0,
+            x: 30.0,
+            y: 499.5,
+        };
+        assert!(place.is_same_spot(hair_below));
+        assert!(!place.is_same_spot(pdf(0, 498.0)));
+    }
+
+    #[test]
+    fn places_of_different_formats_have_no_order() {
+        let (pdf, epub) = (pdf(0, 0.0), epub(0, 0));
+        assert!(!pdf.is_at_or_before(epub));
+        assert!(!epub.is_at_or_before(pdf));
+        assert!(!pdf.is_same_spot(epub));
+    }
+
+    #[test]
+    fn places_are_far_two_pdf_pages_or_an_epub_chapter_or_2000_characters_apart() {
+        assert!(!pdf(3, 0.0).is_far(pdf(4, 0.0)));
+        assert!(pdf(3, 0.0).is_far(pdf(5, 0.0)));
+        assert!(!epub(1, 0).is_far(epub(1, 2000)));
+        assert!(epub(1, 0).is_far(epub(1, 2001)));
+        assert!(epub(1, 0).is_far(epub(2, 0)));
+        assert!(!pdf(0, 0.0).is_far(epub(0, 0)));
     }
 }

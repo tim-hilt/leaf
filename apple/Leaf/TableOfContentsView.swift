@@ -10,13 +10,13 @@ import SwiftUI
 /// unfolded and the list opens scrolled to it.
 struct TableOfContentsView: View {
     let contents: TableOfContents
-    let position: TableOfContents.Position?
+    let position: Position?
     let onChoose: (Place) -> Void
     @Environment(\.dismiss) private var dismiss
     /// Ids of the unfolded entries.
-    @State private var unfolded: Set<Int>
+    @State private var unfolded: Set<UInt32>
 
-    init(contents: TableOfContents, position: TableOfContents.Position?, onChoose: @escaping (Place) -> Void) {
+    init(contents: TableOfContents, position: Position?, onChoose: @escaping (Place) -> Void) {
         self.contents = contents
         self.position = position
         self.onChoose = onChoose
@@ -27,7 +27,7 @@ struct TableOfContentsView: View {
         NavigationStack {
             ScrollViewReader { scroller in
                 List {
-                    ForEach(contents.chapters) { entry in
+                    ForEach(contents.chapters(), id: \.id) { entry in
                         Row(entry: entry, currentID: position?.current.id, unfolded: $unfolded, choose: choose)
                     }
                 }
@@ -50,9 +50,9 @@ struct TableOfContentsView: View {
 
     /// An entry and, in a disclosure group, its Sections.
     private struct Row: View {
-        let entry: TableOfContents.Entry
-        let currentID: Int?
-        @Binding var unfolded: Set<Int>
+        let entry: Entry
+        let currentID: UInt32?
+        @Binding var unfolded: Set<UInt32>
         let choose: (Place) -> Void
 
         var body: some View {
@@ -61,7 +61,7 @@ struct TableOfContentsView: View {
                     label
                 } else {
                     DisclosureGroup(isExpanded: isUnfolded) {
-                        ForEach(entry.sections) { section in
+                        ForEach(entry.sections, id: \.id) { section in
                             Row(entry: section, currentID: currentID, unfolded: $unfolded, choose: choose)
                         }
                     } label: {
@@ -85,8 +85,8 @@ struct TableOfContentsView: View {
                 HStack {
                     Text(entry.title).fontWeight(entry.id == currentID ? .bold : .regular)
                     Spacer()
-                    if let pageNumber = entry.pageNumber {
-                        Text(pageNumber).foregroundStyle(.secondary).monospacedDigit()
+                    if let pageLabel = entry.pageLabel {
+                        Text(pageLabel).foregroundStyle(.secondary).monospacedDigit()
                     }
                 }
                 .contentShape(.rect)

@@ -15,7 +15,7 @@ final class EPUBSearch {
         let excerpt: SearchExcerpt
         /// The Chapter or Section the match is in; nil if the book has no
         /// Table of Contents or the match is before its first entry.
-        let section: TableOfContents.Entry?
+        let section: Entry?
 
         /// Where the match starts.
         var place: Place { .epub(spineIndex: spineIndex, offset: range.location) }
@@ -52,7 +52,7 @@ final class EPUBSearch {
                     onMatch(
                         Match(
                             spineIndex: index, range: range, excerpt: match.excerpt,
-                            section: contents.position(at: .epub(spineIndex: index, offset: range.location))?
+                            section: contents.position(place: .epub(spineIndex: index, offset: range.location))?
                                 .current))
                 }
             }

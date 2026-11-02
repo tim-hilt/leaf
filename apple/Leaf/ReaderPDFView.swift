@@ -138,20 +138,27 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
 
     /// The Document's Table of Contents, which places Document Search's matches
     /// in Chapters and Sections. The owner sets it before searching; empty until then.
-    var contents = TableOfContents()
+    var contents = TableOfContents(entries: [])
 
-    /// Back and Document Search session places; changes are reported as `onBackChange`.
-    private var history = JumpHistory() {
-        didSet {
-            guard history.backPlace != oldValue.backPlace else { return }
-            callbacks.onBackChange(
-                backPlace?.pdfPosition.flatMap { document?.printedPageNumber(at: $0.pageIndex) }.map(BackTarget.page))
+    /// Back and Document Search session places, kept in the core.
+    private let history = JumpHistory()
+
+    /// Makes a change to `history`, and reports the Back place as `onBackChange` if it moved.
+    private func changeHistory<T>(_ change: (JumpHistory) -> T) -> T {
+        let before = history.backPlace()
+        defer {
+            if history.backPlace() != before {
+                callbacks.onBackChange(
+                    history.backPlace()?.pdfPosition.flatMap { document?.printedPageNumber(at: $0.pageIndex) }
+                        .map(BackTarget.page))
+            }
         }
+        return change(history)
     }
 
     /// Where Back returns to: the top of the viewport before the latest Jump.
     /// Nil before any Jump and after Back.
-    var backPlace: Place? { history.backPlace }
+    var backPlace: Place? { history.backPlace() }
 
     /// The matches of the Document Search that is going on, for the results list.
     private(set) var results = SearchResults()
@@ -246,19 +253,19 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
     /// in place of any earlier Back place. Does nothing if `place` is already
     /// at the top.
     func jump(to place: Place) {
-        guard history.jump(to: place, from: topOfViewport) else { return }
+        guard changeHistory({ $0.jump(place: place, from: topOfViewport) }) else { return }
         go(to: place)
     }
 
     private func didScrollViewport() {
-        if let top = topOfViewport { history.didScroll(to: top) }
+        if let top = topOfViewport { changeHistory { $0.didScroll(to: top) } }
         callbacks.onScroll()
     }
 
     /// Back: returns to the Back place at the current zoom and forgets it.
     /// Does nothing without one.
     func goBack() {
-        guard let place = history.goBack() else { return }
+        guard let place = changeHistory({ $0.goBack() }) else { return }
         go(to: place)
     }
 
@@ -285,7 +292,7 @@ final class ReaderPDFView: PDFView, ReaderDocumentView {
         let fitsAcross = viewportRect.minX <= viewRect.minX && viewRect.maxX <= viewportRect.maxX
         let x = fitsAcross ? top.point.x : rect.minX - 20 / scaleFactor
         let y = rect.maxY + viewportRect.height / 3 / scaleFactor
-        history.didReveal()
+        changeHistory { $0.didReveal() }
         go(to: Place.pdf(pageIndex: document.index(for: page), point: CGPoint(x: x, y: y)))
     }
 

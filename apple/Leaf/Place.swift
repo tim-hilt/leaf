@@ -44,41 +44,4 @@ extension Place {
         guard case .epub(let spineIndex, let offset) = self else { return nil }
         return (Int(spineIndex), Int(clamping: offset))
     }
-
-    /// Whether this Place comes no later than `other` in reading order: an
-    /// earlier page or spine item, or the same one and no later. PDF points less
-    /// than a point apart count as the same, so rounding in scrolling can't push
-    /// a heading that was just jumped to out of reach; pages read in one column,
-    /// so horizontal position is ignored. Places of different kinds have no order.
-    func isAtOrBefore(_ other: Place) -> Bool {
-        switch (self, other) {
-        case (.pdf(let page, _, let y), .pdf(let otherPage, _, let otherY)):
-            return page != otherPage ? page < otherPage : y >= otherY - 1
-        case (.epub(let spine, let offset), .epub(let otherSpine, let otherOffset)):
-            return spine != otherSpine ? spine < otherSpine : offset <= otherOffset
-        default:
-            return false
-        }
-    }
-
-    /// Whether this Place is the same spot as `other`: neither comes before the
-    /// other (see `isAtOrBefore`).
-    func isSameSpot(as other: Place) -> Bool { isAtOrBefore(other) && isAtOrAfter(other) }
-
-    /// Whether this Place comes no earlier than `other`; see `isAtOrBefore`.
-    func isAtOrAfter(_ other: Place) -> Bool { other.isAtOrBefore(self) }
-
-    /// Whether this Place is about a page or more from `other`: two PDF pages
-    /// apart, or an EPUB Chapter or some 2000 characters apart. Places of
-    /// different kinds are not.
-    func isFar(from other: Place) -> Bool {
-        switch (self, other) {
-        case (.pdf(let page, _, _), .pdf(let otherPage, _, _)):
-            return abs(Int64(page) - Int64(otherPage)) >= 2
-        case (.epub(let spine, let offset), .epub(let otherSpine, let otherOffset)):
-            return spine != otherSpine || abs(Int64(offset) - Int64(otherOffset)) > 2000
-        default:
-            return false
-        }
-    }
 }

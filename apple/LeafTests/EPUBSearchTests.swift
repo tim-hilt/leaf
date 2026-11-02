@@ -9,7 +9,7 @@ import Testing
         chapters: [String], manifest: String = "", files: [String: Data] = [:]
     ) async throws -> EPUBSearch {
         let book = try await importedBook(chapters: chapters, manifest: manifest, files: files)
-        return EPUBSearch(book, contents: TableOfContents(book))
+        return EPUBSearch(book, contents: book.tableOfContents())
     }
 
     @Test func findsMatchesInReadingOrderAcrossChapters() async throws {

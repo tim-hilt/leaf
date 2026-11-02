@@ -16,6 +16,7 @@
 //! The Table of Contents (the EPUB 3 nav, else the EPUB 2 NCX) points into that
 //! text: a link's anchor (`#id`) is the offset of the text before its element.
 
+use crate::contents::ContentsEntry;
 use crate::markup::EpubPosition;
 use crate::percent::decode as percent_decode;
 use crate::progress::Place;
@@ -401,6 +402,8 @@ impl Epub {
                 });
                 ContentsEntry {
                     title: item.title.split_whitespace().collect::<Vec<_>>().join(" "),
+                    // EPUBs have no printed page numbers.
+                    page_label: None,
                     place,
                     sections: self.resolve_outline(item.sections, dir),
                 }
@@ -443,16 +446,6 @@ fn unit_at(text: &[u16], at: usize) -> u16 {
 
 /// Reads the entries of a nav or an NCX.
 type OutlineParser = fn(&[u8]) -> Vec<Outlined>;
-
-/// A Chapter or Section of the Table of Contents.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ContentsEntry {
-    pub title: String,
-    /// An EPUB place; none for an entry without a link into the book.
-    pub place: Option<Place>,
-    /// The Sections nested under it.
-    pub sections: Vec<ContentsEntry>,
-}
 
 /// A file of an EPUB, as the manifest declares it.
 #[derive(Debug, PartialEq, Eq)]
@@ -1369,6 +1362,7 @@ mod tests {
         });
         ContentsEntry {
             title: title.to_owned(),
+            page_label: None,
             place,
             sections,
         }
@@ -1387,11 +1381,13 @@ mod tests {
         // A heading without a link is listed but points nowhere, and so is a web link.
         let part = ContentsEntry {
             title: "Part".into(),
+            page_label: None,
             place: None,
             sections: vec![entry("Two", 1, 0, vec![])],
         };
         let web = ContentsEntry {
             title: "Web".into(),
+            page_label: None,
             place: None,
             sections: vec![],
         };

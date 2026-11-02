@@ -18,7 +18,7 @@ final class DocumentSearch {
         let pageNumber: String
         /// The Chapter or Section the match is in; nil if the Document has no
         /// Table of Contents or the match is before its first entry.
-        let section: TableOfContents.Entry?
+        let section: Entry?
     }
 
     private let document: PDFDocument
@@ -58,7 +58,7 @@ final class DocumentSearch {
                             pageIndex: index, selection: selection, range: range, excerpt: match.excerpt,
                             pageNumber: document.printedPageNumber(at: index),
                             section: contents.position(
-                                at: Place.pdf(pageIndex: index, point: CGPoint(x: top.minX, y: top.maxY)))?.current))
+                                place: Place.pdf(pageIndex: index, point: CGPoint(x: top.minX, y: top.maxY)))?.current))
                 }
             }
             guard !Task.isCancelled else { return }

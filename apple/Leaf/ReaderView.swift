@@ -240,13 +240,13 @@ struct ReaderView: View {
 
     /// The Table of Contents, unless it is empty.
     private var availableContents: TableOfContents? {
-        loaded.contents.isEmpty ? nil : loaded.contents
+        loaded.contents.isEmpty() ? nil : loaded.contents
     }
 
     /// Where the top of the viewport is, as of now: the Table of Contents is
     /// built when it opens, so this is read then.
-    private func position(in contents: TableOfContents) -> TableOfContents.Position? {
-        handle.view?.topOfViewport.flatMap(contents.position(at:))
+    private func position(in contents: TableOfContents) -> Position? {
+        handle.view?.topOfViewport.flatMap(contents.position(place:))
     }
 
     /// Adds a Highlight over `anchor`; it shows once the Library has stored it.
