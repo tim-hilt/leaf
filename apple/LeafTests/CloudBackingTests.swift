@@ -695,100 +695,26 @@ private let oauthProviders: [CloudProvider] = [.googleDrive, .oneDrive]
 
     // MARK: Sign-in
 
-    /// The verifier of RFC 7636, appendix B, whose challenge is `challenge`.
-    private static let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
-    private static let challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-
-    private func googleSignIn() -> OAuthSignIn {
-        OAuthSignIn(
-            service: .google, clientID: "123-abc.apps.googleusercontent.com",
-            redirectScheme: "com.googleusercontent.apps.123-abc", verifier: Self.verifier, state: "xyz")
-    }
-
-    private func microsoftSignIn() -> OAuthSignIn {
-        OAuthSignIn(
-            service: .microsoft, clientID: "00000000-0000-0000-0000-000000000000",
-            redirectScheme: "msauth.com.timhilt.leaf", verifier: Self.verifier, state: "xyz")
-    }
-
-    private func query(of signIn: OAuthSignIn) throws -> (page: URLComponents, query: [String: String?]) {
-        let page = try #require(URLComponents(url: signIn.url, resolvingAgainstBaseURL: false))
-        return (page, Dictionary(uniqueKeysWithValues: (page.queryItems ?? []).map { ($0.name, $0.value) }))
-    }
-
-    @Test func theGoogleSignInPageAsksForTheFilesLeafCreatesAndProvesItsCode() throws {
-        let (page, query) = try query(of: googleSignIn())
-
-        #expect(page.host == "accounts.google.com")
-        #expect(query["scope"] == "https://www.googleapis.com/auth/drive.file")
-        #expect(query["client_id"] == "123-abc.apps.googleusercontent.com")
-        #expect(query["redirect_uri"] == "com.googleusercontent.apps.123-abc:/oauth2redirect")
-        #expect(query["code_challenge"] == Self.challenge)
-        #expect(query["code_challenge_method"] == "S256")
-        #expect(query["access_type"] == "offline")
-    }
-
-    @Test func theMicrosoftSignInPageIsForPersonalAccountsAndAsksForTheAppFolder() throws {
-        let (page, query) = try query(of: microsoftSignIn())
-
-        #expect(page.host == "login.microsoftonline.com")
-        #expect(page.path == "/consumers/oauth2/v2.0/authorize")
-        #expect(query["scope"] == "Files.ReadWrite.AppFolder offline_access")
-        #expect(query["client_id"] == "00000000-0000-0000-0000-000000000000")
-        #expect(query["redirect_uri"] == "msauth.com.timhilt.leaf://auth")
-        #expect(query["code_challenge"] == Self.challenge)
-        #expect(query["code_challenge_method"] == "S256")
-        #expect(query["response_type"] == "code")
-    }
-
-    @Test func theSignInRedirectGivesTheCodeAndDecliningCancelsSilently() throws {
-        for (signIn, redirect) in [
-            (googleSignIn(), "com.googleusercontent.apps.123-abc:/oauth2redirect"),
-            (microsoftSignIn(), "msauth.com.timhilt.leaf://auth"),
-        ] {
-            #expect(try signIn.code(from: URL(string: "\(redirect)?state=xyz&code=4%2F0Abc")!) == "4/0Abc")
-            #expect(throws: ConnectError.Cancelled) {
-                try signIn.code(from: URL(string: "\(redirect)?state=xyz&error=access_denied")!)
-            }
-            #expect(throws: ConnectError.AccessDenied) {
-                try signIn.code(from: URL(string: "\(redirect)?state=other&code=4%2F0Abc")!)
-            }
-        }
-    }
-
-    @Test func aConsentWithoutThePermissionForDriveFailsAndSaysWhy() throws {
-        let granted = Data(#"{"refresh_token": "r", "scope": "https://www.googleapis.com/auth/drive.file"}"#.utf8)
-        let declined = Data(#"{"refresh_token": "r", "scope": "openid"}"#.utf8)
-
-        #expect(try googleSignIn().refreshToken(fromTokenResponse: granted) == "r")
-        #expect(throws: OAuthSignInError.missingPermission(.googleDrive)) {
-            try googleSignIn().refreshToken(fromTokenResponse: declined)
-        }
+    @Test func signInErrorsSayWhatTheUserCanDo() {
         #expect(
             OAuthSignInError.missingPermission(.googleDrive).errorDescription
                 == "Allow Leaf to access its files in Google Drive")
-    }
-
-    @Test func aMicrosoftConsentWithoutThePermissionForTheAppFolderFailsAndSaysWhy() throws {
-        let granted = Data(#"{"refresh_token": "r", "scope": "Files.ReadWrite.AppFolder User.Read"}"#.utf8)
-        let qualified = Data(
-            #"{"refresh_token": "r", "scope": "https://graph.microsoft.com/Files.ReadWrite.AppFolder"}"#.utf8)
-        let declined = Data(#"{"refresh_token": "r", "scope": "User.Read"}"#.utf8)
-        let signIn = microsoftSignIn()
-
-        #expect(try signIn.refreshToken(fromTokenResponse: granted) == "r")
-        #expect(try signIn.refreshToken(fromTokenResponse: qualified) == "r")
-        #expect(throws: OAuthSignInError.missingPermission(.oneDrive)) {
-            try signIn.refreshToken(fromTokenResponse: declined)
-        }
         #expect(
             OAuthSignInError.missingPermission(.oneDrive).errorDescription
                 == "Allow Leaf to access its files in OneDrive")
     }
 
-    @Test func noRefreshTokenIsAccessDenied() {
-        #expect(throws: ConnectError.AccessDenied) {
-            try googleSignIn().refreshToken(fromTokenResponse: Data(#"{"scope": "x"}"#.utf8))
+    /// The core checks the redirect and the sign-in is done without contacting the provider.
+    @Test func aRedirectThatDeclinesOrIsNotForThisAttemptFailsWithoutContactingTheProvider() async throws {
+        let drive = try #require(OAuthDrive(.googleDrive))
+        let attempt = OAuthSignIn(provider: .googleDrive, clientId: "client", redirectScheme: "com.example.app")
+        let redirect = { (query: String) in URL(string: "com.example.app:/oauth2redirect?\(query)")! }
+
+        await #expect(throws: ConnectError.Cancelled) {
+            try await drive.refreshToken(of: attempt, from: redirect("state=x&error=access_denied"))
+        }
+        await #expect(throws: ConnectError.AccessDenied) {
+            try await drive.refreshToken(of: attempt, from: redirect("state=x&code=4%2F0Abc"))
         }
     }
 

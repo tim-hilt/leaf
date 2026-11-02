@@ -65,6 +65,21 @@ pub(crate) struct Auth {
     /// The next refresh gives this one, which replaces the old.
     pub rotate_to: Option<String>,
     revoked: bool,
+    /// What the authorization code exchange answers to, if the user consented.
+    pub consent: Option<Consent>,
+}
+
+/// A consent to the provider's page: the authorization code its redirect
+/// carries, and what exchanging that code answers.
+pub(crate) struct Consent {
+    pub code: String,
+    /// The PKCE verifier the exchange has to prove.
+    pub verifier: String,
+    pub redirect_uri: String,
+    /// The scope the token response grants.
+    pub scope: String,
+    /// The refresh token the token response gives, if any.
+    pub refresh: Option<String>,
 }
 
 impl Auth {
@@ -76,6 +91,7 @@ impl Auth {
             refresh: refresh.to_owned(),
             rotate_to: None,
             revoked: false,
+            consent: None,
         }
     }
 
@@ -96,30 +112,50 @@ impl Auth {
         bearer.is_some_and(|token| self.tokens.contains(token))
     }
 
-    /// The answer to a refresh, `form` being the request's body.
+    /// The answer to a token request, a refresh or an authorization code
+    /// exchange, `form` being the request's body.
     fn token(&mut self, form: &str) -> Reply {
         let form: HashMap<_, _> = form
             .split('&')
             .filter_map(|pair| pair.split_once('='))
             .map(|(key, value)| (key, crate::percent::decode(value)))
             .collect();
-        let valid = form.get("grant_type").is_some_and(|g| g == "refresh_token")
-            && form.get("client_id").is_some_and(|c| *c == self.client)
-            && form
-                .get("refresh_token")
-                .is_some_and(|t| *t == self.refresh)
-            && !self.revoked;
-        if !valid {
-            return reply(400, json!({"error": "invalid_grant"}));
+        let field = |name| form.get(name).map_or("", String::as_str);
+        let refused = reply(400, json!({"error": "invalid_grant"}));
+        if self.revoked || field("client_id") != self.client {
+            return refused;
+        }
+        // What the answer says beyond the access token.
+        let mut extra = serde_json::Map::new();
+        match field("grant_type") {
+            "refresh_token" if field("refresh_token") == self.refresh => {
+                if let Some(rotated) = self.rotate_to.take() {
+                    extra.insert("refresh_token".into(), json!(rotated));
+                    self.refresh = rotated;
+                }
+            }
+            "authorization_code" => {
+                let Some(consent) = &self.consent else {
+                    return refused;
+                };
+                let proven = field("code") == consent.code
+                    && field("code_verifier") == consent.verifier
+                    && field("redirect_uri") == consent.redirect_uri;
+                if !proven {
+                    return refused;
+                }
+                extra.insert("scope".into(), json!(consent.scope));
+                if let Some(refresh) = &consent.refresh {
+                    extra.insert("refresh_token".into(), json!(refresh));
+                }
+            }
+            _ => return refused,
         }
         self.issued += 1;
         let token = format!("access-{}", self.issued);
         self.tokens.insert(token.clone());
         let mut answer = json!({"access_token": token, "expires_in": 3600, "token_type": "Bearer"});
-        if let Some(rotated) = self.rotate_to.take() {
-            answer["refresh_token"] = json!(rotated);
-            self.refresh = rotated;
-        }
+        answer.as_object_mut().unwrap().extend(extra);
         reply(200, answer)
     }
 }

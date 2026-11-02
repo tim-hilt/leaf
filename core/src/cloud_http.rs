@@ -1,6 +1,7 @@
 //! What the Cloud Providers behind OAuth share (Google Drive, OneDrive): HTTP
-//! on the platform's TLS, access tokens kept fresh for a public client, the
-//! outcome of a request as a storage error, and the chunked-upload loop.
+//! on the platform's TLS, which sign-in uses too (`oauth`), access tokens kept
+//! fresh for a public client, the outcome of a request as a storage error, and
+//! the chunked-upload loop.
 //!
 //! Blocking, no async runtime. Request bodies are in memory, so a request
 //! can be sent again after the access token expired.
@@ -27,6 +28,22 @@ pub(crate) fn tls_config() -> ureq::tls::TlsConfig {
         .build();
     #[cfg(not(target_vendor = "apple"))]
     ureq::tls::TlsConfig::default()
+}
+
+/// The agent for requests to a Cloud Provider over `tls_config`: https only,
+/// unless `allow_http` (tests).
+pub(crate) fn agent(allow_http: bool) -> Agent {
+    let config = Agent::config_builder()
+        .https_only(!allow_http)
+        .http_status_as_error(false)
+        // A resumable upload answers 308 for "send the next chunk".
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .tls_config(tls_config())
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_recv_response(Some(Duration::from_secs(30)))
+        .build();
+    Agent::new_with_config(config)
 }
 
 /// Where a Cloud Provider's API is and how uploads are cut.
@@ -100,18 +117,8 @@ impl OAuthClient {
         refresh_token: &str,
         on_new_refresh_token: Arc<dyn RefreshTokenCallback>,
     ) -> Self {
-        let agent = Agent::config_builder()
-            .https_only(!config.allow_http)
-            .http_status_as_error(false)
-            // A resumable upload answers 308 for "send the next chunk".
-            .max_redirects(0)
-            .max_redirects_will_error(false)
-            .tls_config(tls_config())
-            .timeout_connect(Some(Duration::from_secs(10)))
-            .timeout_recv_response(Some(Duration::from_secs(30)))
-            .build();
         Self {
-            agent: Agent::new_with_config(agent),
+            agent: agent(config.allow_http),
             token_url: config.token_url.clone(),
             client_id: client_id.to_owned(),
             tokens: Mutex::new(Tokens {

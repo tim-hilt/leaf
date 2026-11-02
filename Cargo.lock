@@ -525,6 +525,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "base64",
+ "getrandom 0.4.3",
  "hex",
  "libc",
  "miniz_oxide",

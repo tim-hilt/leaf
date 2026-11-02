@@ -1,6 +1,6 @@
 # Cloud Providers sit behind one storage interface in the core
 
-The core defines a small storage interface (put, get, list, delete) and owns all sync logic. Every Cloud Provider is implemented in Rust in the core, so every platform gets them: WebDAV, iCloud Drive, Google Drive and OneDrive (ADR-0017). Sign-in (OAuth) runs natively on each platform, which then passes tokens to the core. The core refreshes access tokens itself and hands rotated refresh tokens back to the client to store. Only one Cloud Provider is Connected at a time; mirroring across providers would multiply sync edge cases for little benefit.
+The core defines a small storage interface (put, get, list, delete) and owns all sync logic. Every Cloud Provider is implemented in Rust in the core, so every platform gets them: WebDAV, iCloud Drive, Google Drive and OneDrive (ADR-0017). The core runs the OAuth sign-in too (`oauth.rs`): the platform only presents the consent page and hands the redirect back. The core refreshes access tokens itself and hands rotated refresh tokens back to the client to store. Only one Cloud Provider is Connected at a time; mirroring across providers would multiply sync edge cases for little benefit.
 
 ## Considered Options
 

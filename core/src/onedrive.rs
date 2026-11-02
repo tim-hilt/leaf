@@ -10,6 +10,7 @@
 use crate::cloud_http::{
     Config, OAuthClient, read_head, read_json, succeeded, unexpected, upload_chunks,
 };
+use crate::oauth::OAuthProvider;
 use crate::percent::encode;
 use crate::storage::{Blob, RefreshTokenCallback, Storage, check_name, unique_name};
 use serde_json::json;
@@ -20,8 +21,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 const API: &str = "https://graph.microsoft.com/v1.0";
-/// Personal Microsoft accounts only.
-const TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 
 /// Blobs up to this many bytes upload in one request, which Graph limits to
 /// 4 MB. They are held in memory.
@@ -30,7 +29,12 @@ const SIMPLE_LIMIT: usize = 4_000_000;
 const CHUNK_SIZE: usize = 10 << 20;
 
 fn production() -> Config {
-    Config::new(API, TOKEN_URL, SIMPLE_LIMIT, CHUNK_SIZE)
+    Config::new(
+        API,
+        OAuthProvider::OneDrive.token_endpoint(),
+        SIMPLE_LIMIT,
+        CHUNK_SIZE,
+    )
 }
 
 /// The app folder of a OneDrive and everything below it.

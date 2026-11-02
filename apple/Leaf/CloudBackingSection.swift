@@ -55,10 +55,10 @@ struct CloudBackingSection: View {
             } else if choosing == .iCloudDrive {
                 errorText
                 Button("Connect", action: pickICloudDrive).disabled(isConnecting)
-            } else if let choosing, let service = OAuthSignIn.Service.of(choosing) {
+            } else if let choosing, let drive = OAuthDrive(choosing) {
                 errorText
                 Button("Connect") {
-                    attempt { try await cloud.connectOAuth(choosing, refreshToken: signIn(to: service)) }
+                    attempt { try await cloud.connectOAuth(choosing, refreshToken: signIn(to: drive)) }
                 }
                 .disabled(isConnecting)
             }
@@ -150,8 +150,8 @@ struct CloudBackingSection: View {
             Button("Reconnect", action: pickICloudDrive).disabled(isConnecting)
         case .googleDrive, .oneDrive:
             errorText
-            if let service = OAuthSignIn.Service.of(provider) {
-                Button("Reconnect") { attempt { try await cloud.reconnectOAuth(refreshToken: signIn(to: service)) } }
+            if let drive = OAuthDrive(provider) {
+                Button("Reconnect") { attempt { try await cloud.reconnectOAuth(refreshToken: signIn(to: drive)) } }
                     .disabled(isConnecting)
             }
         }
@@ -159,18 +159,18 @@ struct CloudBackingSection: View {
 
     /// Opens the provider's sign-in page and returns the refresh token it leads to.
     /// Backing out of the page is `Cancelled`, which says nothing.
-    private func signIn(to service: OAuthSignIn.Service) async throws -> String {
-        guard let signIn = OAuthSignIn.configured(service) else {
-            throw OAuthSignInError.notConfigured(service.provider)
-        }
+    private func signIn(to drive: OAuthDrive) async throws -> String {
+        let attempt = try drive.signIn()
         let callback: URL
         do {
+            // The core builds the consent page's address, which is a valid URL.
             callback = try await webAuthentication.authenticate(
-                using: signIn.url, callback: .customScheme(signIn.redirectScheme), additionalHeaderFields: [:])
+                using: URL(string: attempt.authorizationUrl())!, callback: .customScheme(drive.redirectScheme),
+                additionalHeaderFields: [:])
         } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
             throw ConnectError.Cancelled
         }
-        return try await signIn.refreshToken(from: callback)
+        return try await drive.refreshToken(of: attempt, from: callback)
     }
 
     /// Opens the folder picker, unless iCloud Drive is off: then there is nothing to pick.

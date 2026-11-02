@@ -14,6 +14,7 @@ use leaf_core::library::Document as CoreDocument;
 use leaf_core::library::{ImportError, ImportResult, PdfProblem};
 use leaf_core::listing::{self, Sort, SortKey};
 use leaf_core::markup::{Anchor, EpubPosition, Highlight, Markup, PageNote, PageRects, Rect, Rgb};
+use leaf_core::oauth::{OAuthError, OAuthProvider, SignIn};
 use leaf_core::onedrive::OneDriveStorage;
 use leaf_core::preferences::{HighlightColor, HighlightColors};
 use leaf_core::progress::{Place, ReadingProgress};
@@ -617,48 +618,81 @@ impl RefreshTokenCallback for RefreshTokens {
     }
 }
 
-/// A Cloud Provider behind OAuth. Its storage, endpoints and errors are in the
-/// core; the client only signs in and keeps the refresh token.
-#[derive(uniffi::Enum, Clone, Copy)]
+/// A Cloud Provider behind OAuth, see `leaf_core::oauth::OAuthProvider`.
+#[uniffi::remote(Enum)]
 pub enum OAuthProvider {
-    /// The `Leaf` folder in My Drive.
     GoogleDrive,
-    /// `Apps/Leaf`, personal accounts only.
     OneDrive,
 }
 
-impl OAuthProvider {
-    /// Its storage for the user who owns `refresh_token`, a token of the public
-    /// OAuth client `client_id`, with the user's account. Contacts the provider.
-    fn connect(
-        self,
-        client_id: &str,
-        refresh_token: &str,
-        tokens: Arc<dyn RefreshTokenObserver>,
-    ) -> Result<(Arc<dyn Storage>, String), ConnectError> {
-        let tokens = Arc::new(RefreshTokens(tokens));
-        let connected = match self {
-            Self::GoogleDrive => GoogleDriveStorage::connect(client_id, refresh_token, tokens)
-                .map(|(storage, account)| (Arc::new(storage) as Arc<dyn Storage>, account)),
-            Self::OneDrive => OneDriveStorage::connect(client_id, refresh_token, tokens)
-                .map(|(storage, account)| (Arc::new(storage) as Arc<dyn Storage>, account)),
-        };
-        connected.map_err(|error| ConnectError::of_cloud(&error))
+#[uniffi::remote(Error)]
+pub enum OAuthError {
+    Cancelled,
+    AccessDenied,
+    MissingPermission,
+    Unreachable,
+}
+
+/// One attempt at signing in with a Cloud Provider behind OAuth, see
+/// `leaf_core::oauth::SignIn`. The client shows `authorization_url` and hands
+/// the redirect back to `refresh_token`.
+#[derive(uniffi::Object)]
+pub struct OAuthSignIn(SignIn);
+
+#[uniffi::export]
+impl OAuthSignIn {
+    /// An attempt with the app's OAuth client `client_id`, whose redirect comes
+    /// back to the URL scheme `redirect_scheme`.
+    #[uniffi::constructor]
+    pub fn new(provider: OAuthProvider, client_id: String, redirect_scheme: String) -> Arc<Self> {
+        Arc::new(Self(SignIn::new(provider, &client_id, &redirect_scheme)))
     }
 
-    /// Like `connect`, without contacting anyone.
-    fn resume(
-        self,
-        client_id: &str,
-        refresh_token: &str,
-        tokens: Arc<dyn RefreshTokenObserver>,
-    ) -> Arc<dyn Storage> {
-        let tokens = Arc::new(RefreshTokens(tokens));
-        match self {
-            Self::GoogleDrive => {
-                Arc::new(GoogleDriveStorage::resume(client_id, refresh_token, tokens))
-            }
-            Self::OneDrive => Arc::new(OneDriveStorage::resume(client_id, refresh_token, tokens)),
+    /// The consent page to open.
+    pub fn authorization_url(&self) -> String {
+        self.0.authorization_url()
+    }
+
+    /// The refresh token that the redirect to `callback_url` leads to. Contacts
+    /// the provider, so it blocks.
+    pub fn refresh_token(&self, callback_url: String) -> Result<String, OAuthError> {
+        self.0.refresh_token(&callback_url)
+    }
+}
+
+/// The storage of `provider` for the user who owns `refresh_token`, a token of
+/// the public OAuth client `client_id`, with the user's account. Contacts the
+/// provider.
+fn connect_oauth(
+    provider: OAuthProvider,
+    client_id: &str,
+    refresh_token: &str,
+    tokens: Arc<dyn RefreshTokenObserver>,
+) -> Result<(Arc<dyn Storage>, String), ConnectError> {
+    let tokens = Arc::new(RefreshTokens(tokens));
+    let connected = match provider {
+        OAuthProvider::GoogleDrive => GoogleDriveStorage::connect(client_id, refresh_token, tokens)
+            .map(|(storage, account)| (Arc::new(storage) as Arc<dyn Storage>, account)),
+        OAuthProvider::OneDrive => OneDriveStorage::connect(client_id, refresh_token, tokens)
+            .map(|(storage, account)| (Arc::new(storage) as Arc<dyn Storage>, account)),
+    };
+    connected.map_err(|error| ConnectError::of_cloud(&error))
+}
+
+/// Like `connect_oauth`, without contacting anyone.
+fn resume_oauth(
+    provider: OAuthProvider,
+    client_id: &str,
+    refresh_token: &str,
+    tokens: Arc<dyn RefreshTokenObserver>,
+) -> Arc<dyn Storage> {
+    let tokens = Arc::new(RefreshTokens(tokens));
+    match provider {
+        OAuthProvider::GoogleDrive => {
+            Arc::new(GoogleDriveStorage::resume(client_id, refresh_token, tokens))
+        }
+        OAuthProvider::OneDrive => {
+            Arc::new(OneDriveStorage::resume(client_id, refresh_token, tokens))
         }
     }
 }
@@ -713,7 +747,7 @@ impl Cloud {
                 client_id,
                 refresh_token,
                 tokens,
-            } => provider.connect(&client_id, &refresh_token, tokens),
+            } => connect_oauth(provider, &client_id, &refresh_token, tokens),
             cloud => Ok((cloud.resume()?, String::new())),
         }
     }
@@ -739,7 +773,7 @@ impl Cloud {
                 client_id,
                 refresh_token,
                 tokens,
-            } => Ok(provider.resume(&client_id, &refresh_token, tokens)),
+            } => Ok(resume_oauth(provider, &client_id, &refresh_token, tokens)),
             Self::Directory { path } => {
                 let storage = DirStorage::open(path).map_err(|_| ConnectError::AccessDenied)?;
                 Ok(Arc::new(storage))

@@ -9,6 +9,8 @@ publish.workspace = true
 automerge = "0.12.0"
 # Already in the tree through ureq and automerge: Basic auth and hex.
 base64 = "0.23"
+# OS randomness for PKCE. Already in the tree through automerge.
+getrandom = "0.4"
 hex = "0.4"
 # Inflate only: reads the zip of an EPUB. Already in the tree through flate2.
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }

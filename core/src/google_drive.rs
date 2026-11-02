@@ -10,6 +10,7 @@
 use crate::cloud_http::{
     Config, OAuthClient, read_head, split, succeeded, unexpected, upload_chunks,
 };
+use crate::oauth::OAuthProvider;
 use crate::percent::encode;
 use crate::storage::{Blob, RefreshTokenCallback, Storage, check_name, unique_name};
 use serde_json::json;
@@ -19,7 +20,6 @@ use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
 
 const API: &str = "https://www.googleapis.com";
-const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 /// The folder in My Drive that holds everything.
 const APP_FOLDER: &str = "Leaf";
 const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
@@ -30,7 +30,12 @@ const SIMPLE_LIMIT: usize = 5 << 20;
 const CHUNK_SIZE: usize = 8 << 20;
 
 fn production() -> Config {
-    Config::new(API, TOKEN_URL, SIMPLE_LIMIT, CHUNK_SIZE)
+    Config::new(
+        API,
+        OAuthProvider::GoogleDrive.token_endpoint(),
+        SIMPLE_LIMIT,
+        CHUNK_SIZE,
+    )
 }
 
 /// A file or folder in Drive.
