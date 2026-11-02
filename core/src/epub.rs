@@ -20,7 +20,6 @@ use crate::contents::ContentsEntry;
 use crate::markup::EpubPosition;
 use crate::percent::decode as percent_decode;
 use crate::progress::Place;
-use crate::search::{Match, Query};
 use miniz_oxide::inflate::decompress_to_vec_with_limit;
 use quick_xml::XmlVersion;
 use quick_xml::events::{BytesRef, BytesStart, Event};
@@ -77,7 +76,7 @@ pub struct Epub {
 #[derive(Default)]
 struct Scanned {
     /// Its text in UTF-16 code units, the unit positions count in (ADR-0022).
-    text: Vec<u16>,
+    text: Arc<[u16]>,
     /// The offset of the text before each anchor.
     anchors: HashMap<String, u64>,
 }
@@ -220,17 +219,18 @@ impl Epub {
         Some(String::from_utf16_lossy(&self.item(index)?.text))
     }
 
-    /// The matches of `query` in the text of the spine item at `index`, see
-    /// `search`. An item not read before is scanned for this search only, so a
-    /// search of the whole book keeps none of its text.
-    pub fn search(&self, index: usize, query: &Query) -> Vec<Match> {
+    /// The text of the spine item at `index` in UTF-16 units, for a Document
+    /// Search: an item read before shares its text, any other is scanned for
+    /// this call only, so a search of the whole book keeps none of its text.
+    /// None for an index beyond the spine, and for an item the zip can't read.
+    pub(crate) fn searched_text(&self, index: usize) -> Option<Arc<[u16]>> {
         // The lock is taken alone to look up; the item is scanned without it.
         let cached = self.cached().get(&index).cloned();
         let item = match cached {
             Some(item) => item,
             None => self.read_item(index),
         };
-        item.map(|item| query.find(&item.text)).unwrap_or_default()
+        item.map(|item| item.text.clone())
     }
 
     /// Where the passage `quoted` of a Highlight is, now: from `start` to `end`
@@ -1073,7 +1073,13 @@ pub(crate) mod fixtures {
 mod tests {
     use super::fixtures::{Book, CONTAINER, open, zip};
     use super::*;
-    use crate::search::{Query, WordMatch};
+    use crate::search::{Match, Query, WordMatch};
+
+    /// The matches of `query` in the spine item at `index`, as a Document
+    /// Search finds them.
+    fn search(epub: &Epub, index: usize, query: &Query) -> Vec<Match> {
+        query.find(&epub.searched_text(index).unwrap_or_default())
+    }
 
     fn apple() -> Query {
         Query {
@@ -1092,7 +1098,7 @@ mod tests {
         ]);
         let epub = open(&book.bytes()).unwrap();
         let ranges = |index| {
-            epub.search(index, &apple())
+            search(&epub, index, &apple())
                 .into_iter()
                 .map(|m| m.range)
                 .collect::<Vec<_>>()
@@ -1115,8 +1121,7 @@ mod tests {
         };
         let text: Vec<u16> = epub.text(0).unwrap().encode_utf16().collect();
 
-        let found: Vec<String> = epub
-            .search(0, &two)
+        let found: Vec<String> = search(&epub, 0, &two)
             .iter()
             .map(|m| String::from_utf16_lossy(&text[m.range.clone()]))
             .collect();
@@ -1134,7 +1139,7 @@ mod tests {
             ..apple()
         };
 
-        let found = epub.search(0, &fox);
+        let found = search(&epub, 0, &fox);
 
         assert_eq!(
             found[0].excerpt.text,
@@ -1147,12 +1152,12 @@ mod tests {
         let book = Book::new("").chapters(&["<p>apple</p>", "<p>apple</p>"]);
         let epub = open(&book.bytes()).unwrap();
 
-        assert_eq!(epub.search(1, &apple()).len(), 1);
+        assert_eq!(search(&epub, 1, &apple()).len(), 1);
         assert_eq!(epub.scanned_items(), 0);
 
         // An item read for the text is kept, and searched from there.
         assert!(epub.text(0).is_some());
-        assert_eq!(epub.search(0, &apple()).len(), 1);
+        assert_eq!(search(&epub, 0, &apple()).len(), 1);
         assert_eq!(epub.scanned_items(), 1);
     }
 

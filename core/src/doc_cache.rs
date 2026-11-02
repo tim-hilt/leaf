@@ -61,11 +61,6 @@ impl<T: Clone> DocCache<T> {
         self.lock().insert(id.to_owned(), (imports.to_vec(), value));
     }
 
-    /// Forgets every value, so each is read again when next needed.
-    pub fn clear(&self) {
-        self.lock().clear();
-    }
-
     fn lock(&self) -> MutexGuard<'_, Known<T>> {
         self.known.lock().unwrap_or_else(PoisonError::into_inner)
     }

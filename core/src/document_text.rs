@@ -7,14 +7,14 @@
 //! cancels the search. A PDF's pages are read through the client (ADR-0003)
 //! and kept here, so a page's text is extracted at most once while the
 //! Document is open; an EPUB's spine items the core reads itself (ADR-0021),
-//! as `Epub::search` always has.
+//! and keeps none it didn't keep already (`Epub::searched_text`).
 
 use crate::contents::{Entry, TableOfContents};
 use crate::epub;
 use crate::progress::Place;
 use crate::search::{self, Query};
 use std::ops::Range;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// What a client's PDF engine reads out of an open PDF's pages (ADR-0003) for
 /// the Document Search. Implemented by the client; called from the thread that
@@ -63,6 +63,9 @@ pub struct Found {
 /// A Document's text, chunk by chunk, for the Document Search (GLOSSARY.md).
 pub struct DocumentText {
     source: Source,
+    /// Where each chunk's text starts in the whole text, then where the last
+    /// ends, in UTF-16 units; see `starts`.
+    starts: OnceLock<Vec<u64>>,
 }
 
 /// Where a Document's chunks of text come from.
@@ -88,6 +91,7 @@ impl DocumentText {
         let lengths = epub.characters();
         Self {
             source: Source::Epub { epub, lengths },
+            starts: OnceLock::new(),
         }
     }
 
@@ -98,6 +102,7 @@ impl DocumentText {
                 reader,
                 read: Mutex::new(vec![None; pages as usize]),
             },
+            starts: OnceLock::new(),
         }
     }
 
@@ -112,40 +117,48 @@ impl DocumentText {
         }
     }
 
-    /// The length of the whole text, in UTF-16 units. Reads every chunk, which
-    /// are then kept.
+    /// The length of the whole text, in UTF-16 units. Reads every chunk, see
+    /// `starts`.
     pub fn length(&self) -> u64 {
-        self.start(self.chunks())
+        self.starts().last().copied().unwrap_or(0)
     }
 
-    /// The chunk at `index`; none beyond the chunks.
+    /// The chunk at `index`; none beyond the chunks. Reads every chunk, see
+    /// `starts`.
     pub fn chunk(&self, index: u32) -> Option<Chunk> {
+        let starts = self.starts();
         let index = index as usize;
-        (index < self.chunks()).then(|| Chunk {
+        let (start, end) = (*starts.get(index)?, *starts.get(index + 1)?);
+        Some(Chunk {
             index: index as u32,
-            start: self.start(index),
-            length: self.chunk_length(index),
+            start,
+            length: end - start,
         })
     }
 
     /// The chunk holding the character at `offset` in the whole text: the last
     /// one starting at or before it, so empty chunks — which share their start
-    /// with the next one — are skipped. None without chunks.
+    /// with the next one — are skipped. None without chunks. Reads every
+    /// chunk, see `starts`.
     pub fn chunk_containing(&self, offset: u64) -> Option<Chunk> {
-        let (mut start, mut held) = (0, None);
-        for index in 0..self.chunks() {
-            let length = self.chunk_length(index);
-            if start > offset {
-                break;
-            }
-            held = Some(Chunk {
-                index: index as u32,
-                start,
-                length,
-            });
-            start += length;
-        }
-        held
+        let chunks = self.starts().len().checked_sub(1)?;
+        let after = self.starts()[..chunks].partition_point(|&start| start <= offset);
+        self.chunk(after.checked_sub(1)? as u32)
+    }
+
+    /// Where each chunk's text starts in the whole text, then where the last
+    /// one ends, in UTF-16 units. Worked out once, reading every chunk, so
+    /// later calls take no lock.
+    fn starts(&self) -> &[u64] {
+        self.starts.get_or_init(|| {
+            let mut at = 0;
+            std::iter::once(0)
+                .chain((0..self.chunks()).map(|index| {
+                    at += self.chunk_length(index);
+                    at
+                }))
+                .collect()
+        })
     }
 
     /// The text of the chunk at `index`; none beyond the chunks.
@@ -175,9 +188,7 @@ impl DocumentText {
     /// chunks, and none for one that can't be read.
     fn units(&self, index: usize) -> Option<Arc<[u16]>> {
         match &self.source {
-            Source::Epub { epub, .. } => epub
-                .text(index)
-                .map(|text| text.encode_utf16().collect::<Vec<_>>().into()),
+            Source::Epub { epub, .. } => epub.searched_text(index),
             Source::Pdf { reader, read } => {
                 let mut read = read.lock().unwrap_or_else(PoisonError::into_inner);
                 match &read[index] {
@@ -205,12 +216,6 @@ impl DocumentText {
             Source::Epub { lengths, .. } => lengths.get(index).copied().unwrap_or(0),
             Source::Pdf { .. } => self.units(index).map_or(0, |units| units.len() as u64),
         }
-    }
-
-    /// Where the text of the chunk at `index` starts in the whole text, in
-    /// UTF-16 units. Reads the chunks before it.
-    fn start(&self, index: usize) -> u64 {
-        (0..index).map(|chunk| self.chunk_length(chunk)).sum()
     }
 
     /// Where a match in the chunk at `index` sits, for the Table of Contents:
@@ -611,8 +616,9 @@ mod tests {
             "<p>nothing</p>",
             "<p>an apple</p>",
         ]);
-        let epub = Arc::new(open(&book.bytes()).unwrap());
-        let text = Arc::new(DocumentText::epub(epub));
+        // Counted at Import, as the Reader opens a book.
+        let epub = Arc::new(open(&book.bytes()).unwrap().with_characters(vec![16, 7, 8]));
+        let text = Arc::new(DocumentText::epub(epub.clone()));
         let search = text.search(query("apple"), contents());
 
         let found = all(&search);
@@ -627,5 +633,7 @@ mod tests {
         assert_eq!(texts(&found, &text), ["apple"; 3]);
         assert_eq!(text.text(0).as_deref(), Some("apple pie, apple"));
         assert_eq!(text.length(), 31);
+        // The book keeps none of the items the search read.
+        assert_eq!(epub.scanned_items(), 0);
     }
 }

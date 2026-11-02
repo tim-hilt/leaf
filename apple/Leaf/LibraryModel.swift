@@ -92,7 +92,7 @@ enum ImportResult {
 
 /// An Import in progress: what the progress modal shows.
 struct RunningImport: Equatable {
-    /// The file name until PDFKit has read a PDF, then its Title.
+    /// The file name until the Import is done, then its Title.
     fileprivate(set) var title: String
     /// Share of the File copied, 0...1.
     fileprivate(set) var fraction: Double = 0
@@ -128,7 +128,7 @@ extension Date {
 /// Import first, and the core's `Listing` that orders and searches those same
 /// Documents. One core call makes both, so they can't disagree.
 private struct LibraryListing: Sendable {
-    let documents: [LibraryDocument]
+    private(set) var documents: [LibraryDocument]
     /// Library Search over `documents`: positions in them, in Sort order.
     let sorted: Listing
 
@@ -137,6 +137,15 @@ private struct LibraryListing: Sendable {
         guard let list = try? core.listing(sort: sort) else { return nil }
         self.sorted = list.sorted
         self.documents = list.documents.map(LibraryDocument.init)
+    }
+
+    /// Gives Document `id` the saved `progress`, for a save that the core says
+    /// changes nothing the Gallery shows, so nothing is listed again.
+    mutating func keep(_ progress: ReadingProgress, of id: String) {
+        guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        var stored = documents[index].stored
+        stored.progress = progress
+        documents[index] = LibraryDocument(stored)
     }
 }
 
@@ -240,13 +249,8 @@ final class LibraryModel {
         return listing.sorted.matching(search: searchText).map { listing.documents[Int($0)] }
     }
 
-    /// The Document with `id` as the core stores it now, if it is in the Library.
-    /// Read here, as a save doesn't list the Library again unless the Gallery shows
-    /// something new; the listed copy may lack the latest place.
-    func document(id: String) -> LibraryDocument? {
-        guard let stored = try? core.document(id: id) else { return nil }
-        return LibraryDocument(stored)
-    }
+    /// The Document with `id`, if it is in the Library.
+    func document(id: String) -> LibraryDocument? { documents.first { $0.id == id } }
 
     /// The saved Cover of `document`, loaded and decoded off the main thread,
     /// or nil if there is none. Cheap, so safe to call while scrolling; never renders.
@@ -393,18 +397,21 @@ final class LibraryModel {
     }
 
     /// Saves `place` as Reading Progress of `document`, read `lastRead`. The
-    /// core writes off the main thread, in order; this returns when it has, and
-    /// says whether the Gallery shows something new. The Library is listed
-    /// again only then. Does nothing for a Document that was Removed. A failed
-    /// write is ignored: the next save replaces it.
+    /// core writes off the main thread, in order; this returns when it has, with
+    /// the Document updated in every window. The Library is listed again only if
+    /// the core says the Gallery shows something new. Does nothing for a
+    /// Document that was Removed. A failed write is ignored: the next save
+    /// replaces it.
     func saveProgress(_ place: Place, of document: LibraryDocument, at lastRead: Date = .now) async {
         let progress = ReadingProgress(place: place, lastRead: lastRead.millisecondsSince1970)
         let id = document.id
         let sort = sort.core
-        let changes = await inStateOrder { core in
-            (try? core.saveProgress(id: id, progress: progress, sort: sort)) ?? false
+        let changes = await inStateOrder { try? $0.saveProgress(id: id, progress: progress, sort: sort) }
+        switch changes {
+        case true?: await relist { _ in }
+        case false?: listing?.keep(progress, of: id)
+        case nil: break
         }
-        if changes { await relist { _ in } }
     }
 
     /// The Highlights and page Notes of `document`, each oldest first, read at

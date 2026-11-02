@@ -38,7 +38,7 @@ impl Place {
     /// than a point apart count as the same, so rounding in scrolling can't push
     /// a heading that was just jumped to out of reach. Pages read in one column,
     /// so horizontal position is ignored. Places of different kinds have no order.
-    pub fn is_at_or_before(self, other: Place) -> bool {
+    pub(crate) fn is_at_or_before(self, other: Place) -> bool {
         match (self, other) {
             (
                 Place::Pdf { page_index, y, .. },
@@ -47,28 +47,9 @@ impl Place {
                     y: other_y,
                     ..
                 },
-            ) => {
-                if page_index != other_page {
-                    page_index < other_page
-                } else {
-                    y >= other_y - 1.0
-                }
-            }
-            (
-                Place::Epub {
-                    spine_index,
-                    offset,
-                },
-                Place::Epub {
-                    spine_index: other_spine,
-                    offset: other_offset,
-                },
-            ) => {
-                if spine_index != other_spine {
-                    spine_index < other_spine
-                } else {
-                    offset <= other_offset
-                }
+            ) if page_index == other_page => y >= other_y - 1.0,
+            (Place::Pdf { .. }, Place::Pdf { .. }) | (Place::Epub { .. }, Place::Epub { .. }) => {
+                self.cmp_reading(other).is_le()
             }
             _ => false,
         }
@@ -76,17 +57,13 @@ impl Place {
 
     /// Whether this Place is the same spot as `other`: neither comes before the
     /// other.
-    pub fn is_same_spot(self, other: Place) -> bool {
-        self.is_at_or_before(other) && self.is_at_or_after(other)
-    }
-
-    /// Whether this Place comes no earlier than `other`; see `is_at_or_before`.
-    pub fn is_at_or_after(self, other: Place) -> bool {
-        other.is_at_or_before(self)
+    pub(crate) fn is_same_spot(self, other: Place) -> bool {
+        self.is_at_or_before(other) && other.is_at_or_before(self)
     }
 
     /// The order of this Place and `other` in reading order, for sorting: by page
-    /// or spine item, then top to bottom. Consistent with `is_at_or_before`.
+    /// or spine item, then top to bottom. `is_at_or_before` is this order, but
+    /// for its tolerance.
     pub(crate) fn cmp_reading(self, other: Place) -> Ordering {
         match (self, other) {
             (
@@ -117,7 +94,7 @@ impl Place {
     /// Whether this Place is about a page or more from `other`: two PDF pages
     /// apart, or an EPUB Chapter or some 2000 characters apart. Places of
     /// different kinds are not.
-    pub fn is_far(self, other: Place) -> bool {
+    pub(crate) fn is_far(self, other: Place) -> bool {
         match (self, other) {
             (
                 Place::Pdf { page_index, .. },
@@ -393,8 +370,7 @@ mod tests {
         let late = epub(2, 0);
         assert!(early.is_at_or_before(late));
         assert!(!late.is_at_or_before(early));
-        assert!(late.is_at_or_after(early));
-        assert!(epub(2, 10).is_at_or_after(late));
+        assert!(late.is_at_or_before(epub(2, 10)));
         assert!(!epub(2, 10).is_at_or_before(late));
     }
 

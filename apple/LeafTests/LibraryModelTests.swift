@@ -927,6 +927,19 @@ import UniformTypeIdentifiers
         #expect(try openLibrary().documents.first?.place == earlier)
     }
 
+    @Test func aSaveTheGalleryDoesNotShowStillUpdatesTheListedDocument() async throws {
+        let library = try openLibrary()
+        let document = try await importDocument(into: library)
+        await library.saveProgress(place, of: document, at: lastRead)
+        let later = lastRead.addingTimeInterval(5)
+
+        // The same percent read, so the Gallery shows nothing new.
+        await library.saveProgress(place, of: document, at: later)
+
+        #expect(library.documents.first?.lastRead == later)
+        #expect(library.document(id: document.id)?.lastRead == later)
+    }
+
     @Test func savingForARemovedDocumentDoesNothing() async throws {
         let library = try openLibrary()
         let document = try await importDocument(into: library)

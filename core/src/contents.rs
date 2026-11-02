@@ -78,6 +78,7 @@ impl TableOfContents {
         }
     }
 
+    /// Whether it has no entries.
     pub fn is_empty(&self) -> bool {
         self.chapters.is_empty()
     }
@@ -434,7 +435,7 @@ mod tests {
             for entry in entries {
                 if let Some(start) = entry.place.filter(|start| start.is_at_or_before(place)) {
                     let is_later = best.as_ref().is_none_or(|(found, _)| {
-                        found.place.is_none_or(|at| start.is_at_or_after(at))
+                        found.place.is_none_or(|at| at.is_at_or_before(start))
                     });
                     if is_later {
                         *best = Some((entry, containing.clone()));

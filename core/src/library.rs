@@ -48,9 +48,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::thread::{self, JoinHandle, sleep};
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod sync;
@@ -225,15 +225,12 @@ const BATCH: usize = 16;
 /// The longest a pass reads without telling the Gallery, so the first reads
 /// show while a slow read holds up the rest of the batch.
 const BATCH_SPAN: Duration = Duration::from_millis(500);
-/// How often the details pass looks whether a Sync has changed the Documents
-/// since the last pass began. `sync_changes` is an atomic, so the wait costs
-/// only latency, never a missed change.
-const SYNC_POLL: Duration = Duration::from_millis(250);
 
 /// The background pass that reads missing details, started by
 /// `DetailsPass::start`. Dropping it stops the pass once the PDF it is
 /// reading is done.
 pub struct DetailsPass {
+    library: Arc<Library>,
     cancelled: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -256,11 +253,12 @@ impl DetailsPass {
         let thread = thread::Builder::new()
             .name("details".into())
             .spawn({
-                let cancelled = cancelled.clone();
+                let (library, cancelled) = (library.clone(), cancelled.clone());
                 move || run_passes(&library, reader.as_ref(), observer.as_ref(), &cancelled)
             })
             .expect("spawn the details pass");
         Self {
+            library,
             cancelled,
             thread: Some(thread),
         }
@@ -271,6 +269,7 @@ impl Drop for DetailsPass {
     /// Stops the thread, waiting for the PDF it may be reading.
     fn drop(&mut self) {
         self.cancelled.store(true, Relaxed);
+        self.library.wake_sync_waiters();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -285,20 +284,11 @@ fn run_passes(
     observer: &dyn GalleryObserver,
     cancelled: &AtomicBool,
 ) {
+    // Counted before each pass, so a sync during it causes another.
     let mut seen = library.sync_changes();
-    let mut first = true;
-    loop {
-        if cancelled.load(Relaxed) {
-            return;
-        }
-        if first || library.sync_changes() != seen {
-            // Counted before the pass, so a sync during it causes another.
-            seen = library.sync_changes();
-            first = false;
-            run_pass(library, reader, observer);
-            continue;
-        }
-        sleep(SYNC_POLL);
+    while !cancelled.load(Relaxed) {
+        run_pass(library, reader, observer, cancelled);
+        seen = library.wait_for_sync_change(seen, cancelled);
     }
 }
 
@@ -306,10 +296,18 @@ fn run_passes(
 /// `observer` when the Gallery should list again — at most once per `BATCH`
 /// details read or `BATCH_SPAN` elapsed, and once more after the last read.
 /// The Gallery lists every Document again, so not one PDF at a time.
-fn run_pass(library: &Library, reader: &dyn PdfReader, observer: &dyn GalleryObserver) {
+fn run_pass(
+    library: &Library,
+    reader: &dyn PdfReader,
+    observer: &dyn GalleryObserver,
+    cancelled: &AtomicBool,
+) {
     let mut read = 0;
     let mut told = Instant::now();
     for id in library.pdfs_without_details() {
+        if cancelled.load(Relaxed) {
+            break;
+        }
         if library.read_details(&id, reader).unwrap_or(false) {
             read += 1;
             if read >= BATCH || told.elapsed() >= BATCH_SPAN {
@@ -352,7 +350,9 @@ pub struct Library {
     /// `exchanges`, before `doc`.
     writing: Mutex<()>,
     /// How often a `sync` changed the Documents, see `sync_changes`.
-    sync_changes: AtomicU64,
+    sync_changes: Mutex<u64>,
+    /// Notified when `sync_changes` grows, see `wait_for_sync_change`.
+    sync_changed: Condvar,
     /// The Documents whose Markup a `sync` changed, see `take_markup_changes`.
     markup_changes: Mutex<Vec<String>>,
     /// The Reading Progress of each Document read so far, by ID, see
@@ -363,7 +363,7 @@ pub struct Library {
     details: DocCache<Details>,
     /// Where each Document's File is stored, if it is, by ID, with the Imports it
     /// was read for. Kept so a listing doesn't ask the file system: the writers of
-    /// Files set it, and each Sync step forgets it.
+    /// Files set it, and Sync forgets a File it finds lost, see `file_is_stored`.
     files: DocCache<PathBuf>,
 }
 
@@ -422,7 +422,8 @@ impl Library {
                 keys: HashSet::new(),
             }),
             writing: Mutex::new(()),
-            sync_changes: AtomicU64::new(0),
+            sync_changes: Mutex::new(0),
+            sync_changed: Condvar::new(),
             markup_changes: Mutex::new(Vec::new()),
             progress: DocCache::new(),
             details: DocCache::new(),
@@ -442,7 +443,38 @@ impl Library {
     /// them a File) since this Library was opened, even if that `sync` failed
     /// later. A caller that sees it grow reloads `documents`.
     pub fn sync_changes(&self) -> u64 {
-        self.sync_changes.load(Relaxed)
+        *self.sync_change_count()
+    }
+
+    /// Counts a `sync` that changed the Documents, see `sync_changes`.
+    fn count_sync_change(&self) {
+        *self.sync_change_count() += 1;
+        self.sync_changed.notify_all();
+    }
+
+    /// Waits until `sync_changes` differs from `seen`, or `stop` is set and
+    /// `wake_sync_waiters` called; returns `sync_changes` then.
+    fn wait_for_sync_change(&self, seen: u64, stop: &AtomicBool) -> u64 {
+        let count = self
+            .sync_changed
+            .wait_while(self.sync_change_count(), |count| {
+                *count == seen && !stop.load(Relaxed)
+            })
+            .unwrap_or_else(PoisonError::into_inner);
+        *count
+    }
+
+    /// Wakes every `wait_for_sync_change`, to look at its `stop` again.
+    fn wake_sync_waiters(&self) {
+        // Taken, so a waiter is either waiting or yet to look at its `stop`.
+        drop(self.sync_change_count());
+        self.sync_changed.notify_all();
+    }
+
+    fn sync_change_count(&self) -> MutexGuard<'_, u64> {
+        self.sync_changes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The IDs of the Documents whose Markup a `sync` changed since the last
@@ -720,7 +752,7 @@ impl Library {
 
     /// The IDs of the Documents whose File is a PDF without details, newest
     /// Import first: those the details pass reads.
-    pub fn pdfs_without_details(&self) -> Vec<String> {
+    pub(crate) fn pdfs_without_details(&self) -> Vec<String> {
         let mut entries = self.entries();
         sort_newest_first(&mut entries);
         entries
@@ -732,7 +764,7 @@ impl Library {
     /// Reads the details of Document `id`, if it is a PDF without details, with
     /// `reader`, and keeps them; a PDF `reader` refuses keeps none. Returns
     /// whether they were kept. An `id` that isn't a Document ID is `InvalidInput`.
-    pub fn read_details(&self, id: &str, reader: &dyn PdfReader) -> io::Result<bool> {
+    pub(crate) fn read_details(&self, id: &str, reader: &dyn PdfReader) -> io::Result<bool> {
         self.folder(id)?;
         let Some(entry) = self.entry(id) else {
             return Ok(false);
@@ -819,6 +851,19 @@ impl Library {
                 Ok(meta) => Ok(meta.is_file().then_some(path)),
             }
         })
+    }
+
+    /// Whether the File of `entry` is stored, asking the file system if `files`
+    /// says so: a File lost meanwhile is forgotten, so Sync downloads it again.
+    fn file_is_stored(&self, entry: &Entry) -> io::Result<bool> {
+        let Some(path) = self.file_path(entry)? else {
+            return Ok(false);
+        };
+        let stored = path.is_file();
+        if !stored {
+            self.files.set(&entry.id, &entry.imports, None);
+        }
+        Ok(stored)
     }
 
     /// Keeps `file`, where the File of Document `id` is now, for the Imports
@@ -1467,6 +1512,15 @@ mod tests {
         import_with(library, source, &one_page)
     }
 
+    /// Returns once the clock has moved on from `now()`, so the next Import is
+    /// newer than the last.
+    fn a_millisecond_later() {
+        let start = now();
+        while now() == start {
+            std::hint::spin_loop();
+        }
+    }
+
     /// A reader that reads every PDF as `details`.
     fn reading(details: Details) -> impl PdfReader {
         move |_: &Path| -> Result<Details, PdfProblem> { Ok(details.clone()) }
@@ -1625,7 +1679,7 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
         let first = import_new(&library, &scratch.file("a.pdf", b"%PDF-first"));
-        sleep(Duration::from_millis(20));
+        a_millisecond_later();
         let second = import_new(&library, &scratch.file("b.pdf", b"%PDF-second"));
 
         assert_eq!(library.documents().unwrap(), vec![second, first]);
@@ -2291,7 +2345,7 @@ mod tests {
         let scratch = Scratch::new();
         let library = scratch.library();
         let old = import_new(&library, &scratch.file("old.pdf", b"%PDF-old"));
-        sleep(Duration::from_millis(20));
+        a_millisecond_later();
         let new = import_new(&library, &scratch.file("new.pdf", b"%PDF-new"));
         let epub = import_new(&library, &scratch.file("book.epub", &emma().bytes()));
         let kept = import_new(&library, &scratch.file("kept.pdf", b"%PDF-kept"));
@@ -2421,12 +2475,11 @@ mod tests {
         );
 
         wait_until(|| reads.count() >= 17);
-        // A pass runs only when it is due, so the PDFs are never read again.
-        sleep(Duration::from_millis(600));
+        // No Sync changed the Documents, so no pass runs again.
+        drop(pass);
         assert_eq!(reads.count(), 17);
         // 16 reads are one telling, the leftover read another.
         assert!(told.count() >= 2);
-        drop(pass);
     }
 
     #[test]
@@ -2455,7 +2508,7 @@ mod tests {
 
         // A later pass, the way a Sync step that changed the Documents causes
         // one, tries the PDF again.
-        library.sync_changes.fetch_add(1, Relaxed);
+        library.count_sync_change();
         wait_until(|| {
             library.document(&document.id).unwrap().unwrap().details == Some(moby.clone())
         });

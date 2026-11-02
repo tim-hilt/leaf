@@ -422,13 +422,14 @@ impl DocumentText {
         self.0.length()
     }
 
-    /// The chunk at `index`; none beyond the chunks.
+    /// The chunk at `index`; none beyond the chunks. Reads every chunk of a
+    /// PDF, as `length` does.
     pub fn chunk(&self, index: u32) -> Option<TextChunk> {
         self.0.chunk(index).map(Into::into)
     }
 
     /// The chunk holding the character at `offset` in the whole text; none
-    /// without chunks.
+    /// without chunks. Reads every chunk of a PDF, as `length` does.
     pub fn chunk_containing(&self, offset: u64) -> Option<TextChunk> {
         self.0.chunk_containing(offset).map(Into::into)
     }

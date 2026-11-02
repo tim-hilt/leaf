@@ -172,9 +172,6 @@ impl Library {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let everything = std::mem::take(&mut self.dirty().everything);
-        // A File may have been lost since the last step. Sync checks each one it
-        // needs, see `files`, so a lost File is downloaded again.
-        self.files.clear();
         let mut pending = Pending::default();
         let result = storage.list(REMOTE_DIR).and_then(|listing| {
             self.merge_documents(storage, &listing, &mut exchanges, everything, &mut pending)?;
@@ -220,7 +217,7 @@ impl Library {
     ) -> io::Result<()> {
         if self.exchange_library(storage, listing, exchanges, pending)? {
             // Removes and names of other Devices.
-            self.sync_changes.fetch_add(1, Relaxed);
+            self.count_sync_change();
             self.reconcile()?;
         }
         self.exchange_preferences(storage, listing, exchanges, everything, pending)?;
@@ -346,7 +343,7 @@ impl Library {
             && preferences::highlight_colors(before.as_deref())
                 != preferences::highlight_colors(Some(&after))
         {
-            self.sync_changes.fetch_add(1, Relaxed);
+            self.count_sync_change();
         }
         Ok(())
     }
@@ -475,7 +472,7 @@ impl Library {
         // The File may not be here yet.
         fs::create_dir_all(self.root.join(&entry.id))?;
         self.write_progress(entry, &progress)?;
-        self.sync_changes.fetch_add(1, Relaxed);
+        self.count_sync_change();
         Ok(())
     }
 
@@ -653,7 +650,7 @@ impl Library {
         for entry in self.entries() {
             if remote.contains(&entry.id)
                 && is_file_name(&entry.name)
-                && self.file_path(&entry)?.is_none()
+                && !self.file_is_stored(&entry)?
             {
                 missing.push((self.last_read(&entry), entry));
             }
@@ -706,7 +703,7 @@ impl Library {
             };
             let stored = details.map_or(Ok(()), |d| self.set_details(&entry.id, &d));
             // After the details, so a caller that sees the change finds them.
-            self.sync_changes.fetch_add(1, Relaxed);
+            self.count_sync_change();
             stored?;
         }
         Ok(())
@@ -1720,9 +1717,12 @@ mod tests {
         let other = a.import("other.pdf", b"other bytes");
         a.sync();
         b.sync();
-        wait_until(|| b.document(&imported.id).details == Some(pass_details("Paper")));
+        // Each Sync change wakes the pass, so `other` may be read by a later one.
+        wait_until(|| {
+            b.document(&imported.id).details == Some(pass_details("Paper"))
+                && b.document(&other.id).details.is_some()
+        });
         assert!(told.count() >= 1);
-        assert!(b.document(&other.id).details.is_some());
         drop(pass);
     }
 
