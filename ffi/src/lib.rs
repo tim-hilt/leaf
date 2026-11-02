@@ -588,15 +588,31 @@ impl TableOfContents {
 
 /// Where Back returns to and where a Document Search session started, for one
 /// document view, see `leaf_core::jump::JumpHistory`. Behind a lock, so each
-/// call is cheap enough for every scroll.
+/// call is cheap enough for every scroll, and the observer is told about Back
+/// place changes outside it.
 #[derive(uniffi::Object)]
-pub struct JumpHistory(Mutex<jump::JumpHistory>);
+pub struct JumpHistory {
+    history: Mutex<jump::JumpHistory>,
+    observer: Arc<dyn BackObserver>,
+}
+
+/// Told when the FFI JumpHistory's Back place changes. Implemented by the
+/// client; called from the thread that changed it, which is the main thread
+/// for the document views.
+#[uniffi::export(with_foreign)]
+pub trait BackObserver: Send + Sync {
+    /// The Back place now; none when it went.
+    fn back_place_changed(&self, place: Option<Place>);
+}
 
 #[uniffi::export]
 impl JumpHistory {
     #[uniffi::constructor]
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self(Mutex::default()))
+    pub fn new(observer: Arc<dyn BackObserver>) -> Arc<Self> {
+        Arc::new(Self {
+            history: Mutex::default(),
+            observer,
+        })
     }
 
     /// The top of the viewport before the latest Jump; none before any and after Back.
@@ -607,37 +623,52 @@ impl JumpHistory {
     /// Jump: remembers `from`, the top of the viewport, for Back. Returns false,
     /// changing nothing, if there is no top or `place` is already at it.
     pub fn jump(&self, place: Place, from: Option<Place>) -> bool {
-        self.history().jump(place, from)
+        self.change(|h| h.jump(place, from))
     }
 
     /// Back: the Back place, which is forgotten; none without one.
     pub fn go_back(&self) -> Option<Place> {
-        self.history().go_back()
+        self.change(|h| h.go_back())
     }
 
     /// Starts a Document Search session at `at`, the top of the viewport.
     pub fn begin_search_session(&self, at: Option<Place>) {
-        self.history().begin_search_session(at);
+        self.change(|h| h.begin_search_session(at))
     }
 
     pub fn end_search_session(&self) {
-        self.history().end_search_session();
+        self.change(|h| h.end_search_session())
     }
 
     /// A Document Search match was revealed by moving the viewport.
     pub fn did_reveal(&self) {
-        self.history().did_reveal();
+        self.change(|h| h.did_reveal())
     }
 
     /// The viewport moved to `to`, the top of it.
     pub fn did_scroll(&self, to: Place) {
-        self.history().did_scroll(to);
+        self.change(|h| h.did_scroll(to))
     }
 }
 
 impl JumpHistory {
     fn history(&self) -> std::sync::MutexGuard<'_, jump::JumpHistory> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.history.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Applies `change` under the lock and tells the observer when the Back
+    /// place moved, after releasing it.
+    fn change<T>(&self, change: impl FnOnce(&mut jump::JumpHistory) -> T) -> T {
+        let (result, was, is) = {
+            let mut history = self.history();
+            let was = history.back_place();
+            let result = change(&mut history);
+            (result, was, history.back_place())
+        };
+        if is != was {
+            self.observer.back_place_changed(is);
+        }
+        result
     }
 }
 
@@ -1332,6 +1363,73 @@ mod tests {
         assert_eq!(text.chunk(1).unwrap().length, 5);
         assert_eq!(text.chunk_containing(5).unwrap().index, 1);
         assert_eq!(session.number_at(5), Some(1));
+    }
+
+    /// The Back places that the FFI JumpHistory reports through `BackObserver`.
+    #[derive(Default)]
+    struct BackPlaces(Mutex<Vec<Option<Place>>>);
+
+    impl BackObserver for BackPlaces {
+        fn back_place_changed(&self, place: Option<Place>) {
+            self.0.lock().unwrap().push(place);
+        }
+    }
+
+    impl BackPlaces {
+        fn places(&self) -> Vec<Option<Place>> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    fn pdf(page_index: u32, y: f64) -> Place {
+        Place::Pdf {
+            page_index,
+            x: 0.0,
+            y,
+        }
+    }
+
+    #[test]
+    fn a_jump_reports_the_back_place_when_it_appears_and_back_when_it_goes() {
+        let places = Arc::new(BackPlaces::default());
+        let history = JumpHistory::new(places.clone());
+        // A Jump that changes nothing reports nothing.
+        history.jump(pdf(10, 700.0), None);
+        history.jump(pdf(10, 700.0), Some(pdf(10, 700.0)));
+        assert!(places.places().is_empty());
+
+        history.jump(pdf(10, 700.0), Some(pdf(1, 700.0)));
+        assert_eq!(places.places(), [Some(pdf(1, 700.0))]);
+        assert_eq!(history.go_back(), Some(pdf(1, 700.0)));
+        assert_eq!(places.places(), [Some(pdf(1, 700.0)), None]);
+        // A Back without a Back place reports nothing.
+        history.go_back();
+        assert_eq!(places.places().len(), 2);
+    }
+
+    #[test]
+    fn a_scroll_that_ends_back_reports_it_going() {
+        let places = Arc::new(BackPlaces::default());
+        let history = JumpHistory::new(places.clone());
+        history.jump(pdf(10, 700.0), Some(pdf(1, 700.0)));
+        history.did_scroll(pdf(11, 700.0));
+        assert_eq!(places.places(), [Some(pdf(1, 700.0))]);
+        history.did_scroll(pdf(12, 700.0));
+        assert_eq!(places.places(), [Some(pdf(1, 700.0)), None]);
+    }
+
+    #[test]
+    fn a_search_session_reports_its_back_place_once() {
+        let places = Arc::new(BackPlaces::default());
+        let history = JumpHistory::new(places.clone());
+        history.begin_search_session(Some(pdf(1, 700.0)));
+        history.did_reveal();
+        assert_eq!(places.places(), [Some(pdf(1, 700.0))]);
+        // Reveals, scrolls and ending the session leave the Back place alone.
+        history.did_reveal();
+        history.did_scroll(pdf(20, 700.0));
+        history.end_search_session();
+        assert_eq!(places.places().len(), 1);
     }
 
     /// Counts the Sync steps that ended.

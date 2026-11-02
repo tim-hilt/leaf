@@ -128,19 +128,9 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// The Table of Contents, which names the Back place.
     var contents: TableOfContents
 
-    /// Back and Document Search session places, kept in the core.
-    private let history = JumpHistory()
-
-    /// Makes a change to `history`, and reports the Back place as `onBackChange` if it moved.
-    private func changeHistory<T>(_ change: (JumpHistory) -> T) -> T {
-        let before = history.backPlace()
-        defer {
-            if history.backPlace() != before {
-                callbacks.onBackChange(history.backPlace().map(contents.backTarget(at:)))
-            }
-        }
-        return change(history)
-    }
+    /// Back and Document Search session places, kept in the core, which tells
+    /// `backChange` when the Back place changes.
+    private let history: JumpHistory
 
     /// Where Back returns to: the top of the viewport before the latest Jump.
     /// Nil before any Jump and after Back.
@@ -224,6 +214,8 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         pageTextSize = textSize
         pageAppearance = appearance
         toldAppearance = appearance
+        let backChange = BackChange()
+        self.history = JumpHistory(observer: backChange)
         let spine = book.spine()
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(
@@ -240,6 +232,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
                     lengths: book.textLengths(), start: start, textSize: textSize, appearance: pageAppearance),
                 injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .defaultClient))
         super.init(frame: .zero, configuration: configuration)
+        backChange.view = self
         messages.view = self
         navigationDelegate = self
         uiDelegate = self
@@ -276,7 +269,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
                 view.top = .epub(spineIndex: position[0], offset: position[1])
                 if view.isOpen {
                     if view.scrollsInFlight == 0 {
-                        view.changeHistory { $0.didScroll(to: .epub(spineIndex: position[0], offset: position[1])) }
+                        view.history.didScroll(to: .epub(spineIndex: position[0], offset: position[1]))
                     }
                     view.callbacks.onScroll()
                 }
@@ -315,14 +308,20 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     /// Jump: goes to `place`, remembering the top of the viewport for `goBack()` in
     /// place of any earlier Back place. Does nothing if `place` is already at the top.
     func jump(to place: Place) {
-        guard changeHistory({ $0.jump(place: place, from: top) }) else { return }
+        guard history.jump(place: place, from: top) else { return }
         go(to: place)
     }
 
     /// Back: returns to the Back place and forgets it. Does nothing without one.
     func goBack() {
-        guard let place = changeHistory({ $0.goBack() }) else { return }
+        guard let place = history.goBack() else { return }
         go(to: place)
+    }
+
+    /// The Back place changed in the core's JumpHistory: reports it by its
+    /// Chapter's name in the Table of Contents.
+    func backDidChange(to place: Place?) {
+        callbacks.onBackChange(place.map(contents.backTarget(at:)))
     }
 
     /// Scrolls `place` to the top of the viewport, loading its Chapter first; the page then
@@ -384,7 +383,7 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
         let script = "return await leaf.reveal([\(match.chunkIndex), \(match.range.location), \(match.range.length)])"
         Task {
             let moved = try? await callAsyncJavaScript(script, in: nil, contentWorld: .defaultClient) as? Bool
-            if moved == true { changeHistory { $0.didReveal() } }
+            if moved == true { history.didReveal() }
         }
     }
 

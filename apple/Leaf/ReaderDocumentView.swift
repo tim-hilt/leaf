@@ -14,6 +14,10 @@ protocol ReaderDocumentView: AnyObject {
     /// Back: returns to where the latest Jump started; nothing without one.
     func goBack()
 
+    /// The Back place changed in the core's JumpHistory: reports it, named for
+    /// the Format.
+    func backDidChange(to place: Place?)
+
     /// Zooms in or out, or back to fit-to-width, keeping the place.
     func zoomIn()
     func zoomOut()
@@ -66,6 +70,18 @@ struct ReaderCallbacks {
     var onTextSizeChange: (CGFloat) -> Void = { _ in }
     /// Called when the Back place appears, changes or goes; nil when there is none.
     var onBackChange: (BackTarget?) -> Void = { _ in }
+}
+
+/// Tells the document view when the core's JumpHistory changes the Back place,
+/// see `backDidChange(to:)`. The view makes one at its construction and gives it
+/// to the JumpHistory, which calls it on the thread that changed the Back place:
+/// the main thread, as only the views call the JumpHistory.
+final class BackChange: BackObserver, @unchecked Sendable {
+    weak var view: (any ReaderDocumentView)?
+
+    func backPlaceChanged(place: Place?) {
+        MainActor.assumeIsolated { view?.backDidChange(to: place) }
+    }
 }
 
 /// How the Back capsule names the place it returns to: "Back to p. 42", or
