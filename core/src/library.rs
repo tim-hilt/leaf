@@ -26,6 +26,9 @@
 //! a storage, see `sync`. What this Device knows of the exchange of each
 //! document is kept in a cursor file: `LIBRARY_CURSOR`, `PREFERENCES_CURSOR`
 //! and, next to a state, `cursor_name`.
+//!
+//! A `DetailsPass` reads in the background the details PDFs lack, one PDF at
+//! a time, telling the Gallery when to list again.
 
 use crate::chunks::Cursor;
 use crate::details::{self, Details, Format, Size};
@@ -45,9 +48,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::sync::{Mutex, MutexGuard, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::thread::{self, JoinHandle, sleep};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod sync;
 
@@ -202,10 +206,122 @@ impl From<PdfProblem> for ImportError {
 
 /// Reads what a PDF says about itself: the client's PDF engine does, as the
 /// core never parses PDFs (ADR-0003). The core calls it with the path of the
-/// File, before the File is copied and when a Document lacks its details.
-pub trait PdfReader {
+/// File, before the File is copied and when a Document lacks its details, from
+/// the thread of the Import or of the details pass, not the main thread.
+pub trait PdfReader: Send + Sync {
     /// The details of the PDF at `path`, with `Size::Pages`; or why it is refused.
     fn read(&self, path: &Path) -> Result<Details, PdfProblem>;
+}
+
+/// Told what the details pass did, from its thread, not the main thread.
+pub trait GalleryObserver: Send + Sync {
+    /// The pass read details: the Gallery should list the Library again.
+    fn gallery_changed(&self);
+}
+
+/// The fewest details one pass reads between two calls to `GalleryObserver`,
+/// so a burst of reads tells the Gallery once, not once per PDF.
+const BATCH: usize = 16;
+/// The longest a pass reads without telling the Gallery, so the first reads
+/// show while a slow read holds up the rest of the batch.
+const BATCH_SPAN: Duration = Duration::from_millis(500);
+/// How often the details pass looks whether a Sync has changed the Documents
+/// since the last pass began. `sync_changes` is an atomic, so the wait costs
+/// only latency, never a missed change.
+const SYNC_POLL: Duration = Duration::from_millis(250);
+
+/// The background pass that reads missing details, started by
+/// `DetailsPass::start`. Dropping it stops the pass once the PDF it is
+/// reading is done.
+pub struct DetailsPass {
+    cancelled: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl DetailsPass {
+    /// Starts the pass on a background thread: it reads the details the
+    /// Library lacks for PDFs, one PDF at a time, and tells `observer` when
+    /// the Gallery should list again — coalesced, so a burst of reads lists
+    /// once. A pass runs at once, then again whenever a `sync` has changed
+    /// the Documents, so Documents another Device sent get their details too.
+    /// One pass runs at a time, so no PDF is read twice. A PDF `reader`
+    /// refuses is skipped, and a later pass tries it again. Details are never
+    /// synced, so they stay on this Device.
+    pub fn start(
+        library: Arc<Library>,
+        reader: Arc<dyn PdfReader>,
+        observer: Arc<dyn GalleryObserver>,
+    ) -> Self {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let thread = thread::Builder::new()
+            .name("details".into())
+            .spawn({
+                let cancelled = cancelled.clone();
+                move || run_passes(&library, reader.as_ref(), observer.as_ref(), &cancelled)
+            })
+            .expect("spawn the details pass");
+        Self {
+            cancelled,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for DetailsPass {
+    /// Stops the thread, waiting for the PDF it may be reading.
+    fn drop(&mut self) {
+        self.cancelled.store(true, Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Runs passes until cancelled: one at once, then again whenever a `sync`
+/// has changed the Documents since the pass before began.
+fn run_passes(
+    library: &Library,
+    reader: &dyn PdfReader,
+    observer: &dyn GalleryObserver,
+    cancelled: &AtomicBool,
+) {
+    let mut seen = library.sync_changes();
+    let mut first = true;
+    loop {
+        if cancelled.load(Relaxed) {
+            return;
+        }
+        if first || library.sync_changes() != seen {
+            // Counted before the pass, so a sync during it causes another.
+            seen = library.sync_changes();
+            first = false;
+            run_pass(library, reader, observer);
+            continue;
+        }
+        sleep(SYNC_POLL);
+    }
+}
+
+/// One pass: reads the PDFs without details, newest Import first, and tells
+/// `observer` when the Gallery should list again — at most once per `BATCH`
+/// details read or `BATCH_SPAN` elapsed, and once more after the last read.
+/// The Gallery lists every Document again, so not one PDF at a time.
+fn run_pass(library: &Library, reader: &dyn PdfReader, observer: &dyn GalleryObserver) {
+    let mut read = 0;
+    let mut told = Instant::now();
+    for id in library.pdfs_without_details() {
+        if library.read_details(&id, reader).unwrap_or(false) {
+            read += 1;
+            if read >= BATCH || told.elapsed() >= BATCH_SPAN {
+                observer.gallery_changed();
+                read = 0;
+                told = Instant::now();
+            }
+        }
+    }
+    if read > 0 {
+        observer.gallery_changed();
+    }
 }
 
 /// What an Import did.
@@ -600,7 +716,7 @@ impl Library {
     }
 
     /// The IDs of the Documents whose File is a PDF without details, newest
-    /// Import first: those `read_details` reads.
+    /// Import first: those the details pass reads.
     pub fn pdfs_without_details(&self) -> Vec<String> {
         let mut entries = self.entries();
         sort_newest_first(&mut entries);
@@ -1285,7 +1401,7 @@ pub(crate) mod fixtures {
     }
 
     /// A closure is a reader: it reads each PDF as the closure says.
-    impl<F: Fn(&Path) -> Result<Details, PdfProblem>> PdfReader for F {
+    impl<F: Fn(&Path) -> Result<Details, PdfProblem> + Send + Sync> PdfReader for F {
         fn read(&self, path: &Path) -> Result<Details, PdfProblem> {
             self(path)
         }
@@ -1298,10 +1414,11 @@ mod tests {
     use super::*;
     use crate::markup::{EpubPosition, PageRects, Rect};
     use automerge::{ActorId, AutoCommit};
-    use std::cell::Cell;
     use std::fs;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
     use std::thread::sleep;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// A fresh folder under the system temp dir, removed on drop.
     struct Scratch(PathBuf);
@@ -1361,6 +1478,75 @@ mod tests {
     /// A reader that refuses every PDF for `problem`.
     fn refusing(problem: PdfProblem) -> impl PdfReader {
         move |_: &Path| -> Result<Details, PdfProblem> { Err(problem) }
+    }
+
+    /// A reader that refuses the first read and then reads every PDF as
+    /// `details`, the way a pass finds a locked PDF that a later one opens.
+    #[derive(Clone)]
+    struct RefusesOnce(Arc<(Details, AtomicUsize)>);
+
+    impl RefusesOnce {
+        fn new(details: Details) -> Self {
+            Self(Arc::new((details, AtomicUsize::new(0))))
+        }
+
+        /// How many PDFs the reader was called for.
+        fn count(&self) -> usize {
+            self.0.1.load(Relaxed)
+        }
+    }
+
+    impl PdfReader for RefusesOnce {
+        fn read(&self, _: &Path) -> Result<Details, PdfProblem> {
+            if self.0.1.fetch_add(1, Relaxed) == 0 {
+                return Err(PdfProblem::Locked);
+            }
+            Ok(self.0.0.clone())
+        }
+    }
+
+    /// A reader that reads every PDF as one page without a title.
+    #[derive(Clone, Default)]
+    struct Reads(Arc<AtomicUsize>);
+
+    impl Reads {
+        /// How many PDFs the reader was called for.
+        fn count(&self) -> usize {
+            self.0.load(Relaxed)
+        }
+    }
+
+    impl PdfReader for Reads {
+        fn read(&self, _: &Path) -> Result<Details, PdfProblem> {
+            self.0.fetch_add(1, Relaxed);
+            Ok(details(None, None, 1))
+        }
+    }
+
+    /// Counts the calls to `gallery_changed`.
+    #[derive(Clone, Default)]
+    struct Gallery(Arc<AtomicUsize>);
+
+    impl Gallery {
+        /// How often the Gallery was told.
+        fn count(&self) -> usize {
+            self.0.load(Relaxed)
+        }
+    }
+
+    impl GalleryObserver for Gallery {
+        fn gallery_changed(&self) {
+            self.0.fetch_add(1, Relaxed);
+        }
+    }
+
+    /// Waits up to 5 s for `condition`, which a background thread makes true.
+    fn wait_until(condition: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !condition() {
+            assert!(Instant::now() < deadline, "condition never became true");
+            sleep(Duration::from_millis(10));
+        }
     }
 
     /// How many entries of `folder` aren't hidden: of a Library, its Documents;
@@ -2054,16 +2240,16 @@ mod tests {
         let library = scratch.library();
         let source = scratch.file("a.pdf", PDF);
         let stored = scratch.0.join("library");
-        let read = Cell::new(false);
+        let read = AtomicBool::new(false);
         let reader = |path: &Path| -> Result<Details, PdfProblem> {
             assert_eq!(path, source.as_path());
             assert_eq!(visible_entries(&stored), 0);
-            read.set(true);
+            read.store(true, Relaxed);
             Ok(details(None, None, 1))
         };
 
         import_with(&library, &source, &reader);
-        assert!(read.get());
+        assert!(read.load(Relaxed));
     }
 
     #[test]
@@ -2190,6 +2376,92 @@ mod tests {
         assert!(!library.read_details(PDF_SHA256, &read).unwrap());
         assert!(library.read_details("../x", &read).is_err());
         assert_eq!(library.document(&epub.id).unwrap().unwrap().details, None);
+    }
+
+    #[test]
+    fn the_pass_reads_the_details_of_a_pdf_that_lacks_them_and_tells_the_gallery() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
+        let library = Arc::new(forget_details(&scratch, library, &[&document.id]));
+        let moby = details(Some("Moby-Dick"), Some("Melville"), 635);
+        let told = Gallery::default();
+
+        let pass = DetailsPass::start(
+            library.clone(),
+            Arc::new(reading(moby.clone())),
+            Arc::new(told.clone()),
+        );
+
+        wait_until(|| {
+            library.document(&document.id).unwrap().unwrap().details == Some(moby.clone())
+        });
+        assert!(told.count() >= 1);
+        drop(pass);
+    }
+
+    #[test]
+    fn the_pass_tells_the_gallery_once_per_batch_not_once_per_pdf_and_reads_none_twice() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let ids: Vec<String> = (0..17)
+            .map(|n| {
+                let bytes = [b"%PDF-", n.to_string().as_bytes()].concat();
+                import_new(&library, &scratch.file(&format!("{n}.pdf"), &bytes)).id
+            })
+            .collect();
+        let ids: Vec<&String> = ids.iter().collect();
+        let library = Arc::new(forget_details(&scratch, library, &ids));
+        let reads = Reads::default();
+        let told = Gallery::default();
+
+        let pass = DetailsPass::start(
+            library.clone(),
+            Arc::new(reads.clone()),
+            Arc::new(told.clone()),
+        );
+
+        wait_until(|| reads.count() >= 17);
+        // A pass runs only when it is due, so the PDFs are never read again.
+        sleep(Duration::from_millis(600));
+        assert_eq!(reads.count(), 17);
+        // 16 reads are one telling, the leftover read another.
+        assert!(told.count() >= 2);
+        drop(pass);
+    }
+
+    #[test]
+    fn the_pass_tells_the_gallery_nothing_for_a_pdf_it_refuses_and_retries_it_later() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let document = import_new(&library, &scratch.file("a.pdf", PDF));
+        let library = Arc::new(forget_details(&scratch, library, &[&document.id]));
+        let moby = details(Some("Moby-Dick"), None, 1);
+        let reader = RefusesOnce::new(moby.clone());
+        let told = Gallery::default();
+
+        let pass = DetailsPass::start(
+            library.clone(),
+            Arc::new(reader.clone()),
+            Arc::new(told.clone()),
+        );
+        wait_until(|| reader.count() >= 1);
+
+        // Nothing was kept, so the Gallery is not told.
+        assert_eq!(
+            library.document(&document.id).unwrap().unwrap().details,
+            None
+        );
+        assert_eq!(told.count(), 0);
+
+        // A later pass, the way a Sync step that changed the Documents causes
+        // one, tries the PDF again.
+        library.sync_changes.fetch_add(1, Relaxed);
+        wait_until(|| {
+            library.document(&document.id).unwrap().unwrap().details == Some(moby.clone())
+        });
+        assert!(told.count() >= 1);
+        drop(pass);
     }
 
     #[test]

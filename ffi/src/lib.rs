@@ -11,7 +11,7 @@ use leaf_core::document_text::{self, Chunk, Found};
 use leaf_core::epub;
 use leaf_core::google_drive::GoogleDriveStorage;
 use leaf_core::jump;
-use leaf_core::library::Document as CoreDocument;
+use leaf_core::library::{DetailsPass, Document as CoreDocument};
 use leaf_core::library::{ImportError, ImportResult, PdfProblem};
 use leaf_core::listing::{self, Sort, SortKey};
 use leaf_core::markup::{Anchor, EpubPosition, Highlight, Markup, PageNote, PageRects, Rect, Rgb};
@@ -702,11 +702,19 @@ pub struct PdfDetails {
 
 /// Reads what a PDF says about itself, with the client's PDF engine (ADR-0003).
 /// Implemented by the client and called by the core from the thread of the
-/// Import or of `read_details`, not the main thread.
+/// Import or of the details pass, not the main thread.
 #[uniffi::export(with_foreign)]
 pub trait PdfReader: Send + Sync {
     /// The details of the PDF at `path`, or why it is refused.
     fn read(&self, path: String) -> Result<PdfDetails, PdfProblem>;
+}
+
+/// Told when the Gallery should list the Library again. Implemented by the
+/// client and called from the details pass's thread, not the main thread.
+#[uniffi::export(with_foreign)]
+pub trait GalleryObserver: Send + Sync {
+    /// The pass read details: the Gallery should list the Library again.
+    fn gallery_changed(&self);
 }
 
 /// Adapts the client's reader to the core's.
@@ -720,6 +728,15 @@ impl leaf_core::library::PdfReader for Reader {
             author: pdf.author,
             size: Size::Pages(pdf.page_count),
         })
+    }
+}
+
+/// Adapts the client's observer to the core's.
+struct Gallery(Arc<dyn GalleryObserver>);
+
+impl leaf_core::library::GalleryObserver for Gallery {
+    fn gallery_changed(&self) {
+        self.0.gallery_changed()
     }
 }
 
@@ -974,6 +991,9 @@ impl sync_loop::Observer for Observer {
 pub struct Library {
     core: Arc<leaf_core::library::Library>,
     sync: Mutex<Option<SyncLoop>>,
+    /// The pass that reads missing details on a background thread, see
+    /// `read_missing_details`.
+    details_pass: Mutex<Option<DetailsPass>>,
     /// Whether the Device has a network, see `set_online`. Changed only while
     /// `sync` is locked, so a starting loop can't miss a change.
     online: AtomicBool,
@@ -1030,6 +1050,7 @@ impl Library {
         Ok(Arc::new(Self {
             core: Arc::new(leaf_core::library::Library::open(root)?),
             sync: Mutex::new(None),
+            details_pass: Mutex::new(None),
             online: AtomicBool::new(true),
         }))
     }
@@ -1123,21 +1144,25 @@ impl Library {
         self.written(result)
     }
 
-    /// The IDs of the PDFs in the Library that have no details yet, newest
-    /// Import first: those `read_details` reads.
-    pub fn pdfs_without_details(&self) -> Vec<String> {
-        self.core.pdfs_without_details()
-    }
-
-    /// Reads the details of Document `id` with `reader`, if it is a PDF without
-    /// them, and keeps them. Returns whether they were kept. Details are kept
-    /// on this Device only, not synced.
-    pub fn read_details(
+    /// Reads the details of the PDFs that lack them on a background thread,
+    /// one at a time, and tells `observer` when the Gallery should list again;
+    /// the core coalesces the callbacks. The pass runs again after each Sync
+    /// step that changed the Documents, so Documents another Device sent get
+    /// their details here, and a PDF `reader` refuses is retried by a later
+    /// pass. Details are kept on this Device only, not synced.
+    pub fn read_missing_details(
         &self,
-        id: String,
         reader: Arc<dyn PdfReader>,
-    ) -> Result<bool, LibraryError> {
-        Ok(self.core.read_details(&id, &Reader(reader))?)
+        observer: Arc<dyn GalleryObserver>,
+    ) {
+        *self
+            .details_pass
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(DetailsPass::start(
+            self.core.clone(),
+            Arc::new(Reader(reader)),
+            Arc::new(Gallery(observer)),
+        ));
     }
 
     pub fn remove(&self, id: String) -> Result<(), LibraryError> {

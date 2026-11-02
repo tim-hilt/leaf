@@ -10,7 +10,7 @@ import Synchronization
 /// compare `id`s to tell whether two values are the same Document.
 ///
 /// Title, Author and page count are read from a PDF at Import or by the
-/// Library's background pass; the core reads an EPUB's at Import.
+/// core's background pass; the core reads an EPUB's at Import.
 /// Documents don't change their Format.
 struct LibraryDocument: Identifiable, Hashable {
     fileprivate let stored: LeafCore.Document
@@ -190,8 +190,6 @@ final class LibraryModel {
     /// Where the system hands over temporary copies of Files; they are deleted
     /// after their Import. Nil where the system hands over the Files themselves.
     @ObservationIgnored private let inbox: URL?
-    /// The latest background pass reading details; the next one waits for it.
-    @ObservationIgnored private var lastDetailsPass: Task<Void, Never>?
     /// The latest `importFiles` call; the next one waits for it.
     @ObservationIgnored private var lastImportFiles: Task<Void, Never>?
     /// The latest access to a Document's state in the core; the next one waits for it.
@@ -205,9 +203,9 @@ final class LibraryModel {
 
     /// Shows the Library of `core`, with Covers in `coversFolder` and the sort
     /// choice in `defaults`. Documents whose details the core lacks are listed
-    /// by file name; a low-priority background pass then reads them from the
-    /// PDFs, one at a time. Files in `inbox` are temporary copies, deleted
-    /// after `importFiles`.
+    /// by file name; the core's background pass then reads them from the PDFs,
+    /// one at a time, and tells this model to list again as they arrive. Files
+    /// in `inbox` are temporary copies, deleted after `importFiles`.
     init(core: LeafCore.Library, coversFolder: URL, defaults: UserDefaults, inbox: URL? = nil) {
         self.core = core
         self.coversFolder = coversFolder
@@ -219,7 +217,13 @@ final class LibraryModel {
         defaultHighlightColor = stored.defaultColor
         // Listed at once, so the Gallery opens in order rather than filling in.
         listing = LibraryListing(core, sort: sort.core)
-        readMissingDetails()
+        // The core reads the details of PDFs that lack them on a background
+        // thread; the Gallery lists again as they arrive.
+        core.readMissingDetails(
+            reader: PDFKitReader(),
+            observer: GalleryRelay { [weak self] in
+                Task { await self?.relist { _ in } }
+            })
     }
 
     /// How often Sync changed the Markup of `document`; it changes whenever
@@ -556,47 +560,27 @@ final class LibraryModel {
         listing = listed
         return result
     }
+}
 
-    /// Reads the details the core lacks for PDFs, one at a time at background
-    /// priority, listing the Library again after each batch. Passes run one
-    /// after another, so no PDF is read twice. A PDF that can't be read is
-    /// skipped, and the next pass lists it again.
-    private func readMissingDetails() {
-        let previous = lastDetailsPass
-        let core = core
-        lastDetailsPass = Task(priority: .utility) { [weak self] in
-            await previous?.value
-            let reader = PDFKitReader()
-            let ids = await Task.detached(priority: .utility) { core.pdfsWithoutDetails() }.value
-            // Each publish lists every Document again, so not one by one.
-            var read = 0
-            var published = ContinuousClock.now
-            for id in ids {
-                let kept = await Task.detached(priority: .utility) {
-                    (try? core.readDetails(id: id, reader: reader)) ?? false
-                }.value
-                guard let self else { return }
-                if kept { read += 1 }
-                if read > 0, read >= 16 || published.duration(to: .now) > .milliseconds(500) {
-                    await relist { _ in }
-                    read = 0
-                    published = .now
-                }
-            }
-            if read > 0 { await self?.relist { _ in } }
-        }
+/// Forwards the core's details pass, reported on its thread, to the main
+/// actor: the Gallery lists again as the core reads details.
+private final class GalleryRelay: GalleryObserver {
+    private let onChanged: @Sendable @MainActor () -> Void
+
+    init(_ onChanged: @escaping @Sendable @MainActor () -> Void) { self.onChanged = onChanged }
+
+    func galleryChanged() {
+        Task { @MainActor [onChanged] in onChanged() }
     }
 }
 
 /// Cloud Backing reports what Sync changed here, see `SyncedLibrary`.
 extension LibraryModel: SyncedLibrary {
-    /// Lists the Documents again and reads the details of new ones, and reads the
-    /// Highlight Colors again, as Sync may have changed them.
+    /// Lists the Documents again, as Sync may have changed them, and reads the
+    /// Highlight Colors again. The core's details pass runs by itself after a
+    /// Sync that changed the Documents.
     func libraryChanged() {
-        Task {
-            await relist { _ in }
-            readMissingDetails()
-        }
+        Task { await relist { _ in } }
         Task { await reloadHighlightColors() }
     }
 

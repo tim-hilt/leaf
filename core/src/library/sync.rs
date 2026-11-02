@@ -745,9 +745,11 @@ mod tests {
     use crate::markup::{Anchor, EpubPosition, Highlight, PageRects, Rgb};
     use crate::storage::DirStorage;
     use automerge::transaction::Transactable;
-    use std::sync::atomic::{AtomicU32, AtomicUsize};
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed};
     use std::thread::sleep;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// Devices sharing one cloud: each has its own Library folder, and all
     /// sync with the one storage directory.
@@ -780,7 +782,7 @@ mod tests {
             self.next_device += 1;
             let home = self.dir.join(format!("device-{}", self.next_device));
             Device {
-                library: Library::open(home.join("library")).unwrap(),
+                library: Arc::new(Library::open(home.join("library")).unwrap()),
                 home,
                 storage: self.storage(),
             }
@@ -817,7 +819,7 @@ mod tests {
     }
 
     struct Device {
-        library: Library,
+        library: Arc<Library>,
         home: PathBuf,
         storage: DirStorage,
     }
@@ -1590,6 +1592,119 @@ mod tests {
         assert!(b.library.take_markup_changes().is_empty());
     }
 
+    /// Counts the calls to `gallery_changed`.
+    #[derive(Clone, Default)]
+    struct Gallery(Arc<AtomicUsize>);
+
+    impl Gallery {
+        /// How often the Gallery was told.
+        fn count(&self) -> usize {
+            self.0.load(Relaxed)
+        }
+    }
+
+    impl GalleryObserver for Gallery {
+        fn gallery_changed(&self) {
+            self.0.fetch_add(1, Relaxed);
+        }
+    }
+
+    /// A reader that refuses the first read and then reads every PDF as
+    /// `details`, the way a pass finds a locked PDF that a later one opens.
+    #[derive(Clone)]
+    struct RefusesOnce(Arc<(Details, AtomicUsize)>);
+
+    impl RefusesOnce {
+        fn new(details: Details) -> Self {
+            Self(Arc::new((details, AtomicUsize::new(0))))
+        }
+
+        /// How many PDFs the reader was called for.
+        fn count(&self) -> usize {
+            self.0.1.load(Relaxed)
+        }
+    }
+
+    impl PdfReader for RefusesOnce {
+        fn read(&self, _: &Path) -> Result<Details, PdfProblem> {
+            if self.0.1.fetch_add(1, Relaxed) == 0 {
+                return Err(PdfProblem::Locked);
+            }
+            Ok(self.0.0.clone())
+        }
+    }
+
+    /// Waits up to 5 s for `condition`, which the details pass makes true.
+    fn wait_until(condition: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !condition() {
+            assert!(Instant::now() < deadline, "condition never became true");
+            sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The details the details pass reads, for a Document named `name`.
+    fn pass_details(name: &str) -> Details {
+        Details {
+            title: Some(name.to_owned()),
+            author: None,
+            size: crate::details::Size::Pages(1),
+        }
+    }
+
+    #[test]
+    fn the_pass_reads_the_details_of_a_document_a_sync_brought_in_and_tells_the_gallery() {
+        let mut cloud = Cloud::new();
+        let (a, b) = (cloud.device(), cloud.device());
+        let imported = a.import("Paper.pdf", b"paper bytes");
+        a.sync();
+        let told = Gallery::default();
+        let details = pass_details("Paper");
+        let pass = DetailsPass::start(
+            b.library.clone(),
+            Arc::new(move |_: &Path| -> Result<Details, PdfProblem> { Ok(details.clone()) }),
+            Arc::new(told.clone()),
+        );
+
+        b.sync();
+
+        // Details are never synced, so the pass reads them from the File.
+        wait_until(|| b.document(&imported.id).details == Some(pass_details("Paper")));
+        assert!(told.count() >= 1);
+        drop(pass);
+    }
+
+    #[test]
+    fn the_pass_retries_a_pdf_it_refused_when_a_later_sync_changed_the_documents() {
+        let mut cloud = Cloud::new();
+        let (a, b) = (cloud.device(), cloud.device());
+        let imported = a.import("Paper.pdf", b"paper bytes");
+        a.sync();
+        let told = Gallery::default();
+        let reader = RefusesOnce::new(pass_details("Paper"));
+        let pass = DetailsPass::start(
+            b.library.clone(),
+            Arc::new(reader.clone()),
+            Arc::new(told.clone()),
+        );
+        b.sync();
+        wait_until(|| reader.count() >= 1);
+
+        // The pass refused the PDF, so nothing was kept and the Gallery was
+        // not told.
+        assert_eq!(b.document(&imported.id).details, None);
+        assert_eq!(told.count(), 0);
+
+        // A Sync step that changed the Documents makes the pass try again.
+        let other = a.import("other.pdf", b"other bytes");
+        a.sync();
+        b.sync();
+        wait_until(|| b.document(&imported.id).details == Some(pass_details("Paper")));
+        assert!(told.count() >= 1);
+        assert!(b.document(&other.id).details.is_some());
+        drop(pass);
+    }
+
     #[test]
     fn incoming_reading_progress_counts_as_a_change_of_the_documents() {
         let mut cloud = Cloud::new();
@@ -1755,7 +1870,7 @@ mod tests {
         );
         fs::write(root.join(PREFERENCES), colors).unwrap();
         let a = Device {
-            library: Library::open(&root).unwrap(),
+            library: Arc::new(Library::open(&root).unwrap()),
             home,
             storage: cloud.storage(),
         };

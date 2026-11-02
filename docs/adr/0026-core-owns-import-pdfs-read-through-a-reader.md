@@ -1,6 +1,6 @@
 # The core owns Import; clients read PDFs through a reader
 
-Amends ADR-0003. The core decides whether a File is Imported. Before it copies a PDF, it asks the client's `PdfReader` (PDFKit on Apple) for the PDF's details, and refuses the PDF if the reader can't open it or it is locked. The core keeps the details. It also lists the PDFs that lack details (e.g. those Synced from another Device, as details are never synced) and reads them through the same reader. A client only schedules those reads in the background and lists the Library after each batch.
+Amends ADR-0003. The core decides whether a File is Imported. Before it copies a PDF, it asks the client's `PdfReader` (PDFKit on Apple) for the PDF's details, and refuses the PDF if the reader can't open it or it is locked. The core keeps the details. It also runs a background pass that reads the PDFs lacking details (e.g. those Synced from another Device, as details are never synced) through the same reader, one at a time, again after each Sync that changed the Documents, and tells the client when the Gallery should list again. A client only hands over its reader once and lists the Library when told.
 
 ## Considered Options
 
@@ -9,4 +9,4 @@ Amends ADR-0003. The core decides whether a File is Imported. Before it copies a
 
 ## Consequences
 
-- A new client implements `PdfReader` and its scheduling; the rules come from the core.
+- A new client implements `PdfReader` and one observer callback; the rules come from the core.
