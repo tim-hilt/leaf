@@ -52,6 +52,10 @@ _Avoid_: Search (unqualified), filter
 Finding text inside a single Document.
 _Avoid_: Search (unqualified), find
 
+**Document Text**:
+A Document's text as the Document Search searches it: its chunks of text — a PDF's pages, an EPUB's spine items — end to end.
+_Avoid_: Searched text, full text
+
 **Table of Contents**:
 The Chapters and Sections stored in a Document, in reading order.
 _Avoid_: TOC, outline, bookmarks

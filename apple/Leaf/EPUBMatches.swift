@@ -1,29 +1,26 @@
 import Foundation
 import LeafCore
 
-/// `DocumentMatches` in a `ReaderEPUBView`: runs `EPUBSearch`, marks the matches
-/// in the text, the current one apart, and shows the current one.
+/// `DocumentMatches` in a `ReaderEPUBView`: the Document Search finds the
+/// matches in the core (`DocumentSearch` over the book's `DocumentText`), and
+/// this marks them in the text, the current one apart, and shows the current
+/// one.
 @MainActor
 final class EPUBMatches: DocumentMatches {
     private weak var view: ReaderEPUBView?
-    let results: SearchResults
-    private let search: EPUBSearch
-    let text: ChunkedText
-    private var matches: [EPUBSearch.Match] = []
+    let search: DocumentSearch
     var didChange: () -> Void = {}
     /// Matches stream in one by one; the page takes all marks at once, and the
     /// bar its count, so both are updated together.
     private lazy var refresh = CoalescedUpdate { [weak self] in
         guard let self else { return }
-        view?.markMatches(matches, current: results.current)
+        view?.markMatches(search.matches, current: search.results.current)
         didChange()
     }
 
     init(view: ReaderEPUBView, results: SearchResults) {
         self.view = view
-        self.results = results
-        text = ChunkedText(view.book)
-        search = EPUBSearch(view.book, contents: view.contents)
+        search = DocumentSearch(text: DocumentText.of(view.book), contents: view.contents, results: results)
         results.onChoose = { [weak self] in self?.makeCurrent($0) }
     }
 
@@ -32,9 +29,7 @@ final class EPUBMatches: DocumentMatches {
         search.search(
             query,
             onMatch: { [self] match in
-                matches.append(match)
-                results.append(.init(match))
-                onMatch(matches.count - 1)
+                onMatch(match.number)
                 refresh.setNeeded()
             },
             onFinish: {})
@@ -42,21 +37,15 @@ final class EPUBMatches: DocumentMatches {
 
     func clear() {
         search.cancel()
-        matches = []
-        results.removeAll()
         view?.markMatches([], current: nil)
         didChange()
     }
 
     func makeCurrent(_ number: Int) {
-        guard matches.indices.contains(number) else { return }
-        results.current = number
-        view?.reveal(matches[number])
+        guard search.matches.indices.contains(number) else { return }
+        search.results.current = number
+        view?.reveal(search.matches[number])
         refresh.setNeeded()
-    }
-
-    func range(ofMatch number: Int) -> NSRange {
-        text.range(matches[number].range, inChunkAt: matches[number].spineIndex)
     }
 
     func beginSession() { view?.beginSearchSession() }

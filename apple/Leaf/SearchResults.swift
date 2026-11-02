@@ -24,12 +24,6 @@ final class SearchResults {
             pageNumber = match.pageNumber
             section = match.section
         }
-
-        init(_ match: EPUBSearch.Match) {
-            excerpt = match.excerpt
-            pageNumber = nil
-            section = match.section
-        }
     }
 
     /// Consecutive matches in the same Chapter or Section.

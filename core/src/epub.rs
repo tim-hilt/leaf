@@ -1056,14 +1056,24 @@ pub(crate) mod fixtures {
             zip(&entries, &[])
         }
     }
+
+    /// Opens `bytes` as an EPUB file in a scratch folder.
+    pub(crate) fn open(bytes: &[u8]) -> Result<super::Epub, super::Error> {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("leaf-epub-{}-{n}.epub", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let opened = super::Epub::open(&path);
+        std::fs::remove_file(path).unwrap();
+        opened
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{Book, CONTAINER, zip};
+    use super::fixtures::{Book, CONTAINER, open, zip};
     use super::*;
     use crate::search::{Query, WordMatch};
-    use std::fs;
 
     fn apple() -> Query {
         Query {
@@ -1144,17 +1154,6 @@ mod tests {
         assert!(epub.text(0).is_some());
         assert_eq!(epub.search(0, &apple()).len(), 1);
         assert_eq!(epub.scanned_items(), 1);
-    }
-
-    /// Opens `bytes` as an EPUB file in a scratch folder.
-    fn open(bytes: &[u8]) -> Result<Epub, Error> {
-        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("leaf-epub-{}-{n}.epub", std::process::id()));
-        fs::write(&path, bytes).unwrap();
-        let opened = Epub::open(&path);
-        fs::remove_file(path).unwrap();
-        opened
     }
 
     const TITLE_AND_AUTHOR: &str = "<dc:title>Emma</dc:title><dc:creator>Jane Austen</dc:creator>";

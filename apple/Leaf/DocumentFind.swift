@@ -133,8 +133,8 @@ import LeafCore
         /// bar showing and hiding; any other container reports it with `barVisibilityChanged`.
         private let barContainer: () -> NSTextFinderBarContainer?
         let finder = NSTextFinder()
-        /// NSTextFinder searches it on a background queue.
-        private let text: ChunkedText
+        /// The Document's text, which NSTextFinder searches on a background queue.
+        private let text: DocumentText
         /// The current match, in the Document's text; empty before the first.
         private var selected = NSRange()
         /// The search the list shows; nil while the bar is hidden.
@@ -233,17 +233,21 @@ import LeafCore
 
         // The text is read from NSTextFinder's search queue.
 
-        nonisolated func stringLength() -> Int { text.length }
+        nonisolated func stringLength() -> Int { Int(text.length()) }
 
         nonisolated func string(
             at characterIndex: Int, effectiveRange outRange: NSRangePointer,
             endsWithSearchBoundary outFlag: UnsafeMutablePointer<ObjCBool>
         ) -> String {
-            let (string, range) = text.chunk(at: characterIndex)
-            outRange.pointee = range
+            guard let chunk = text.chunkContaining(offset: UInt64(clamping: characterIndex)) else {
+                outRange.pointee = NSRange()
+                outFlag.pointee = true
+                return ""
+            }
+            outRange.pointee = chunk.range
             // A match never spans chunks (pages, spine items).
             outFlag.pointee = true
-            return string
+            return text.text(index: chunk.index) ?? ""
         }
 
         var firstSelectedRange: NSRange { selected }
@@ -268,7 +272,7 @@ import LeafCore
         }
 
         func contentView(at index: Int, effectiveCharacterRange outRange: NSRangePointer) -> NSView {
-            outRange.pointee = NSRange(location: 0, length: text.length)
+            outRange.pointee = NSRange(location: 0, length: Int(text.length()))
             return view ?? NSView()
         }
 

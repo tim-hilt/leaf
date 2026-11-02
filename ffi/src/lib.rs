@@ -7,6 +7,7 @@
 
 use leaf_core::contents::{self, ContentsEntry, Entry, Position};
 use leaf_core::details::{Details, Format, Size};
+use leaf_core::document_text::{self, Chunk, Found};
 use leaf_core::epub;
 use leaf_core::google_drive::GoogleDriveStorage;
 use leaf_core::jump;
@@ -18,7 +19,7 @@ use leaf_core::oauth::{OAuthError, OAuthProvider, SignIn};
 use leaf_core::onedrive::OneDriveStorage;
 use leaf_core::preferences::{HighlightColor, HighlightColors};
 use leaf_core::progress::{Place, ReadingProgress};
-use leaf_core::search::{self, Query, WordMatch};
+use leaf_core::search::{Query, WordMatch};
 use leaf_core::storage::{ConnectError, DirStorage, RefreshTokenCallback, Storage};
 use leaf_core::sync_loop::{self, Status, SyncLoop};
 use leaf_core::webdav::WebDavStorage;
@@ -289,15 +290,6 @@ pub struct Query {
     pub word_match: WordMatch,
 }
 
-/// A match of Document Search, see `leaf_core::search::Match`: its range in the
-/// searched text, in UTF-16 units, and its excerpt.
-#[derive(uniffi::Record)]
-pub struct SearchMatch {
-    pub start: u64,
-    pub end: u64,
-    pub excerpt: SearchExcerpt,
-}
-
 /// The text around a match, see `leaf_core::search::Excerpt`.
 #[derive(uniffi::Record)]
 pub struct SearchExcerpt {
@@ -307,26 +299,189 @@ pub struct SearchExcerpt {
     pub matched_end: u64,
 }
 
-impl From<search::Match> for SearchMatch {
-    fn from(m: search::Match) -> Self {
+/// A chunk of a Document's text, see `leaf_core::document_text::Chunk`.
+#[derive(uniffi::Record)]
+pub struct TextChunk {
+    pub index: u32,
+    /// Where its text starts in the whole text, in UTF-16 units.
+    pub start: u64,
+    /// The length of its text, in UTF-16 units.
+    pub length: u64,
+}
+
+impl From<Chunk> for TextChunk {
+    fn from(chunk: Chunk) -> Self {
         Self {
-            start: m.range.start as u64,
-            end: m.range.end as u64,
-            excerpt: SearchExcerpt {
-                text: m.excerpt.text,
-                matched_start: m.excerpt.matched.start as u64,
-                matched_end: m.excerpt.matched.end as u64,
-            },
+            index: chunk.index,
+            start: chunk.start,
+            length: chunk.length,
         }
     }
 }
 
-/// The matches of `query` in `text`, the text of a PDF page: the same matching
-/// as `EpubBook.search`, with positions in UTF-16 units as PDFKit counts them.
+/// A match of a Document Search over a whole Document's text, see
+/// `leaf_core::document_text::Found`.
+#[derive(uniffi::Record)]
+pub struct FoundMatch {
+    /// The match's number, from 0 in reading order.
+    pub number: u64,
+    /// The chunk the match is in: a page's index, or a spine item's.
+    pub chunk: u32,
+    /// Its range in the chunk's text, in UTF-16 units.
+    pub start: u64,
+    pub end: u64,
+    /// Its range in the whole text, in UTF-16 units.
+    pub text_start: u64,
+    pub text_end: u64,
+    pub excerpt: SearchExcerpt,
+    /// The Chapter or Section the match is in; none if the Document has no
+    /// Table of Contents or the match is before its first entry.
+    pub section: Option<Entry>,
+}
+
+impl From<Found> for FoundMatch {
+    fn from(found: Found) -> Self {
+        Self {
+            number: found.number,
+            chunk: found.chunk,
+            start: found.range.start,
+            end: found.range.end,
+            text_start: found.text.start,
+            text_end: found.text.end,
+            excerpt: SearchExcerpt {
+                text: found.excerpt.text,
+                matched_start: found.excerpt.matched.start as u64,
+                matched_end: found.excerpt.matched.end as u64,
+            },
+            section: found.section,
+        }
+    }
+}
+
+/// What a client's PDF engine reads out of an open PDF's pages (ADR-0003) for
+/// the Document Search, see `leaf_core::document_text::PdfPages`. Implemented
+/// by the client and called from the thread that searches, not the main one.
+#[uniffi::export(with_foreign)]
+pub trait PdfPages: Send + Sync {
+    /// The text of the page at `index`; none if it has none.
+    fn page_text(&self, index: u32) -> Option<String>;
+    /// The number printed on the page at `index`, or its position in the File.
+    fn page_number(&self, index: u32) -> String;
+    /// Where a match on the page at `index`, from `start` to `end` units into
+    /// its text, sits, for the Table of Contents; none if the text isn't on the
+    /// page. Called once per match, in reading order.
+    fn place_of_match(&self, index: u32, start: u64, end: u64) -> Option<Place>;
+}
+
+/// Adapts the client's pages to the core's.
+struct Pages(Arc<dyn PdfPages>);
+
+impl document_text::PdfPages for Pages {
+    fn page_text(&self, index: u32) -> Option<String> {
+        self.0.page_text(index)
+    }
+
+    fn page_number(&self, index: u32) -> String {
+        self.0.page_number(index)
+    }
+
+    fn place_of_match(&self, index: u32, range: std::ops::Range<usize>) -> Option<Place> {
+        self.0
+            .place_of_match(index, range.start as u64, range.end as u64)
+    }
+}
+
+/// A Document's text as the Document Search searches it, see
+/// `leaf_core::document_text::DocumentText`.
+#[derive(uniffi::Object)]
+pub struct DocumentText(Arc<document_text::DocumentText>);
+
 #[uniffi::export]
-pub fn search_text(query: Query, text: String) -> Vec<SearchMatch> {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    query.find(&units).into_iter().map(Into::into).collect()
+impl DocumentText {
+    /// The text of `book`'s spine items, which the core reads itself (ADR-0021).
+    #[uniffi::constructor]
+    pub fn epub(book: Arc<EpubBook>) -> Arc<Self> {
+        Arc::new(Self(Arc::new(document_text::DocumentText::epub(
+            book.0.clone(),
+        ))))
+    }
+
+    /// The text of a PDF of `pages` pages, which `reader` reads out (ADR-0003)
+    /// as they are asked for, and the core keeps.
+    #[uniffi::constructor]
+    pub fn pdf(pages: u32, reader: Arc<dyn PdfPages>) -> Arc<Self> {
+        Arc::new(Self(Arc::new(document_text::DocumentText::pdf(
+            pages,
+            Arc::new(Pages(reader)),
+        ))))
+    }
+
+    /// The length of the whole text, in UTF-16 units. Reads every chunk of a
+    /// PDF, which are then kept.
+    pub fn length(&self) -> u64 {
+        self.0.length()
+    }
+
+    /// The chunk at `index`; none beyond the chunks.
+    pub fn chunk(&self, index: u32) -> Option<TextChunk> {
+        self.0.chunk(index).map(Into::into)
+    }
+
+    /// The chunk holding the character at `offset` in the whole text; none
+    /// without chunks.
+    pub fn chunk_containing(&self, offset: u64) -> Option<TextChunk> {
+        self.0.chunk_containing(offset).map(Into::into)
+    }
+
+    /// The text of the chunk at `index`; none beyond the chunks.
+    pub fn text(&self, index: u32) -> Option<String> {
+        self.0.text(index)
+    }
+
+    /// The number printed on the chunk at `index`; none in a Format without pages.
+    pub fn page_number(&self, index: u32) -> Option<String> {
+        self.0.page_number(index)
+    }
+
+    /// Begins a Document Search for `query` over the whole text, which places
+    /// each match in `contents`, the Document's Table of Contents.
+    pub fn search(&self, query: Query, contents: Arc<TableOfContents>) -> Arc<SearchSession> {
+        Arc::new(SearchSession(Mutex::new(
+            self.0.search(query, contents.0.clone()),
+        )))
+    }
+}
+
+/// One Document Search over a `DocumentText`, see
+/// `leaf_core::document_text::Search`. The client asks it for the next chunk's
+/// matches until there are none; stopping earlier cancels the search.
+#[derive(uniffi::Object)]
+pub struct SearchSession(Mutex<document_text::Search>);
+
+#[uniffi::export]
+impl SearchSession {
+    /// The matches in the next chunk of the text, in reading order; none once
+    /// the whole text has been searched. One `next` at a time.
+    pub fn next(&self) -> Option<Vec<FoundMatch>> {
+        Some(
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .next()?
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        )
+    }
+
+    /// The number of the match that starts at `offset` in the whole text, if
+    /// one has been found so far.
+    pub fn number_at(&self, offset: u64) -> Option<u64> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .number_at(offset)
+    }
 }
 
 /// A file of an EPUB, see `leaf_core::epub::Resource`.
@@ -339,7 +494,7 @@ pub struct EpubResource {
 /// An EPUB opened for reading, see `leaf_core::epub::Epub`. Clients keep it
 /// open while the Reader shows the book, instead of opening it per file.
 #[derive(uniffi::Object)]
-pub struct EpubBook(epub::Epub);
+pub struct EpubBook(Arc<epub::Epub>);
 
 #[uniffi::export]
 impl EpubBook {
@@ -363,9 +518,9 @@ impl EpubBook {
 
     /// The Table of Contents: Chapters with their nested Sections.
     pub fn table_of_contents(&self) -> Arc<TableOfContents> {
-        Arc::new(TableOfContents(contents::TableOfContents::new(
+        Arc::new(TableOfContents(Arc::new(contents::TableOfContents::new(
             self.0.contents(),
-        )))
+        ))))
     }
 
     /// Where a link to `fragment` in the file at `path` points; none if `path`
@@ -387,16 +542,6 @@ impl EpubBook {
         Some(Anchor::Epub { start, end })
     }
 
-    /// The matches of `query` in the text of the spine item at `index` (ADR-0022),
-    /// with their excerpts; none beyond the spine. Items not read before are not kept.
-    pub fn search(&self, index: u32, query: Query) -> Vec<SearchMatch> {
-        self.0
-            .search(index as usize, &query)
-            .into_iter()
-            .map(Into::into)
-            .collect()
-    }
-
     /// The file at `path` (a spine item or what it uses), if the EPUB has it.
     pub fn resource(&self, path: String) -> Option<EpubResource> {
         let resource = self.0.resource(&path)?;
@@ -410,14 +555,14 @@ impl EpubBook {
 /// A Table of Contents, see `leaf_core::contents::TableOfContents`. Its entries
 /// come from an EPUB (`EpubBook.table_of_contents`) or, for a PDF, from its outline.
 #[derive(uniffi::Object)]
-pub struct TableOfContents(contents::TableOfContents);
+pub struct TableOfContents(Arc<contents::TableOfContents>);
 
 #[uniffi::export]
 impl TableOfContents {
     /// The Table of Contents of `entries`, the Chapters with their Sections.
     #[uniffi::constructor]
     pub fn new(entries: Vec<ContentsEntry>) -> Arc<Self> {
-        Arc::new(Self(contents::TableOfContents::new(entries)))
+        Arc::new(Self(Arc::new(contents::TableOfContents::new(entries))))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1004,7 +1149,7 @@ impl Library {
         Ok(self
             .core
             .open_epub(&id)?
-            .map(|epub| Arc::new(EpubBook(epub))))
+            .map(|epub| Arc::new(EpubBook(Arc::new(epub)))))
     }
 
     /// The bytes of the Cover image of EPUB `id`, if it has one.
@@ -1124,14 +1269,48 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn search_text_counts_ranges_in_utf16_units() {
-        let query = Query {
-            text: "apple".to_owned(),
-            case_sensitive: false,
-            word_match: WordMatch::Contains,
-        };
-        let found = search_text(query, "😀 Apple".to_owned());
-        assert_eq!((found[0].start, found[0].end), (3, 8));
+    fn a_document_text_is_searched_chunk_by_chunk_through_the_ffi() {
+        /// Reads each page's text once, and remembers how often it was asked.
+        struct Pages(AtomicUsize);
+        impl PdfPages for Pages {
+            fn page_text(&self, _: u32) -> Option<String> {
+                self.0.fetch_add(1, Relaxed);
+                Some("apple".to_owned())
+            }
+            fn page_number(&self, index: u32) -> String {
+                (index + 1).to_string()
+            }
+            fn place_of_match(&self, index: u32, _: u64, _: u64) -> Option<Place> {
+                Some(Place::Pdf {
+                    page_index: index,
+                    x: 0.0,
+                    y: 720.0,
+                })
+            }
+        }
+
+        let text = DocumentText::pdf(2, Arc::new(Pages(AtomicUsize::new(0))));
+        let contents = TableOfContents::new(vec![]);
+        let session = text.search(
+            Query {
+                text: "apple".to_owned(),
+                case_sensitive: false,
+                word_match: WordMatch::Contains,
+            },
+            contents.clone(),
+        );
+
+        let first = session.next().unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!((first[0].chunk, first[0].start, first[0].end), (0, 0, 5));
+        assert_eq!(first[0].text_start, 0);
+        assert_eq!(session.next().unwrap().len(), 1);
+        assert!(session.next().is_none());
+
+        // Each page was read once for both chunks' searches together.
+        assert_eq!(text.chunk(1).unwrap().length, 5);
+        assert_eq!(text.chunk_containing(5).unwrap().index, 1);
+        assert_eq!(session.number_at(5), Some(1));
     }
 
     /// Counts the Sync steps that ended.

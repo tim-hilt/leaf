@@ -5,27 +5,31 @@ import PDFKit
     import UIKit
 #endif
 
-/// `DocumentMatches` in a `ReaderPDFView`: runs `DocumentSearch`, and shows the
-/// current match. On iOS all matches are marked on the pages, the current one
-/// orange among the yellow others (PDFView's `highlightedSelections`); on macOS
-/// the find bar marks them, and the current one is the view's selection.
+/// `DocumentMatches` in a `ReaderPDFView`: the Document Search finds the
+/// matches in the core (`DocumentSearch` over the Document's `DocumentText`),
+/// and this marks them on the pages and shows the current one. On iOS all
+/// matches are marked on the pages, the current one orange among the yellow
+/// others (PDFView's `highlightedSelections`); on macOS the find bar marks
+/// them, and the current one is the view's selection.
 @MainActor
 final class PDFMatches: DocumentMatches {
     private weak var view: ReaderPDFView?
     let results: SearchResults
     /// Made with the first search, once the view has its Document and Table of Contents.
-    private lazy var documentSearch = DocumentSearch(
-        view?.document ?? PDFDocument(), contents: view?.contents ?? TableOfContents(entries: []))
-    /// Read with the first need for it: only the macOS find bar searches the text itself.
-    private(set) lazy var text = ChunkedText(view?.document)
-    private var matches: [DocumentSearch.Match] = []
+    private(set) lazy var search = DocumentSearch(
+        text: DocumentText.of(view?.document ?? PDFDocument()),
+        contents: view?.contents ?? TableOfContents(entries: []),
+        results: results)
+    /// The selection of each match in `search.matches`, in the order they
+    /// arrived; made as one arrives. A nil one leaves its match unmarked.
+    private var selections: [PDFSelection?] = []
     var didChange: () -> Void = {}
     /// Matches stream in one by one; PDFView takes all marks at once, and the
     /// bar its count, so both are updated together.
     private lazy var refresh = CoalescedUpdate { [weak self] in
         guard let self else { return }
         #if os(iOS)
-            view?.highlightedSelections = matches.map(\.selection)
+            view?.highlightedSelections = selections.compactMap { $0 }
         #endif
         didChange()
     }
@@ -38,24 +42,23 @@ final class PDFMatches: DocumentMatches {
 
     func search(_ query: Query, onMatch: @escaping @MainActor (Int) -> Void) {
         clear()
-        documentSearch.search(
+        search.search(
             query,
             onMatch: { [self] match in
-                matches.append(match)
-                results.append(.init(match))
+                let selection = self.selection(for: match)
                 #if os(iOS)
-                    match.selection.color = Self.otherColor
+                    selection?.color = Self.otherColor
                 #endif
-                onMatch(matches.count - 1)
+                selections.append(selection)
+                onMatch(match.number)
                 refresh.setNeeded()
             },
             onFinish: {})
     }
 
     func clear() {
-        documentSearch.cancel()
-        matches = []
-        results.removeAll()
+        search.cancel()
+        selections = []
         #if os(iOS)
             view?.highlightedSelections = nil
         #endif
@@ -63,22 +66,23 @@ final class PDFMatches: DocumentMatches {
     }
 
     func makeCurrent(_ number: Int) {
-        guard matches.indices.contains(number) else { return }
+        guard search.matches.indices.contains(number), selections.indices.contains(number) else { return }
         #if os(iOS)
-            if let old = results.current, matches.indices.contains(old) {
-                matches[old].selection.color = Self.otherColor
+            if let old = results.current, selections.indices.contains(old) {
+                selections[old]?.color = Self.otherColor
             }
-            matches[number].selection.color = Self.currentColor
+            selections[number]?.color = Self.currentColor
         #else
-            view?.currentSelection = matches[number].selection
+            if let selection = selections[number] { view?.currentSelection = selection }
         #endif
         results.current = number
-        view?.reveal(matches[number].selection)
+        if let selection = selections[number] { view?.reveal(selection) }
         refresh.setNeeded()
     }
 
-    func range(ofMatch number: Int) -> NSRange {
-        text.range(matches[number].range, inChunkAt: matches[number].pageIndex)
+    /// The selection of the match, on its page; nil if the page has no text there.
+    private func selection(for match: DocumentSearch.Match) -> PDFSelection? {
+        view?.document?.page(at: match.chunkIndex)?.selection(for: match.range)
     }
 
     func beginSession() { view?.beginSearchSession() }
@@ -99,7 +103,9 @@ final class PDFMatches: DocumentMatches {
 
         var visibleRanges: [NSRange] {
             guard let view, let document = view.document else { return [] }
-            return view.visiblePages.map { text.range(ofChunkAt: document.index(for: $0)) }
+            return view.visiblePages.compactMap {
+                text.chunk(index: UInt32(clamping: document.index(for: $0)))?.range
+            }
         }
     #endif
 }

@@ -37,7 +37,8 @@ import WebKit
 /// the Page Colors instead (`ReaderEPUBScript`). Switching keeps the place, and the view
 /// behind the page has the paper's color from the start, so nothing flashes.
 ///
-/// Document Search runs in the core's text of the spine items (`EPUBSearch`), so a match is
+/// Document Search runs in the core's text of the spine items (`DocumentSearch`
+/// over the book's `DocumentText`), so a match is a position (ADR-0022): a spine item and a
 /// a position, also in a Chapter that isn't loaded. The native find bar (`find`) searches as
 /// the reader types; the matches are listed in `results` and marked in the text, each Chapter
 /// as it loads. Going to a match scrolls it into view, loading its Chapter, and
@@ -369,18 +370,18 @@ final class ReaderEPUBView: WKWebView, ReaderDocumentView {
     func endSearchSession() { history.endSearchSession() }
 
     /// Marks `matches` in the text, the one at `current` apart; no matches clears the marks.
-    func markMatches(_ matches: [EPUBSearch.Match], current: Int?) {
+    func markMatches(_ matches: [DocumentSearch.Match], current: Int?) {
         guard isOpen else { return }
-        let list = matches.map { "[\($0.spineIndex), \($0.range.location), \($0.range.length)]" }
+        let list = matches.map { "[\($0.chunkIndex), \($0.range.location), \($0.range.length)]" }
         callPage("leaf.setFindMarks([\(list.joined(separator: ","))], \(current ?? -1))")
     }
 
     /// Scrolls a Document Search match into view, a third of the way down the
     /// viewport, loading its Chapter first; does nothing if it is already in view. Within
     /// a search session the move is part of one Jump; see `beginSearchSession()`.
-    func reveal(_ match: EPUBSearch.Match) {
+    func reveal(_ match: DocumentSearch.Match) {
         guard isOpen else { return }
-        let script = "return await leaf.reveal([\(match.spineIndex), \(match.range.location), \(match.range.length)])"
+        let script = "return await leaf.reveal([\(match.chunkIndex), \(match.range.location), \(match.range.length)])"
         Task {
             let moved = try? await callAsyncJavaScript(script, in: nil, contentWorld: .defaultClient) as? Bool
             if moved == true { changeHistory { $0.didReveal() } }
