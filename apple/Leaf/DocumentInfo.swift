@@ -14,7 +14,7 @@ struct DocumentInfo {
     let rows: [Row]
 
     init(_ document: LibraryDocument) {
-        let (fileBytes, dataBytes) = Self.sizes(of: document)
+        let (fileBytes, dataBytes) = Self.sizes(of: document.file)
         var rows = [Row(label: "Title", value: document.title)]
         if let author = document.author { rows.append(Row(label: "Author", value: author)) }
         rows += [
@@ -28,18 +28,18 @@ struct DocumentInfo {
 
     /// The File's size, and that of everything else in the Document's folder
     /// (its states, Reading Progress, details), in bytes.
-    static func sizes(of document: LibraryDocument) -> (file: Int64, data: Int64) {
-        let folder = document.file.deletingLastPathComponent()
+    static func sizes(of file: URL) -> (file: Int64, data: Int64) {
+        let folder = file.deletingLastPathComponent()
         let entries =
             (try? FileManager.default.contentsOfDirectory(
                 at: folder, includingPropertiesForKeys: [.fileSizeKey], options: [])) ?? []
-        var file: Int64 = 0
-        var data: Int64 = 0
+        var fileSize: Int64 = 0
+        var dataSize: Int64 = 0
         for entry in entries {
             let size = Int64((try? entry.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-            if entry.lastPathComponent == document.fileName { file = size } else { data += size }
+            if entry.lastPathComponent == file.lastPathComponent { fileSize = size } else { dataSize += size }
         }
-        return (file, data)
+        return (fileSize, dataSize)
     }
 }
 

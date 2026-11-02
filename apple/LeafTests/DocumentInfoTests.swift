@@ -13,7 +13,7 @@ struct DocumentInfoTests {
         try Data(count: 7).write(to: folder.appending(path: ".state-x.automerge"))
         try Data(count: 3).write(to: folder.appending(path: ".progress-x"))
 
-        let sizes = DocumentInfo.sizes(of: LibraryDocument(id: "a", file: file))
+        let sizes = DocumentInfo.sizes(of: file)
 
         #expect(sizes.file == 100)
         #expect(sizes.data == 10)

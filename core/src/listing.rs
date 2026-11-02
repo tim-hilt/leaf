@@ -51,12 +51,12 @@ impl From<&Document> for Item {
     }
 }
 
-/// The Documents of a Library in a `Sort`, ready for Library Search. Built
-/// once per change of the Documents or the Sort; each search is then cheap.
+/// What Library Search finds in a Library's Documents in a `Sort`: positions
+/// in the Documents, which the client holds — the Listing itself doesn't, so
+/// it stays cheap to make on every change of the Documents or the Sort, and
+/// each search is then cheap too.
 pub struct Listing {
-    /// The Documents, in the order they were given: newest Import first.
-    documents: Vec<Document>,
-    /// Positions in `documents`, in Sort order.
+    /// Positions in the Documents as they were listed, in Sort order.
     order: Vec<usize>,
     /// Each Document's Title, file name and Author, `fold`ed and joined by a
     /// NUL, so a search never matches across two of them.
@@ -67,7 +67,7 @@ impl Listing {
     /// `documents` in `sort` order. Documents the Sort can't tell apart (same
     /// Title, same Last Read) keep Date Imported order, newest first, and then
     /// their order in `documents`.
-    pub fn new(documents: Vec<Document>, sort: Sort) -> Self {
+    pub fn new(documents: &[Document], sort: Sort) -> Self {
         let items: Vec<Item> = documents.iter().map(Item::from).collect();
         let items = items.as_slice();
         let flip = |mut order: Vec<usize>| {
@@ -103,21 +103,13 @@ impl Listing {
                 [&item.title, &item.file_name, author].map(fold).join("\0")
             })
             .collect();
-        Self {
-            documents,
-            order,
-            searched,
-        }
+        Self { order, searched }
     }
 
-    /// The Documents, in the order they were given: newest Import first.
-    pub fn documents(&self) -> &[Document] {
-        &self.documents
-    }
-
-    /// The positions in `documents()` of the Documents whose Title, file name
-    /// or Author contains `search`, ignoring case and accents, in this
-    /// Listing's order. A blank `search` matches every Document.
+    /// The positions in the Documents as they were listed of those whose
+    /// Title, file name or Author contains `search`, ignoring case and
+    /// accents, in this Listing's order. A blank `search` matches every
+    /// Document.
     pub fn matching(&self, search: &str) -> Vec<usize> {
         let search = fold(search.trim());
         let order = self.order.iter().copied();
@@ -243,20 +235,21 @@ mod tests {
     }
 
     fn titles(documents: &[Document], key: SortKey, reversed: bool, search: &str) -> Vec<String> {
-        let listing = Listing::new(documents.to_vec(), Sort { key, reversed });
+        let listing = Listing::new(documents, Sort { key, reversed });
         listing
             .matching(search)
             .into_iter()
-            .map(|i| listing.documents()[i].title())
+            .map(|i| documents[i].title())
             .collect()
     }
 
-    /// The IDs of the Documents `listing` matches for `search`, in its order.
-    fn ids<'a>(listing: &'a Listing, search: &str) -> Vec<&'a str> {
+    /// The IDs of the Documents of `documents` that `listing` matches for
+    /// `search`, in its order.
+    fn ids<'a>(listing: &Listing, documents: &'a [Document], search: &str) -> Vec<&'a str> {
         listing
             .matching(search)
             .into_iter()
-            .map(|i| listing.documents()[i].id.as_str())
+            .map(|i| documents[i].id.as_str())
             .collect()
     }
 
@@ -297,8 +290,8 @@ mod tests {
             item("same", 3, None),
             item("Same", 2, None),
         ];
-        let listing = Listing::new(items, sort(SortKey::Title));
-        assert_eq!(ids(&listing, ""), ["3", "2", "1"]);
+        let listing = Listing::new(&items, sort(SortKey::Title));
+        assert_eq!(ids(&listing, &items, ""), ["3", "2", "1"]);
     }
 
     #[test]
@@ -321,12 +314,12 @@ mod tests {
         let mut items = vec![item("Moby-Dick", 1, None), item("Walden", 2, None)];
         author(&mut items[0], "Herman Melville");
         items[1].path = "/library/2/scan0042.pdf".into();
-        let listing = Listing::new(items, sort(SortKey::Title));
+        let listing = Listing::new(&items, sort(SortKey::Title));
 
-        assert_eq!(ids(&listing, "oby"), ["1"]);
-        assert_eq!(ids(&listing, "can004"), ["2"]);
-        assert_eq!(ids(&listing, "melv"), ["1"]);
-        assert!(ids(&listing, "xyz").is_empty());
+        assert_eq!(ids(&listing, &items, "oby"), ["1"]);
+        assert_eq!(ids(&listing, &items, "can004"), ["2"]);
+        assert_eq!(ids(&listing, &items, "melv"), ["1"]);
+        assert!(ids(&listing, &items, "xyz").is_empty());
     }
 
     #[test]
@@ -348,7 +341,7 @@ mod tests {
         let mut items = vec![item("Moby", 1, None)];
         author(&mut items[0], "Dick");
         items[0].path = "/library/1/x.pdf".into();
-        let listing = Listing::new(items, sort(SortKey::Title));
+        let listing = Listing::new(&items, sort(SortKey::Title));
         assert!(listing.matching("mobydick").is_empty());
         assert!(listing.matching("moby dick").is_empty());
     }
@@ -376,11 +369,20 @@ mod tests {
         assert_eq!(Item::from(&document), expected);
     }
 
+    /// `matching` gives positions in the Documents as they were listed, which
+    /// the client holds, so it can look them up by the positions.
     #[test]
-    fn the_listing_keeps_its_documents_in_the_order_given() {
+    fn matching_gives_positions_in_the_documents_as_they_were_listed() {
         let items = shelf();
-        let listing = Listing::new(items.clone(), sort(SortKey::Title));
-        assert_eq!(listing.documents(), items);
+        let listing = Listing::new(&items, sort(SortKey::Title));
+        assert_eq!(
+            listing
+                .matching("")
+                .into_iter()
+                .map(|i| items[i].title())
+                .collect::<Vec<_>>(),
+            ["apple", "Resume 2", "résumé 10", "Zebra"]
+        );
     }
 
     /// A Document of `pages` pages, read last at `last_read` on page `page`, if

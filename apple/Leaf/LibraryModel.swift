@@ -42,13 +42,6 @@ struct LibraryDocument: Identifiable, Hashable {
     /// When the Reader last showed the Document; nil if never.
     var lastRead: Date? { progress.map { Date(milliseconds: $0.lastRead) } }
 
-    /// A Document with no details, Imported at the Unix epoch.
-    init(id: String, file: URL, progress: ReadingProgress? = nil) {
-        stored = LeafCore.Document(
-            id: id, path: file.path, format: .pdf, imported: 0, progress: progress,
-            title: file.deletingPathExtension().lastPathComponent, author: nil, pageCount: nil, percentRead: nil)
-    }
-
     fileprivate init(_ stored: LeafCore.Document) { self.stored = stored }
 
     /// Where the Cover of this Document comes from.
@@ -136,17 +129,14 @@ extension Date {
 /// Documents. One core call makes both, so they can't disagree.
 private struct LibraryListing: Sendable {
     let documents: [LibraryDocument]
-    /// The same Documents by ID.
-    let byID: [String: LibraryDocument]
     /// Library Search over `documents`: positions in them, in Sort order.
     let sorted: Listing
 
     /// Nil if the core can't list the Library.
     init?(_ core: LeafCore.Library, sort: LeafCore.Sort) {
-        guard let sorted = try? core.listing(sort: sort) else { return nil }
-        self.sorted = sorted
-        documents = sorted.documents().map(LibraryDocument.init)
-        byID = Dictionary(documents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        guard let list = try? core.listing(sort: sort) else { return nil }
+        self.sorted = list.sorted
+        self.documents = list.documents.map(LibraryDocument.init)
     }
 }
 
@@ -554,7 +544,8 @@ final class LibraryModel {
         let (result, listed) = await inStateOrder { core in (change(core), LibraryListing(core, sort: sort)) }
         guard let listed else { return result }
         // Gone from the Library, here or on another Device: so is its Cover.
-        for gone in documents where listed.byID[gone.id] == nil { removeCover(gone.id) }
+        let listedIDs = Set(listed.documents.map { $0.id })
+        for gone in documents where !listedIDs.contains(gone.id) { removeCover(gone.id) }
         listing = listed
         return result
     }

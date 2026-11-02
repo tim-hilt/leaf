@@ -646,11 +646,14 @@ impl Library {
         Ok(per_chunk.into_iter().flatten().flatten().collect())
     }
 
-    /// The Documents as a `Listing` in the order of `sort`, ready for Library
-    /// Search. The Listing owns them, so it is all a client needs to show the
-    /// Library.
-    pub fn listing(&self, sort: Sort) -> io::Result<Listing> {
-        Ok(Listing::new(self.documents()?, sort))
+    /// The Documents, newest Import first, and their `Listing` in the order of
+    /// `sort`, ready for Library Search: `matching` gives positions in the
+    /// Documents. One call lists both, so a client holding both sees the same
+    /// Documents.
+    pub fn listing(&self, sort: Sort) -> io::Result<(Vec<Document>, Listing)> {
+        let documents = self.documents()?;
+        let listing = Listing::new(&documents, sort);
+        Ok((documents, listing))
     }
 
     /// The Documents the Library document lists, in no order.
@@ -2476,11 +2479,11 @@ mod tests {
         }
         let sort = |key, reversed| Sort { key, reversed };
         let by = |key, reversed, search: &str| -> Vec<String> {
-            let listing = library.listing(sort(key, reversed)).unwrap();
+            let (documents, listing) = library.listing(sort(key, reversed)).unwrap();
             let matched = listing.matching(search);
             matched
                 .into_iter()
-                .map(|i| listing.documents()[i].id.clone())
+                .map(|i| documents[i].id.clone())
                 .collect()
         };
         let [zebra, ten, two] = [&ids[0], &ids[1], &ids[2]].map(String::as_str);
@@ -2839,12 +2842,12 @@ mod tests {
 
     /// What `sort` lists of the Library, in order, with each percent read.
     fn gallery(library: &Library, sort: Sort) -> Vec<(String, Option<u8>)> {
-        let listing = library.listing(sort).unwrap();
+        let (documents, listing) = library.listing(sort).unwrap();
         listing
             .matching("")
             .into_iter()
             .map(|i| {
-                let document = &listing.documents()[i];
+                let document = &documents[i];
                 (document.id.clone(), document.percent_read())
             })
             .collect()

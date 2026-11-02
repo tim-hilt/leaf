@@ -672,19 +672,25 @@ impl JumpHistory {
     }
 }
 
-/// The Library's Documents in the order of a `Sort`, ready for Library Search,
-/// see `leaf_core::listing::Listing`.
+/// The Documents, newest Import first, and what Library Search finds in them
+/// in the order of a `Sort`, as one call makes both, so they can't disagree.
+#[derive(uniffi::Record)]
+pub struct List {
+    /// The Documents, newest Import first.
+    pub documents: Vec<Document>,
+    /// Library Search over `documents`: positions in them, in Sort order.
+    pub sorted: Arc<Listing>,
+}
+
+/// What Library Search finds in the Documents a `Library::listing` returned:
+/// positions in them, see `leaf_core::listing::Listing`.
 #[derive(uniffi::Object)]
 pub struct Listing(listing::Listing);
 
 #[uniffi::export]
 impl Listing {
-    /// The Documents, newest Import first. `matching` gives positions in them.
-    pub fn documents(&self) -> Vec<Document> {
-        self.0.documents().iter().cloned().map(Into::into).collect()
-    }
-
-    /// Positions in `documents` of the Documents matching `search`, in order.
+    /// Positions in the Documents returned with this Listing of those matching
+    /// `search`, in the Listing's order.
     pub fn matching(&self, search: &str) -> Vec<u32> {
         self.0
             .matching(search)
@@ -1304,9 +1310,14 @@ impl Library {
         self.written(self.core.remove_custom_color(&id))
     }
 
-    /// The Documents in the order of `sort`, ready for Library Search.
-    pub fn listing(&self, sort: Sort) -> Result<Arc<Listing>, LibraryError> {
-        Ok(Arc::new(Listing(self.core.listing(sort)?)))
+    /// The Documents, newest Import first, and what Library Search finds in
+    /// them in the order of `sort`. One call makes both, so they can't disagree.
+    pub fn listing(&self, sort: Sort) -> Result<List, LibraryError> {
+        let (documents, listing) = self.core.listing(sort)?;
+        Ok(List {
+            documents: documents.into_iter().map(Into::into).collect(),
+            sorted: Arc::new(Listing(listing)),
+        })
     }
 
     pub fn document(&self, id: String) -> Result<Option<Document>, LibraryError> {
@@ -1616,8 +1627,8 @@ mod tests {
         }
         let listed = |key, reversed, search: &str| {
             let listing = library.listing(Sort { key, reversed }).unwrap();
-            let documents = listing.documents();
-            let matched = listing.matching(search);
+            let documents = listing.documents;
+            let matched = listing.sorted.matching(search);
             matched
                 .into_iter()
                 .map(|i| documents[i as usize].id.clone())
@@ -1638,7 +1649,7 @@ mod tests {
             key: SortKey::DateImported,
             reversed: false,
         };
-        library.listing(sort).unwrap().documents()
+        library.listing(sort).unwrap().documents
     }
 
     struct NoProgress;

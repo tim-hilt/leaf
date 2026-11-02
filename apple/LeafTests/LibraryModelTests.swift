@@ -34,7 +34,7 @@ import UniformTypeIdentifiers
     func importWithoutDetails(_ source: URL) throws {
         let core = try LeafCore.Library.open(root: root.path)
         _ = try core.import(source: source.path, reader: PDFKitReader(), progress: NoProgress())
-        for document in try core.listing(sort: Sort(key: .dateImported, reversed: false)).documents() {
+        for document in try core.listing(sort: Sort(key: .dateImported, reversed: false)).documents {
             // Import kept the details here; a Device that got the File by Sync has none.
             let folder = URL(fileURLWithPath: document.path).deletingLastPathComponent()
             try? FileManager.default.removeItem(at: folder.appending(path: ".details"))
