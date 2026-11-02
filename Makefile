@@ -12,12 +12,17 @@ XCODEBUILD := cd apple && xcodebuild -quiet -scheme Leaf
 CORE_SRC := $(shell find core ffi -type f) Cargo.toml Cargo.lock rust-toolchain.toml Makefile
 CORE_STAMP := $(APPLE_GEN)/.built-$(PROFILE)
 
-# App tests: ONLY narrows to a suite or test, e.g. ONLY=LeafTests/ReaderPDFViewTests.
+# App tests: ONLY narrows to suites or tests, e.g. ONLY="LeafTests/ReaderPDFViewTests LeafTests/ThemeAppearanceTests".
 ONLY ?= LeafTests
-SIM ?= iPad Pro 13-inch (M5)
-XCTEST = scripts/apple-test.sh -only-testing:$(ONLY)
+XCTEST = scripts/apple-test.sh $(foreach t,$(ONLY),'-only-testing:$(t)')
 
-.PHONY: test lint fmt apple apple-core apple-project apple-build apple-test apple-test-ios clean
+# The simulated devices; SIM picks one, e.g. SIM='$(SIM_IPHONE)'. The iPad stands in for
+# the 3rd generation, which the iOS 27 runtime can't simulate.
+SIM_IPHONE := iPhone 15 Pro
+SIM_IPAD := iPad Pro (12.9-inch) (4th generation)
+SIM ?= $(SIM_IPAD)
+
+.PHONY: test lint fmt apple apple-core apple-project apple-build apple-test apple-test-ios apple-sim apple-run clean
 
 ## Rust core
 
@@ -74,9 +79,23 @@ apple-build: apple-project
 apple-test: apple-core apple-build
 	$(XCTEST) -destination 'platform=macOS'
 
-# The same tests on an iOS Simulator, for iOS-only code. SIM picks the device.
-apple-test-ios: apple-core apple-project
-	$(XCTEST) -destination 'platform=iOS Simulator,name=$(SIM)'
+# The same tests on an iOS Simulator, for iOS-only code. One at a time: web views on
+# screen at once disturb each other's scrolling there.
+apple-test-ios: apple-core apple-project apple-sim
+	$(XCTEST) -parallel-testing-enabled NO -destination 'platform=iOS Simulator,name=$(SIM)'
+
+# Creates the SIM device unless it exists.
+apple-sim:
+	xcrun simctl list devices available | grep -qF '    $(SIM) (' || xcrun simctl create '$(SIM)' '$(SIM)'
+
+# Builds the app and launches it on SIM, to look at it:
+# xcrun simctl io booted screenshot /tmp/leaf.png
+# xcrun simctl ui booted appearance dark|light
+apple-run: apple-core apple-project apple-sim
+	$(XCODEBUILD) build -destination 'platform=iOS Simulator,name=$(SIM)'
+	xcrun simctl boot '$(SIM)' 2>/dev/null || true
+	xcrun simctl install '$(SIM)' "$$($(XCODEBUILD) -showBuildSettings -destination 'platform=iOS Simulator,name=$(SIM)' | awk '$$1 == "CODESIGNING_FOLDER_PATH" { print $$3 }')"
+	xcrun simctl launch --terminate-running-process '$(SIM)' com.timhilt.leaf
 
 clean:
 	cargo clean

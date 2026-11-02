@@ -280,14 +280,16 @@ import WebKit
         /// Immersive Mode hides the bars over the page: only the safe area changes.
         @Test(arguments: [(100.0, 0.0), (0.0, 100.0)])
         func thePageStaysPutWhenTheSafeAreaChanges(from top: CGFloat, to newTop: CGFloat) async throws {
-            let reader = try await openReader(book: importedBook(chapters: [paragraphs(40)]))
             let controller = UIViewController()
             controller.additionalSafeAreaInsets.top = top
-            let window = UIWindow(frame: reader.frame)
-            window.rootViewController = controller
-            window.makeKeyAndVisible()
-            controller.view.addSubview(reader)
-            openWindows.append(window)
+            let host: (ReaderEPUBView) -> Void = { reader in
+                let window = UIWindow(frame: reader.frame)
+                window.rootViewController = controller
+                window.makeKeyAndVisible()
+                controller.view.addSubview(reader)
+                openWindows.append(window)
+            }
+            let reader = try await openReader(book: importedBook(chapters: [paragraphs(40)]), host: host)
             controller.view.layoutIfNeeded()
             try await Task.sleep(for: .milliseconds(300))
             try await reader.scrollAsReader("window.scrollTo(0, 2000)")
@@ -1414,11 +1416,18 @@ private func openReader(
         onSingleTap: onSingleTap, onHighlight: onHighlight, openExternally: openExternally)
 }
 
-/// A Reader on `book`, once it has opened.
+#if os(iOS)
+    /// iOS throttles a web view outside a window: it opens up to minutes late.
+    private let onScreenByDefault = true
+#else
+    private let onScreenByDefault = false
+#endif
+
+/// A Reader on `book`, once it has opened; `host` puts it in a window of its own instead of `show`.
 @MainActor
 private func openReader(
     book: EpubBook, place: Place? = nil, size: CGSize = CGSize(width: 400, height: 800),
-    textSize: CGFloat = TextSize.normal, appearance: PageAppearance = .light, onScreen: Bool = false,
+    textSize: CGFloat = TextSize.normal, appearance: PageAppearance = .light, onScreen: Bool = onScreenByDefault,
     contents: TableOfContents = TableOfContents(), highlights: [Highlight] = [],
     onSingleTap: @escaping () -> Void = {}, onScroll: @escaping () -> Void = {},
     onHighlight: @escaping (Anchor, String) -> Void = { _, _ in },
@@ -1426,7 +1435,8 @@ private func openReader(
     onAddNote: @escaping (Place) -> Void = { _ in },
     onPageNoteTap: @escaping (PageNote, CGPoint) -> Void = { _, _ in },
     onTextSizeChange: @escaping (CGFloat) -> Void = { _ in },
-    onBackChange: @escaping (BackTarget?) -> Void = { _ in }, openExternally: @escaping (URL) -> Void = { _ in }
+    onBackChange: @escaping (BackTarget?) -> Void = { _ in }, openExternally: @escaping (URL) -> Void = { _ in },
+    host: ((ReaderEPUBView) -> Void)? = nil
 ) async throws -> ReaderEPUBView {
     var reader: ReaderEPUBView?
     await withCheckedContinuation { opened in
@@ -1445,7 +1455,7 @@ private func openReader(
                 onBackChange: onBackChange))
         reader?.openExternally = openExternally
         reader?.frame = CGRect(origin: .zero, size: size)
-        if onScreen, let reader { show(reader) }
+        if let reader, let host { host(reader) } else if onScreen, let reader { show(reader) }
     }
     let opened = try #require(reader)
     // Highlights are drawn right after opening; those found nowhere never are.

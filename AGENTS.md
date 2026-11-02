@@ -8,7 +8,7 @@ Native, cross platform PDF Reader with cloud syncing
 - `ffi/`: `leaf-ffi`, UniFFI bindings of the core
 - `apple/`: iOS, iPadOS and macOS client; edit `project.yml`, never the `.xcodeproj`
 - `docs/adr/`: architecture decisions
-- `Makefile`: build and test entry points; run tests through it (`make apple-test-ios ONLY=<Suite>` for iOS-only code)
+- `Makefile`: build and test entry points; run tests through it (`make apple-test-ios ONLY=<Suite>` for iOS-only code); `make apple-run` launches the app on a simulator to look at UI changes
 
 # Coding Guidelines
 
@@ -17,7 +17,7 @@ Native, cross platform PDF Reader with cloud syncing
 - Use test driven development (red, green, refactor) by default
 - Keep documentation very lean and precise. No walls of text in this project!
 - Apply the boy scouts rule: Leave the code cleaner than you found it
-- Don't accept flaky tests. Fix them or remove them
+- A test failing without your change is a finding: fix it, or file a `loop` task before going on
 - Commit messages should be short and to the point, so that the messages can appear directly in a changelog
 - Commit messages follow a subset of conventional commits; they drive the release version and notes (`cliff.toml`). Prefix the commit message with...
   - `feature: `, if we're adding a new capability
@@ -28,13 +28,6 @@ Native, cross platform PDF Reader with cloud syncing
 ## Rust
 
 - Write tests inside the source code files
-
-## Simulated Device Testing
-
-Please target the following devices when running a simulated Apple device client:
-
-- iPhone 15 Pro
-- iPad Pro 3rd Gen 12.9in
 
 ## Agent skills
 

@@ -62,10 +62,11 @@
             return view.subviews.lazy.compactMap { subview(ofType: type, in: $0) }.first
         }
 
-        /// Expects the first Chapter of the book in `web` to show `text`, within two seconds.
+        /// Expects the first Chapter of the book in `web` to show `text`, within ten seconds: the
+        /// first web view of a run waits for WebKit's processes to launch.
         private func expectText(_ text: String, in web: WKWebView) async throws {
             var shown = ""
-            for _ in 0..<40 where !shown.contains(text) {
+            for _ in 0..<200 where !shown.contains(text) {
                 shown =
                     (try? await web.evaluateJavaScript(
                         "document.querySelector('iframe')?.contentDocument?.body?.innerText ?? ''") as? String) ?? ""

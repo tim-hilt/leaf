@@ -22,8 +22,7 @@ import Testing
         activity.scrollingChanged(isScrolling: false)
         #expect(!activity.isStill)
 
-        try await Task.sleep(for: quiet * 4)
-        #expect(activity.isStill)
+        #expect(try await becomesStill(activity))
     }
 
     @Test func scrollingAgainRestartsTheQuietPeriod() async throws {
@@ -31,7 +30,12 @@ import Testing
         activity.scrollingChanged(isScrolling: false)
         activity.scrollingChanged(isScrolling: true)
         activity.scrollingChanged(isScrolling: false)
-        try await Task.sleep(for: quiet * 4)
-        #expect(activity.isStill)
+        #expect(try await becomesStill(activity))
+    }
+
+    /// Whether `activity` turns still within two seconds: a busy main actor delays the quiet period's end.
+    private func becomesStill(_ activity: ScrollActivity) async throws -> Bool {
+        for _ in 0..<100 where !activity.isStill { try await Task.sleep(for: .milliseconds(20)) }
+        return activity.isStill
     }
 }

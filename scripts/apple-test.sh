@@ -18,7 +18,7 @@ awk -v zwsp="$(printf '\342\200\213')" '
     /^✔ Test run / { print; next }
     /^(◇ |✔ (Test|Suite) |↳ (Testing Library|Target Platform))/ { next }  # progress and passes
     /^Test session results/ { testing = 0 }
-    testing || /: error: / || /^\*\* .* \*\*$/ { print }
+    testing || /(^|: )error: / || /^\*\* .* \*\*$/ { print }
 ' "$LOG"
 [ $status -eq 0 ] || echo "Full log: $LOG"
 exit $status
