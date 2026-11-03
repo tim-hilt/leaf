@@ -22,7 +22,7 @@ SIM_IPHONE := iPhone 15 Pro
 SIM_IPAD := iPad Pro (12.9-inch) (4th generation)
 SIM ?= $(SIM_IPAD)
 
-.PHONY: test lint fmt apple apple-core apple-project apple-build apple-test apple-test-ios apple-sim apple-run clean
+.PHONY: test lint fmt apple apple-core apple-project apple-build apple-ipa apple-test apple-test-ios apple-sim apple-run clean
 
 ## Rust core
 
@@ -75,6 +75,18 @@ apple-project:
 apple-build: apple-project
 	$(XCODEBUILD) build -destination 'platform=macOS'
 	$(XCODEBUILD) build -destination 'generic/platform=iOS Simulator'
+
+# Builds an unsigned Leaf.ipa for sideloading (SideStore resigns it on the device).
+# Generated with CODE_SIGNING_ALLOWED=NO, so no provisioning profile travels along.
+IpaProduct := apple/build/Build/Products/Release-iphoneos
+apple-ipa: apple-core apple-project
+	$(XCODEBUILD) build -configuration Release -destination 'generic/platform=iOS' \
+		-derivedDataPath build CODE_SIGNING_ALLOWED=NO
+	rm -rf apple/build/Payload apple/build/Leaf.ipa
+	mkdir -p apple/build/Payload
+	cp -R $(IpaProduct)/Leaf.app apple/build/Payload/
+	cd apple/build && zip -qry Leaf.ipa Payload
+	@echo "apple/build/Leaf.ipa"
 
 apple-test: apple-core apple-build
 	$(XCTEST) -destination 'platform=macOS'
