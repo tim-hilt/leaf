@@ -1,7 +1,8 @@
 import LeafCore
 import SwiftUI
 
-/// The Settings: Theme, Highlight Colors (the Default Highlight Color) and Cloud Backing.
+/// The Settings: Theme, Highlight Colors (the Default Highlight Color), Cloud Backing
+/// and the Version.
 /// Page Style and Page Colors live in the Reader's cog popover.
 /// A window on Mac (⌘,), a sheet from the Gallery's gear on iPhone and iPad.
 struct SettingsView: View {
@@ -40,6 +41,7 @@ struct SettingsView: View {
                 }
             }
             CloudBackingSection()
+            Section { LabeledContent("Version", value: AppVersion.current.label) }
         }
         .onChange(of: hasCustomColors) { if !hasCustomColors { isEditingColors = false } }
         .formStyle(.grouped)
