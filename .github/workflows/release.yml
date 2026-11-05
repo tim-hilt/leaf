@@ -30,13 +30,14 @@ jobs:
       # rustup installs the toolchain and targets from rust-toolchain.toml.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: make apple
       # Ad-hoc signed, not notarized: Gatekeeper asks users to confirm the first launch.
-      - run: |
-          cd apple && xcodebuild -quiet -scheme Leaf -configuration Release \
-            -destination 'generic/platform=macOS' -derivedDataPath ../build \
-            MARKETING_VERSION="$TAG" build
-      - run: ditto -c -k --keepParent build/Build/Products/Release/Leaf.app "Leaf-$TAG-macOS.zip"
+      # The tag doesn't exist yet, so the version is passed in, not read from git.
+      - run: make apple-release VERSION="$TAG"
+      - name: Check the app reports the version
+        run: |
+          plutil -extract CFBundleShortVersionString raw \
+            apple/build/Build/Products/Release/Leaf.app/Contents/Info.plist | grep -qx "$TAG"
+      - run: ditto -c -k --keepParent apple/build/Build/Products/Release/Leaf.app "Leaf-$TAG-macOS.zip"
       - run: |
           gh release create "$TAG" --title "$TAG" --target "$GITHUB_SHA" \
             --notes-file NOTES.md "Leaf-$TAG-macOS.zip"

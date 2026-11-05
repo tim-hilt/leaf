@@ -8,7 +8,12 @@ APPLE_TARGETS := aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin
 FFI_LIB := libleaf_ffi.a
 APPLE_GEN := apple/LeafCore/Generated
 SWIFT_SRC := apple/Leaf apple/LeafTests
-XCODEBUILD := cd apple && xcodebuild -quiet -scheme Leaf
+# The app version is the git tag, release.yml passing the one it is about to create.
+# VERSION alone reaches the last tag, which is what local builds report.
+VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo 0.0.0)
+BUILD ?= $(shell git rev-list --count HEAD)
+XCODEBUILD := cd apple && xcodebuild -quiet -scheme Leaf \
+	MARKETING_VERSION=$(VERSION) CURRENT_PROJECT_VERSION=$(BUILD)
 CORE_SRC := $(shell find core ffi -type f) Cargo.toml Cargo.lock rust-toolchain.toml Makefile
 CORE_STAMP := $(APPLE_GEN)/.built-$(PROFILE)
 
@@ -22,7 +27,7 @@ SIM_IPHONE := iPhone 15 Pro
 SIM_IPAD := iPad Pro (12.9-inch) (4th generation)
 SIM ?= $(SIM_IPAD)
 
-.PHONY: test lint fmt apple apple-core apple-project apple-build apple-ipa apple-test apple-test-ios apple-sim apple-run clean
+.PHONY: test lint fmt apple apple-core apple-project apple-build apple-release apple-ipa apple-test apple-test-ios apple-sim apple-run clean
 
 ## Rust core
 
@@ -75,6 +80,10 @@ apple-project:
 apple-build: apple-project
 	$(XCODEBUILD) build -destination 'platform=macOS'
 	$(XCODEBUILD) build -destination 'generic/platform=iOS Simulator'
+
+# Builds the macOS app that release.yml ships.
+apple-release: apple-core apple-project
+	$(XCODEBUILD) build -configuration Release -destination 'generic/platform=macOS' -derivedDataPath build
 
 # Builds an unsigned Leaf.ipa for sideloading (SideStore resigns it on the device).
 # Generated with CODE_SIGNING_ALLOWED=NO, so no provisioning profile travels along.
